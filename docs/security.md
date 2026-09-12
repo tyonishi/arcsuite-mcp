@@ -28,6 +28,22 @@
   reviewed immutable commit/digest references. Container updates must keep the
   human-readable tag and SHA-256 digest synchronized.
 
+## Repository security integrations
+
+- CodeQL uses `build-mode: none` for JavaScript/TypeScript and `manual` only
+  for the compiled Java adapter. The workflow grants the read permissions
+  required to collect its analysis status and writes only code-scanning
+  results.
+- Dependency Review requires GitHub's dependency graph. It runs automatically
+  for a public repository, or for a private repository with the repository
+  variable `DEPENDENCY_REVIEW_ENABLED=true` after the dependency graph and
+  applicable Advanced Security capability have been enabled. A skipped check
+  means that the GitHub integration is unavailable; it is not a substitute for
+  dependency review.
+- Dependabot groups minor and patch updates by ecosystem. Major runtime,
+  compiler, action, and container updates remain separate for compatibility
+  and security review.
+
 ## Trust boundaries
 
 The MCP caller is untrusted input. The TypeScript gateway is trusted to apply

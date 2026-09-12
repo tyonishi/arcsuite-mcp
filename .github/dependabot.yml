@@ -4,19 +4,59 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Keep runtime/toolchain major updates separate for compatibility review.
+    groups:
+      npm-production-non-major:
+        dependency-type: production
+        update-types:
+          - "minor"
+          - "patch"
+      npm-development-non-major:
+        dependency-type: development
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: gradle
     directory: "/adapter-java"
     schedule:
       interval: monthly
+    groups:
+      gradle-non-major:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: monthly
+    groups:
+      github-actions-non-major:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: docker
     directory: "/"
     schedule:
       interval: monthly
+    groups:
+      docker-non-major:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: docker
     directory: "/adapter-java"
     schedule:
       interval: monthly
+    groups:
+      adapter-java-docker-non-major:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

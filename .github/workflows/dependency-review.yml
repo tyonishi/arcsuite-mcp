@@ -5,9 +5,13 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   dependency-review:
+    # Dependency review requires GitHub's dependency graph. It is enabled for
+    # public repositories or explicitly opted in for private repositories.
+    if: github.event.repository.visibility == 'public' || vars.DEPENDENCY_REVIEW_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
