@@ -34,6 +34,25 @@ supported protocol era through the official SDK.
 | ArcSuite | Licensed environment and version must be qualified by the operator |
 | Dify | Integration example only; historical design target Dify 1.14.2 was not requalified in this sanitized tree |
 
+## ArcSuite v1.1 operation requirements
+
+v1.1 paging and batch metadata reads add three read-only ArcSuite operations to
+the v1.0 baseline:
+
+- `searchRepositoryObjectIds`
+- `listRepositoryObjectIds`
+- `getRepositoryObjects`
+
+The operator must verify that the live ArcSuite WSDL exposes these operations
+before qualifying v1.1 against a real server. The repository intentionally does
+not redistribute a vendor WSDL, and documentation or sample WSDLs from another
+ArcSuite installation are not runtime authority.
+
+The adapter serializes the `getRepositoryObjects` `ids` parameter as the ArcSuite
+`Ids` complex type (`<ids><id>...</id></ids>`). The Java adapter self-test
+locks this request shape so it cannot silently regress to a generic string-array
+wire representation.
+
 ## Qualification limits
 
 Local tests use a mock adapter and synthetic content. They verify protocol
