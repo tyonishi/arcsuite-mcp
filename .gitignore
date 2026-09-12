@@ -1,0 +1,46 @@
+node_modules/
+dist/
+coverage/
+build/
+__pycache__/
+*.pyc
+tmp/
+.env
+.env.*
+!.env.example
+
+# User-supplied ArcSuite material. Never commit vendor-controlled files.
+*.wsdl
+*.xsd
+*.jar
+*.war
+*.ear
+*.msg
+*.docx
+*.pptx
+*.pdf
+vendor/
+vendor-material/
+
+# Local secrets and configuration.
+config/scopes.yaml
+config/tokens.json
+config/clients.json
+local-secrets/
+*.secret
+*.secrets
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Temporary extracted ArcSuite content and local adapter exchange files.
+arcsuite-mcp-shared/
+tmp-extracted/
+*.mtom
+*.soap
+*.trace
+*.jsonl
+
+# Local development material copied from the Project workspace.
+materials/

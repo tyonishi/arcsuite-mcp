@@ -1,0 +1,29 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { V1_SOAP_OPERATION_ALLOWLIST, FORBIDDEN_SOAP_OPERATIONS, assertOperationAllowlistSafe } from "../../src/arcsuite/operationAllowlist.ts";
+import { CursorManager } from "../../src/content/cursor.ts";
+import { normalizeExtractedText } from "../../src/content/contentBridge.ts";
+
+const forbidden = new Set(FORBIDDEN_SOAP_OPERATIONS);
+
+test("v1 SOAP allowlist contains no forbidden operation", () => {
+  assert.doesNotThrow(() => assertOperationAllowlistSafe());
+  for (const op of V1_SOAP_OPERATION_ALLOWLIST) assert.equal(forbidden.has(op), false, op);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("enableAdministratorMode"), false);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("assertPrivilege"), false);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("getRepositoryObjectContentForPrint"), false);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("deleteRepositoryObject"), false);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("changeRepositoryObjectAcl"), false);
+});
+
+test("signed cursor detects tampering", () => {
+  const c = new CursorManager(Buffer.from("0123456789abcdef0123456789abcdef"), 600);
+  const token = c.create({ trace_id: "t", document_id: "rep:x:y:1", content_hash: "sha256:x", offset: 10, extractor: "text" });
+  const parsed = c.parse(token);
+  assert.equal(parsed.offset, 10);
+  assert.throws(() => c.parse(token.slice(0, -1) + (token.endsWith("a") ? "b" : "a")));
+});
+
+test("extracted text normalization strips control characters", () => {
+  assert.equal(normalizeExtractedText("a\r\nb\u0000\u0001\t c  \n"), "a\nb\t c");
+});

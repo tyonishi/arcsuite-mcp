@@ -1,0 +1,30 @@
+{
+  "name": "@capricornus/arcsuite-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only semantic MCP server for FUJIFILM ArcSuite Web Service Interface.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "dev": "ARCSUITE_ADAPTER_MODE=mock MCP_VALIDATE_ON_STARTUP=true node --experimental-strip-types src/server.ts",
+    "test": "node --experimental-strip-types --test test/unit/*.test.ts test/integration/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check:invariants": "node --experimental-strip-types scripts/check-invariants.ts",
+    "check:hygiene": "node scripts/check-public-hygiene.mjs",
+    "check": "npm run typecheck && npm test && npm run check:invariants && npm run check:hygiene",
+    "hash-token": "node scripts/hash-token.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.3"
+  }
+}

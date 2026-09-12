@@ -1,0 +1,14 @@
+plugins {
+  id 'application'
+}
+
+group = 'biz.capricornus.arcsuite.mcp'
+version = '0.1.0'
+
+java {
+  toolchain { languageVersion = JavaLanguageVersion.of(17) }
+}
+
+application {
+  mainClass = 'biz.capricornus.arcsuite.mcp.adapter.Main'
+}

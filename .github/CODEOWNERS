@@ -1,0 +1,12 @@
+# Default review ownership.
+* @tyonishi
+
+# Security-sensitive boundaries require explicit owner review.
+/src/arcsuite/ @tyonishi
+/src/mcp/ @tyonishi
+/src/content/ @tyonishi
+/adapter-java/ @tyonishi
+/scripts/check-invariants.ts @tyonishi
+/scripts/check-public-hygiene.mjs @tyonishi
+/.github/workflows/ @tyonishi
+/**/AGENTS.md @tyonishi

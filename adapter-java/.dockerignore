@@ -1,0 +1,37 @@
+.git
+.github
+build
+.gradle
+
+# Runtime/build scripts and documentation are not needed in the image layer.
+AGENTS.md
+Containerfile
+run.sh
+selftest.sh
+
+# Never send licensed vendor material, credentials, traces, or document data
+# to a container builder. The Java image only needs compile.sh, build files,
+# and src/.
+*.wsdl
+*.xsd
+*.jar
+*.war
+*.ear
+*.msg
+*.docx
+*.pptx
+*.pdf
+vendor/
+vendor-material/
+materials/
+local-secrets/
+*.secret
+*.secrets
+*.pem
+*.key
+*.p12
+*.pfx
+*.mtom
+*.soap
+*.trace
+*.jsonl

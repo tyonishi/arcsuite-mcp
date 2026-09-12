@@ -1,0 +1,75 @@
+package biz.capricornus.arcsuite.mcp.adapter;
+
+import javax.crypto.Cipher;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPairGenerator;
+import java.security.interfaces.RSAPublicKey;
+import java.util.Base64;
+import java.util.Map;
+
+public final class SelfTest {
+    public static void main(String[] args) throws Exception {
+        jsonRoundTrip();
+        cryptoRoundTrip();
+        mtomDecode();
+        xmlXxeBlocked();
+        boundedStreams();
+        System.out.println("Java adapter self-test: PASS");
+    }
+
+    static void jsonRoundTrip() {
+        Object v = Json.parse("{\"a\":1,\"b\":[true,\"x\"]}");
+        String out = Json.stringify(v);
+        if (!out.contains("\"a\":1")) throw new AssertionError(out);
+    }
+
+    static void cryptoRoundTrip() throws Exception {
+        var generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        var pair = generator.generateKeyPair();
+        var pub = (RSAPublicKey) pair.getPublic();
+        byte[] modulus = unsigned(pub.getModulus().toByteArray());
+        byte[] exponent = unsigned(pub.getPublicExponent().toByteArray());
+        String encrypted = Crypto.encryptCredential("challenge", "password", Base64.getEncoder().encodeToString(modulus), Base64.getEncoder().encodeToString(exponent));
+        var cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+        cipher.init(Cipher.DECRYPT_MODE, pair.getPrivate());
+        String plain = new String(cipher.doFinal(Base64.getDecoder().decode(encrypted)), StandardCharsets.UTF_8);
+        if (!"challengepassword".equals(plain)) throw new AssertionError(plain);
+    }
+
+    static void mtomDecode() {
+        String boundary="test-boundary";
+        String body="--"+boundary+"\r\nContent-Type: application/xop+xml; charset=UTF-8; type=\"text/xml\"\r\nContent-ID: <root>\r\n\r\n<Envelope><data><xop:Include xmlns:xop=\"http://www.w3.org/2004/08/xop/include\" href=\"cid:bin\"/></data></Envelope>\r\n"+
+                "--"+boundary+"\r\nContent-Type: application/octet-stream\r\nContent-ID: <bin>\r\n\r\nABC123\r\n--"+boundary+"--\r\n";
+        MtomMessage m=MtomParser.parse("multipart/related; boundary=\""+boundary+"\"",body.getBytes(StandardCharsets.ISO_8859_1));
+        if(!"ABC123".equals(new String(m.attachments().get("bin"),StandardCharsets.ISO_8859_1))) throw new AssertionError();
+    }
+
+    static void xmlXxeBlocked() {
+        try {
+            XmlUtil.parse("<!DOCTYPE x [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><x>&e;</x>");
+            throw new AssertionError("DOCTYPE should be rejected");
+        } catch (AdapterException expected) {}
+    }
+
+    static void boundedStreams() throws Exception {
+        byte[] request = InternalServer.readBounded(new ByteArrayInputStream("1234".getBytes(StandardCharsets.UTF_8)), 4);
+        if (!"1234".equals(new String(request, StandardCharsets.UTF_8))) throw new AssertionError();
+        try {
+            InternalServer.readBounded(new ByteArrayInputStream("12345".getBytes(StandardCharsets.UTF_8)), 4);
+            throw new AssertionError("oversized internal request should be rejected");
+        } catch (IllegalArgumentException expected) {}
+        try {
+            ArcSuiteSoapClient.readBounded(new ByteArrayInputStream("12345".getBytes(StandardCharsets.UTF_8)), 4);
+            throw new AssertionError("oversized SOAP response should be rejected");
+        } catch (AdapterException expected) {
+            if (!"ARCSUITE_LIMIT_EXCEEDED".equals(expected.code)) throw expected;
+        }
+    }
+
+    static byte[] unsigned(byte[] b) {
+        if (b.length > 1 && b[0] == 0) return java.util.Arrays.copyOfRange(b,1,b.length);
+        return b;
+    }
+}

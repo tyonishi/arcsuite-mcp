@@ -1,0 +1,14 @@
+FROM eclipse-temurin:17.0.20_8-jdk-jammy@sha256:ef4374b4b6b9d813dd3f5b593a35ec9a820cfb64a55994798147cc73435a0208 AS build
+WORKDIR /src
+COPY . .
+RUN ./compile.sh
+
+FROM eclipse-temurin:17.0.20_8-jre-jammy@sha256:e17d77fb030dd4b642dc078d048a5fb9efcb3676ee20305d905949105a6ccd5a
+WORKDIR /app
+COPY --from=build /src/build/classes /app/classes
+RUN install -d -m 700 /shared && chown -R 10001:0 /app /shared
+USER 10001
+# The adapter port is reachable only on the private container network. The
+# non-container default remains loopback in AdapterConfig.java.
+ENV ARCSUITE_ADAPTER_BIND_HOST=0.0.0.0 ARCSUITE_ADAPTER_PORT=18080 MCP_TEMP_DIR=/shared
+CMD ["java", "-cp", "/app/classes", "biz.capricornus.arcsuite.mcp.adapter.Main"]

@@ -1,0 +1,58 @@
+version: 1
+
+scopes:
+  example_documents:
+    description: "Synthetic example document repository"
+    enabled: true
+
+    arcsuite:
+      service_dn: "service:example"
+      cabinet_alias: "EXAMPLE_CABINET"
+      cabinet_id: "rep:mock:EXAMPLE_CABINET"
+      root_object_id: null
+      resolve_references: true
+
+    allowed_object_types:
+      - document
+      - folder
+      - reference
+
+    default_attr_ids:
+      - {ns: "rep", name: "system:name"}
+      - {ns: "rep", name: "system:objecttype"}
+      - {ns: "rep", name: "system:status"}
+      - {ns: "rep", name: "system:modifiedon"}
+      - {ns: "rep", name: "system:modifiedby"}
+      - {ns: "rep", name: "system:currentrevisionnumber"}
+      - {ns: "rep", name: "system:contentlabellist"}
+      - {ns: "rep", name: "user:example_document_number"}
+
+    semantic_attributes:
+      document_number:
+        attr_id:
+          ns: "rep"
+          name: "user:example_document_number"
+        type: string
+        operators: [eq, like]
+        allow_wildcards: true
+        max_length: 128
+      name:
+        attr_id:
+          ns: "rep"
+          name: "system:name"
+        type: string
+        operators: [eq, like]
+        allow_wildcards: true
+        max_length: 255
+      modified_after:
+        attr_id:
+          ns: "rep"
+          name: "system:modifiedon"
+        type: datetime
+        operators: [gte]
+      modified_before:
+        attr_id:
+          ns: "rep"
+          name: "system:modifiedon"
+        type: datetime
+        operators: [lte]

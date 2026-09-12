@@ -1,0 +1,8 @@
+{
+  "name": "arcsuite-example",
+  "transport": "streamable-http",
+  "url": "http://arcsuite-mcp:8080/mcp",
+  "headers": {
+    "Authorization": "Bearer ${ARCSUITE_MCP_TOKEN}"
+  }
+}

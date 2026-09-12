@@ -1,0 +1,129 @@
+export type AttributeId = { ns: string; name: string };
+
+export type AttributeValue =
+  | { type: "string"; value: string }
+  | { type: "int"; value: number }
+  | { type: "long"; value: number }
+  | { type: "double"; value: number }
+  | { type: "boolean"; value: boolean }
+  | { type: "datetime"; value: string }
+  | { type: "i18n"; ns: string; name: string; label?: string }
+  | { type: "i18n[]"; values: Array<{ ns: string; name: string; label?: string }> }
+  | { type: "rmsObject"; dn?: string; label?: string }
+  | { type: "id"; value: string }
+  | { type: "unknown"; rawType: string; value?: string };
+
+export type AdapterRepositoryObject = {
+  id: string;
+  objectClass: string;
+  attributes: Record<string, AttributeValue>;
+  pathObjects?: Array<{ id: string; name?: string; objectClass?: string }>;
+  fullPath?: boolean;
+};
+
+export type AdapterSearchCondition = {
+  attrId: AttributeId;
+  operator: "EQUAL" | "LIKE" | "GREATER_EQUAL" | "LESS_EQUAL";
+  value: { type: "string" | "datetime"; value: string };
+};
+
+export type AdapterSearchRequest = {
+  clientProfileId: string;
+  attributeConditions: AdapterSearchCondition[];
+  text?: { words: string[]; operator: "AND" | "OR" };
+  mode: "AND" | "OR";
+  searchRegionIds: string[];
+  depth: number;
+  textSearchMode: "NONE" | "STEMMING";
+  order: Array<{ attrId: AttributeId; descending: boolean }>;
+  limit: number;
+  attrIds: AttributeId[];
+  options: string[];
+};
+
+export type AdapterListRequest = {
+  clientProfileId: string;
+  locationId: string;
+  latestOnly: boolean;
+  order: Array<{ attrId: AttributeId; descending: boolean }>;
+  limit: number;
+  attrIds: AttributeId[];
+  options: string[];
+};
+
+export type AdapterGetRequest = {
+  clientProfileId: string;
+  id: string;
+  revisionNumber?: number;
+  resolveRef: boolean;
+  includePath: boolean;
+  attrIds: AttributeId[];
+  options: string[];
+};
+
+export type AdapterRevisionsRequest = {
+  clientProfileId: string;
+  id: string;
+  attrIds: AttributeId[];
+  options: string[];
+};
+
+export type AdapterContentRequest = {
+  clientProfileId: string;
+  id: string;
+  revisionNumber?: number;
+  contentLabel: { ns: string; name: string };
+  options: string[];
+  traceId: string;
+};
+
+export type AdapterContentResult = {
+  id: string;
+  revisionNumber?: number;
+  label: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  filePath: string;
+};
+
+export type AttributeSchemaInfo = {
+  ns: string;
+  name: string;
+  dataType?: string;
+  searchable?: boolean;
+  sortable?: boolean;
+  modifiable?: boolean;
+};
+
+export type AdapterSchemaValidationRequest = {
+  clientProfileId: string;
+  cabinetId: string;
+  attributes: Array<{
+    attrId: AttributeId;
+    requireSearchable?: boolean;
+    requireSortable?: boolean;
+  }>;
+};
+
+export type AdapterSchemaValidationResult = {
+  ok: boolean;
+  version: { minVersion?: string; curVersion?: string };
+  cabinet: { id?: string; label?: string; hasRecycleBin?: boolean };
+  attributes: AttributeSchemaInfo[];
+  errors: string[];
+};
+
+export type NormalizedDocument = {
+  document_id: string;
+  object_class: string;
+  name?: string;
+  path?: string[];
+  revision_number?: number;
+  current_revision_number?: number;
+  modified_at?: string;
+  status?: string;
+  content_labels: string[];
+  content_available: boolean;
+  semantic_attributes?: Record<string, string | number | boolean | null>;
+};

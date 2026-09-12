@@ -1,0 +1,61 @@
+version: 1
+
+scopes:
+  example_documents:
+    description: "Example document repository"
+    enabled: true
+
+    arcsuite:
+      # Obtain these values from the operator's licensed ArcSuite environment.
+      service_dn: "SET_FROM_OPERATOR_DOCUMENTATION"
+      cabinet_alias: "EXAMPLE_CABINET"
+      cabinet_id: "rep:YOUR_SERVICE:YOUR_CABINET"
+      root_object_id: null
+      resolve_references: true
+
+    allowed_object_types:
+      - document
+      - folder
+      - reference
+
+    # Only the system fields needed by the semantic tools are requested.
+    default_attr_ids:
+      - {ns: "rep", name: "system:name"}
+      - {ns: "rep", name: "system:objecttype"}
+      - {ns: "rep", name: "system:status"}
+      - {ns: "rep", name: "system:modifiedon"}
+      - {ns: "rep", name: "system:modifiedby"}
+      - {ns: "rep", name: "system:currentrevisionnumber"}
+      - {ns: "rep", name: "system:contentlabellist"}
+
+    # Attribute names and IDs are environment-specific. Replace this example
+    # mapping only after checking the schema in the licensed environment.
+    semantic_attributes:
+      document_number:
+        attr_id:
+          ns: "rep"
+          name: "user:YOUR_DOCUMENT_NUMBER_ATTRIBUTE"
+        type: string
+        operators: [eq, like]
+        allow_wildcards: true
+        max_length: 128
+      name:
+        attr_id:
+          ns: "rep"
+          name: "system:name"
+        type: string
+        operators: [eq, like]
+        allow_wildcards: true
+        max_length: 255
+      modified_after:
+        attr_id:
+          ns: "rep"
+          name: "system:modifiedon"
+        type: datetime
+        operators: [gte]
+      modified_before:
+        attr_id:
+          ns: "rep"
+          name: "system:modifiedon"
+        type: datetime
+        operators: [lte]
