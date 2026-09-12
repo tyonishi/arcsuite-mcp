@@ -4,7 +4,7 @@ import { hostHeaderValidation, originValidation, toNodeHandler } from "@modelcon
 import type { ProfileStore, RateLimiter } from "./auth.ts";
 import type { ToolRegistry } from "./tools.ts";
 import { toMcpToolError } from "./errors.ts";
-import { toolInputSchemas, type ToolInputName } from "./sdkSchemas.ts";
+import { toolInputSchemaForProfile, type ToolInputName } from "./sdkSchemas.ts";
 import { readJsonBody } from "../util/http.ts";
 
 export type McpHttpServerOptions = {
@@ -26,9 +26,10 @@ export function createMcpHttpServer(options: McpHttpServerOptions) {
     const profile = typeof profileId === "string" ? options.profiles.get(profileId) : undefined;
     if (!profile) throw new Error("authenticated profile is unavailable");
 
-    const server = new McpServer({ name: "arcsuite-mcp", version: "0.1.0" });
+    const server = new McpServer({ name: "arcsuite-mcp", version: "0.2.0" });
     for (const definition of options.tools.list(profile)) {
-      const schema = toolInputSchemas[definition.name as ToolInputName];
+      const name = definition.name as ToolInputName;
+      const schema = toolInputSchemaForProfile(name, profile.allowedScopes);
       if (!schema) continue;
       server.registerTool(definition.name, {
         description: definition.description,
@@ -50,8 +51,6 @@ export function createMcpHttpServer(options: McpHttpServerOptions) {
     }
     return server;
   }, {
-    // The current SDK serves the 2026-07-28 Streamable HTTP era and keeps the
-    // stateless 2025-era fallback for clients that have not migrated yet.
     legacy: "stateless",
     responseMode: "auto",
     onerror: (error) => console.error("MCP transport error", error.message)
@@ -98,8 +97,6 @@ export function createMcpHttpServer(options: McpHttpServerOptions) {
     void dispatchMcpRequest(authenticated, res, nodeHandler, options.maxRequestBytes);
   });
 
-  // Bound slow request ingress while leaving long-running upstream reads to the
-  // adapter-specific timeout. These values protect the Node boundary only.
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5_000;
@@ -114,8 +111,6 @@ async function dispatchMcpRequest(
   maxRequestBytes: number
 ): Promise<void> {
   try {
-    // MCP POST requests carry JSON-RPC bodies. GET/DELETE compatibility traffic
-    // remains untouched and is handled by the official SDK transport.
     const parsedBody = req.method === "POST" ? await readJsonBody(req, maxRequestBytes) : undefined;
     await nodeHandler(req, res, parsedBody);
   } catch (error) {
@@ -150,7 +145,6 @@ async function respondHealth(res: ServerResponse, health: () => Promise<boolean>
 async function respondReady(res: ServerResponse, ready: () => Promise<{ ok: boolean; message?: string }>): Promise<void> {
   try {
     const state = await ready();
-    // Never expose adapter or configuration error text on a public health path.
     sendJson(res, state.ok ? 200 : 503, { ok: state.ok });
   } catch {
     sendJson(res, 503, { ok: false });
