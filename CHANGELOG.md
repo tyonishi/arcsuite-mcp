@@ -20,6 +20,10 @@
   SHA-256 digest.
 - Pinned GitHub Actions workflow references to immutable commit SHAs and added
   an invariant check to prevent tag-based regressions.
+- Defined the accepted v1.x capability roadmap in ADR 0005 through ADR 0007:
+  v1.1 Read UX and Efficiency, v1.2 Rich Repository Read, and v1.3 Advanced
+  Content and Scope. These roadmap releases preserve the read-only semantic
+  security boundary.
 
 Real ArcSuite and client qualification remain environment-dependent; see
 `docs/compatibility.md`.
