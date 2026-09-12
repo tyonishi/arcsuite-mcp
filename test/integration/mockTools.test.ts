@@ -102,6 +102,7 @@ test("synthetic search, metadata, batch, folder, revisions, content info and tex
   const info = await rt.tools.call(p, "arcsuite_get_document_content_info", { document_id: id });
   assert.equal((info.structuredContent as any).content_type, "text/plain");
   assert.equal((info.structuredContent as any).extractable, true);
+  assert.equal((info.structuredContent as any).cached, false, "first content_info request must report an upstream/cache miss");
 
   const read = await rt.tools.call(p, "arcsuite_read_document", { document_id: id, max_chars: 1000 });
   const result: any = read.structuredContent;
