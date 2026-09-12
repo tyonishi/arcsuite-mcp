@@ -92,7 +92,10 @@ export class ContentBridge {
     }
     const snapshot = await this.extractSnapshot(content, undefined, undefined);
     this.cache?.put({ ...context, variant: "full" }, snapshot);
-    return infoFromSnapshot(content.label, snapshot, Boolean(this.cache?.get({ ...context, variant: "full" })));
+    // `cached` means this request was served from an existing private snapshot,
+    // not merely that a snapshot is available after this request. Keeping this
+    // false on a miss also preserves accurate SOAP-operation audit metadata.
+    return infoFromSnapshot(content.label, snapshot, false);
   }
 
   async discard(content: AdapterContentResult): Promise<void> {
@@ -232,8 +235,11 @@ function validateCursorIdentity(
 ): void {
   if (!cursor) return;
   if (cursor.document_id !== documentId || cursor.revision_number !== revisionNumber) throw new Error("CURSOR_DOCUMENT_MISMATCH");
-  if (cursor.client_profile_id !== undefined && clientProfileId !== undefined && cursor.client_profile_id !== clientProfileId) throw new Error("CURSOR_PROFILE_MISMATCH");
-  if (cursor.scope_id !== undefined && scopeId !== undefined && cursor.scope_id !== scopeId) throw new Error("CURSOR_SCOPE_MISMATCH");
+  // When the caller supplies an authority boundary, the cursor must carry and
+  // exactly match that boundary. A pre-v1.1 cursor without these claims is
+  // intentionally invalidated rather than accepted across profiles/scopes.
+  if (clientProfileId !== undefined && cursor.client_profile_id !== clientProfileId) throw new Error("CURSOR_PROFILE_MISMATCH");
+  if (scopeId !== undefined && cursor.scope_id !== scopeId) throw new Error("CURSOR_SCOPE_MISMATCH");
 }
 
 function pageVariant(startPage?: number, endPage?: number): string {
