@@ -2,11 +2,15 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type ReadCursorPayload = {
   trace_id: string;
+  client_profile_id?: string;
+  scope_id?: string;
   document_id: string;
   revision_number?: number;
   content_hash: string;
   offset: number;
   extractor: string;
+  start_page?: number;
+  end_page?: number;
   expires_at: number;
 };
 
@@ -33,8 +37,12 @@ export class CursorManager {
     const a = Buffer.from(sig, "utf8");
     const b = Buffer.from(expected, "utf8");
     if (a.length !== b.length || !timingSafeEqual(a, b)) throw new Error("INVALID_CURSOR_SIGNATURE");
-    const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as ReadCursorPayload;
+    let parsed: ReadCursorPayload;
+    try { parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as ReadCursorPayload; }
+    catch { throw new Error("INVALID_CURSOR"); }
     if (!parsed.document_id || !parsed.content_hash || !Number.isInteger(parsed.offset) || parsed.offset < 0) throw new Error("INVALID_CURSOR_PAYLOAD");
+    if (parsed.start_page !== undefined && (!Number.isInteger(parsed.start_page) || parsed.start_page < 1)) throw new Error("INVALID_CURSOR_PAYLOAD");
+    if (parsed.end_page !== undefined && (!Number.isInteger(parsed.end_page) || parsed.end_page < (parsed.start_page ?? 1))) throw new Error("INVALID_CURSOR_PAYLOAD");
     if (parsed.expires_at < Math.floor(Date.now() / 1000)) throw new Error("CURSOR_EXPIRED");
     return parsed;
   }
