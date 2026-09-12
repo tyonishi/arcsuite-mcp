@@ -30,10 +30,10 @@
 
 ## Repository security integrations
 
-- CodeQL uses `build-mode: none` for JavaScript/TypeScript and `manual` only
-  for the compiled Java adapter. The workflow grants the read permissions
-  required to collect its analysis status and writes only code-scanning
-  results.
+- GitHub CodeQL Default setup is the authority for repository code scanning.
+  Its configuration and language coverage are managed in the repository's
+  GitHub security settings; the repository does not rely on a checked-in
+  custom CodeQL workflow.
 - Dependency Review requires GitHub's dependency graph. It runs automatically
   for a public repository, or for a private repository with the repository
   variable `DEPENDENCY_REVIEW_ENABLED=true` after the dependency graph and
