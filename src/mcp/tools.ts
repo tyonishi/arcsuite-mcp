@@ -9,6 +9,7 @@ import { mapFilter } from "../semantic/attributeMapper.ts";
 import { normalizeDocument } from "../semantic/responseNormalizer.ts";
 import { ContentBridge } from "../content/contentBridge.ts";
 import { AuditLogger } from "../audit/auditLogger.ts";
+import { PagingSnapshotStore } from "./paging.ts";
 import { McpToolError, toMcpToolError } from "./errors.ts";
 import { assertExactKeys, assertObject, boolValue, enumValue, intValue, optionalInt, optionalString, stringValue } from "../util/json.ts";
 
@@ -23,18 +24,16 @@ export type ToolCallResult = {
   structuredContent: Record<string, unknown>;
 };
 
-// These names are deliberately broad enough to catch attempts to bypass the
-// semantic boundary, while leaving ordinary semantic filter names configurable.
 const RAW_ARCSUITE_KEYS = /^(cabinet|cabinetId|cabinet_id|attr|attribute|attributes|attrId|attr_id|endpoint|baseUrl|serviceDn|service_dn|session|Session|sessionId|SearchCondition|operation|operations|option|options|soap|wsdl|raw)$/i;
 
 export class ToolRegistry {
-  private readonly definitions: ToolDefinition[];
   private readonly config: AppConfig;
   private readonly scopes: ScopeRegistry;
   private readonly adapter: ArcSuiteAdapterClient;
   private readonly sessions: AdapterSessionManager;
   private readonly contentBridge: ContentBridge;
   private readonly audit: AuditLogger;
+  private readonly paging: PagingSnapshotStore;
 
   constructor(
     config: AppConfig,
@@ -50,11 +49,18 @@ export class ToolRegistry {
     this.sessions = sessions;
     this.contentBridge = contentBridge;
     this.audit = audit;
-    this.definitions = buildDefinitions();
+    this.paging = new PagingSnapshotStore(
+      config.cursorSecret,
+      config.pagingTtlSeconds,
+      config.pagingSnapshotMaxIds,
+      config.pagingSnapshotMaxSnapshots,
+      config.pagingSnapshotMaxSnapshotsPerClient,
+      config.pagingSnapshotMaxTotalIds
+    );
   }
 
   list(profile: TokenProfile): ToolDefinition[] {
-    return this.definitions.filter((tool) => profile.allowedTools.includes(tool.name));
+    return buildDefinitions(profile, this.scopes, this.config).filter((tool) => profile.allowedTools.includes(tool.name));
   }
 
   async call(profile: TokenProfile, name: string, rawArgs: unknown): Promise<ToolCallResult> {
@@ -73,38 +79,68 @@ export class ToolRegistry {
       let data: Record<string, unknown>;
 
       switch (name) {
+        case "arcsuite_describe_capabilities": {
+          assertExactKeys(args, [], "describe capabilities arguments");
+          data = {
+            version: "1.1",
+            read_only: true,
+            allowed_tools: this.list(profile).map((tool) => tool.name),
+            scopes: this.scopes.describe(profile.allowedScopes)
+          };
+          resultCount = this.scopes.describe(profile.allowedScopes).length;
+          break;
+        }
         case "arcsuite_search_documents": {
           const parsed = parseSearchArgs(args, this.config);
           scopeId = parsed.scope;
           const scope = this.allowedScope(profile, parsed.scope);
-          const attrConditions = Object.entries(parsed.filters).map(([key, value]) => mapFilter(scope, key, value));
-          const words = parsed.query ? tokenizeQuery(parsed.query) : [];
-          const requestLimit = Math.min(parsed.limit + 1, this.config.searchMaxLimit + 1);
-          const result = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.search({
-            clientProfileId: profile.clientProfileId,
-            attributeConditions: attrConditions,
-            text: words.length ? { words, operator: parsed.queryMode.toUpperCase() as "AND" | "OR" } : undefined,
-            mode: attrConditions.length && words.length ? "AND" : parsed.queryMode.toUpperCase() as "AND" | "OR",
-            searchRegionIds: [scope.arcsuite.root_object_id ?? scope.arcsuite.cabinet_id],
-            depth: 0,
-            textSearchMode: "NONE",
-            order: [
-              { attrId: DEFAULT_ATTRS.modifiedOn, descending: true },
-              { attrId: DEFAULT_ATTRS.name, descending: false }
-            ],
-            limit: requestLimit,
-            attrIds: scope.default_attr_ids,
-            options: []
-          }));
-          this.assertRepositoryObjectsInScope(scope, result);
-          this.assertAllowedObjectTypes(scope, result);
-          await this.verifyReturnedRootScope(profile, scope, result);
-          soapOperations = ["searchRepositoryObjects"];
-          const normalized = result.slice(0, parsed.limit).map((item) => normalizeDocument(item, scope.semantic_attributes));
-          if (parsed.includePath || scope.arcsuite.root_object_id) await this.attachPaths(profile, scope, normalized, soapOperations);
-          objectIds = normalized.map((item) => item.document_id);
-          resultCount = normalized.length;
-          data = { scope: parsed.scope, count: normalized.length, limit: parsed.limit, truncated: result.length > parsed.limit, results: normalized };
+          let page;
+          if (parsed.cursor) {
+            page = this.paging.next(parsed.cursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.scope, kind: "search" });
+          } else {
+            const attrConditions = Object.entries(parsed.filters).map(([key, value]) => mapFilter(scope, key, value));
+            const words = parsed.query ? tokenizeQuery(parsed.query) : [];
+            const snapshotLimit = this.config.pagingSnapshotMaxIds;
+            const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
+              clientProfileId: profile.clientProfileId,
+              attributeConditions: attrConditions,
+              text: words.length ? { words, operator: parsed.queryMode.toUpperCase() as "AND" | "OR" } : undefined,
+              mode: attrConditions.length && words.length ? "AND" : parsed.queryMode.toUpperCase() as "AND" | "OR",
+              searchRegionIds: [scope.arcsuite.root_object_id ?? scope.arcsuite.cabinet_id],
+              depth: 0,
+              textSearchMode: "NONE",
+              order: [
+                { attrId: DEFAULT_ATTRS.modifiedOn, descending: true },
+                { attrId: DEFAULT_ATTRS.name, descending: false }
+              ],
+              limit: snapshotLimit + 1,
+              options: []
+            }));
+            soapOperations.push("searchRepositoryObjectIds");
+            for (const id of ids) this.assertObjectIdInScope(scope, id);
+            page = this.paging.create({
+              clientProfileId: profile.clientProfileId,
+              scopeId: parsed.scope,
+              kind: "search",
+              ids,
+              pageSize: parsed.limit,
+              context: { includePath: parsed.includePath },
+              upstreamLimited: ids.length > snapshotLimit
+            });
+          }
+          const pageData = await this.fetchObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations);
+          objectIds = pageData.results.map((item) => item.document_id);
+          resultCount = pageData.results.length;
+          data = {
+            scope: parsed.scope,
+            count: pageData.results.length,
+            limit: page.ids.length,
+            truncated: Boolean(page.nextCursor) || page.snapshotLimited,
+            snapshot_limited: page.snapshotLimited,
+            next_cursor: page.nextCursor,
+            failures: pageData.failures,
+            results: pageData.results
+          };
           break;
         }
         case "arcsuite_get_document": {
@@ -126,37 +162,75 @@ export class ToolRegistry {
           soapOperations = parsed.revisionNumber ? ["getRepositoryObjectByRevisionNumber"] : ["getRepositoryObject"];
           if (parsed.includePath || scope.arcsuite.root_object_id) soapOperations.push("getRepositoryObjectPath");
           this.assertRootScope(result, scope);
-          const normalized = normalizeDocument(result, scope.semantic_attributes);
+          const normalized = this.decorateDocument(scope, normalizeDocument(result, scope.semantic_attributes));
           if (!parsed.includePath) delete normalized.path;
           objectIds = [normalized.document_id];
           resultCount = 1;
           data = normalized as unknown as Record<string, unknown>;
           break;
         }
+        case "arcsuite_get_documents": {
+          const parsed = parseGetDocumentsArgs(args, this.config);
+          scopeId = parsed.scope;
+          const scope = this.allowedScope(profile, parsed.scope);
+          for (const id of parsed.documentIds) this.assertObjectIdInScope(scope, id);
+          const batch = await this.fetchObjectsByIds(profile, scope, parsed.documentIds, parsed.includePath, soapOperations);
+          objectIds = batch.results.map((item) => item.document_id);
+          resultCount = batch.results.length;
+          data = {
+            scope: parsed.scope,
+            requested_count: parsed.documentIds.length,
+            count: batch.results.length,
+            failures: batch.failures,
+            results: batch.results
+          };
+          break;
+        }
         case "arcsuite_list_folder": {
           const parsed = parseListFolderArgs(args, this.config);
           scopeId = parsed.scope;
           const scope = this.allowedScope(profile, parsed.scope);
-          const locationId = parsed.folderId ?? scope.arcsuite.root_object_id ?? scope.arcsuite.cabinet_id;
-          if (parsed.folderId) await this.verifyObjectScope(profile, scope, parsed.folderId);
-          const result = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.list({
-            clientProfileId: profile.clientProfileId,
-            locationId,
-            latestOnly: true,
-            order: [{ attrId: DEFAULT_ATTRS.name, descending: false }],
-            limit: Math.min(parsed.limit + 1, this.config.searchMaxLimit + 1),
-            attrIds: scope.default_attr_ids,
-            options: []
-          }));
-          this.assertRepositoryObjectsInScope(scope, result);
-          this.assertAllowedObjectTypes(scope, result);
-          await this.verifyReturnedRootScope(profile, scope, result);
-          soapOperations = ["listRepositoryObjects"];
-          const normalized = result.slice(0, parsed.limit).map((item) => normalizeDocument(item, scope.semantic_attributes));
-          if (parsed.includePath || scope.arcsuite.root_object_id) await this.attachPaths(profile, scope, normalized, soapOperations);
-          objectIds = normalized.map((item) => item.document_id);
-          resultCount = normalized.length;
-          data = { scope: parsed.scope, folder_id: locationId, count: normalized.length, limit: parsed.limit, truncated: result.length > parsed.limit, results: normalized };
+          let page;
+          if (parsed.cursor) {
+            page = this.paging.next(parsed.cursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.scope, kind: "folder" });
+          } else {
+            const locationId = parsed.folderId ?? scope.arcsuite.root_object_id ?? scope.arcsuite.cabinet_id;
+            if (parsed.folderId) await this.verifyObjectScope(profile, scope, parsed.folderId);
+            const snapshotLimit = this.config.pagingSnapshotMaxIds;
+            const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.listIds({
+              clientProfileId: profile.clientProfileId,
+              locationId,
+              latestOnly: true,
+              order: [{ attrId: DEFAULT_ATTRS.name, descending: false }],
+              limit: snapshotLimit + 1,
+              options: []
+            }));
+            soapOperations.push("listRepositoryObjectIds");
+            for (const id of ids) this.assertObjectIdInScope(scope, id);
+            page = this.paging.create({
+              clientProfileId: profile.clientProfileId,
+              scopeId: parsed.scope,
+              kind: "folder",
+              ids,
+              pageSize: parsed.limit,
+              context: { folderId: locationId, includePath: parsed.includePath },
+              upstreamLimited: ids.length > snapshotLimit
+            });
+          }
+          const pageData = await this.fetchObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations);
+          objectIds = pageData.results.map((item) => item.document_id);
+          resultCount = pageData.results.length;
+          data = {
+            scope: parsed.scope,
+            folder_id: page.context.folderId,
+            count: pageData.results.length,
+            limit: page.ids.length,
+            truncated: Boolean(page.nextCursor) || page.snapshotLimited,
+            snapshot_limited: page.snapshotLimited,
+            next_cursor: page.nextCursor,
+            failures: pageData.failures,
+            results: pageData.results
+          };
           break;
         }
         case "arcsuite_list_document_revisions": {
@@ -174,7 +248,7 @@ export class ToolRegistry {
           this.assertAllowedObjectTypes(scopeMatch.scope, result);
           await this.verifyReturnedRootScope(profile, scopeMatch.scope, result);
           soapOperations = ["listRepositoryObjectRevisions"];
-          const normalized = result.map((item) => normalizeDocument(item, scopeMatch.scope.semantic_attributes)).slice(0, parsed.limit);
+          const normalized = result.map((item) => this.decorateDocument(scopeMatch.scope, normalizeDocument(item, scopeMatch.scope.semantic_attributes))).slice(0, parsed.limit);
           objectIds = [parsed.documentId];
           resultCount = normalized.length;
           data = { document_id: parsed.documentId, count: normalized.length, limit: parsed.limit, truncated: result.length > parsed.limit, revisions: normalized };
@@ -185,18 +259,26 @@ export class ToolRegistry {
           const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
           scopeId = scopeMatch.id;
           await this.verifyObjectScope(profile, scopeMatch.scope, parsed.documentId);
-          const content = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.content({
+          const cacheContext = {
             clientProfileId: profile.clientProfileId,
-            id: parsed.documentId,
+            scopeId: scopeMatch.id,
+            documentId: parsed.documentId,
             revisionNumber: parsed.revisionNumber,
-            contentLabel: CONTENT_LABEL_PRIMARY,
-            options: contentOptions(scopeMatch.scope),
-            traceId
-          }));
-          this.assertObjectIdInScope(scopeMatch.scope, content.id, parsed.documentId);
-          soapOperations = ["getRepositoryObjectContentWithOptions"];
-          const info = this.contentBridge.info(content);
-          await this.contentBridge.discard(content);
+            contentLabel: CONTENT_LABEL_PRIMARY.name
+          };
+          const info = await this.contentBridge.infoCachedOrLoad(cacheContext, async () => {
+            const content = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.content({
+              clientProfileId: profile.clientProfileId,
+              id: parsed.documentId,
+              revisionNumber: parsed.revisionNumber,
+              contentLabel: CONTENT_LABEL_PRIMARY,
+              options: contentOptions(scopeMatch.scope),
+              traceId
+            }));
+            this.assertObjectIdInScope(scopeMatch.scope, content.id, parsed.documentId);
+            return content;
+          });
+          if (!info.cached) soapOperations = ["getRepositoryObjectContentWithOptions"];
           objectIds = [parsed.documentId];
           resultCount = 1;
           data = { document_id: parsed.documentId, revision_number: parsed.revisionNumber, ...info };
@@ -207,17 +289,14 @@ export class ToolRegistry {
           const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
           scopeId = scopeMatch.id;
           await this.verifyObjectScope(profile, scopeMatch.scope, parsed.documentId);
-          const content = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.content({
+          const cacheContext = {
             clientProfileId: profile.clientProfileId,
-            id: parsed.documentId,
+            scopeId: scopeMatch.id,
+            documentId: parsed.documentId,
             revisionNumber: parsed.revisionNumber,
-            contentLabel: CONTENT_LABEL_PRIMARY,
-            options: contentOptions(scopeMatch.scope),
-            traceId
-          }));
-          this.assertObjectIdInScope(scopeMatch.scope, content.id, parsed.documentId);
-          soapOperations = ["getRepositoryObjectContentWithOptions"];
-          const read = await this.contentBridge.read(content, {
+            contentLabel: CONTENT_LABEL_PRIMARY.name
+          };
+          const read = await this.contentBridge.readCachedOrLoad(cacheContext, {
             traceId,
             documentId: parsed.documentId,
             revisionNumber: parsed.revisionNumber,
@@ -225,7 +304,19 @@ export class ToolRegistry {
             endPage: parsed.endPage,
             cursor: parsed.cursor,
             maxChars: parsed.maxChars
+          }, async () => {
+            const content = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.content({
+              clientProfileId: profile.clientProfileId,
+              id: parsed.documentId,
+              revisionNumber: parsed.revisionNumber,
+              contentLabel: CONTENT_LABEL_PRIMARY,
+              options: contentOptions(scopeMatch.scope),
+              traceId
+            }));
+            this.assertObjectIdInScope(scopeMatch.scope, content.id, parsed.documentId);
+            return content;
           });
+          if (!read.cached) soapOperations = ["getRepositoryObjectContentWithOptions"];
           objectIds = [parsed.documentId];
           resultCount = 1;
           data = read as unknown as Record<string, unknown>;
@@ -286,6 +377,43 @@ export class ToolRegistry {
     this.assertRootScope(obj, scope);
   }
 
+  private async fetchObjectsByIds(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    ids: string[],
+    includePath: boolean,
+    operations: string[]
+  ): Promise<{ results: NormalizedDocument[]; failures: Array<{ index: number; document_id: string; code: string }> }> {
+    if (!ids.length) return { results: [], failures: [] };
+    for (const id of ids) this.assertObjectIdInScope(scope, id);
+    const root = scope.arcsuite.root_object_id;
+    const options = root ? ["getRepositoryObjects.searchMode", `getRepositoryObjects.searchMode.searchRegion=${root}`] : [];
+    const batch = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.getMany({
+      clientProfileId: profile.clientProfileId,
+      ids,
+      resolveRef: scope.arcsuite.resolve_references,
+      attrIds: scope.default_attr_ids,
+      options
+    }));
+    if (!operations.includes("getRepositoryObjects")) operations.push("getRepositoryObjects");
+    const requested = new Set(ids);
+    const seen = new Set<string>();
+    for (const object of batch.objects) {
+      if (!requested.has(object.id) || seen.has(object.id)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+      seen.add(object.id);
+    }
+    this.assertRepositoryObjectsInScope(scope, batch.objects);
+    this.assertAllowedObjectTypes(scope, batch.objects);
+    const normalized = batch.objects.map((item) => this.decorateDocument(scope, normalizeDocument(item, scope.semantic_attributes)));
+    if (includePath || root) await this.attachPaths(profile, scope, normalized, operations);
+    if (!includePath) for (const doc of normalized) delete doc.path;
+    const failures = batch.failures.map((failure) => {
+      if (!Number.isInteger(failure.index) || failure.index < 0 || failure.index >= ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_index", false);
+      return { index: failure.index, document_id: ids[failure.index], code: failure.code };
+    });
+    return { results: normalized, failures };
+  }
+
   private assertAllowedObjectTypes(scope: SemanticScope, objects: AdapterRepositoryObject[]): void {
     for (const object of objects) this.assertAllowedObjectType(scope, object);
   }
@@ -296,35 +424,26 @@ export class ToolRegistry {
 
   private assertRepositoryObjectInScope(scope: SemanticScope, object: AdapterRepositoryObject): void {
     this.assertObjectIdInScope(scope, object.id);
-    for (const pathObject of object.pathObjects ?? []) {
-      this.assertObjectIdInScope(scope, pathObject.id);
-    }
+    for (const pathObject of object.pathObjects ?? []) this.assertObjectIdInScope(scope, pathObject.id);
   }
 
   private assertObjectIdInScope(scope: SemanticScope, objectId: unknown, expectedObjectId?: string): void {
     if (typeof objectId !== "string" || (!objectId.startsWith(`${scope.arcsuite.cabinet_id}:`) && objectId !== scope.arcsuite.cabinet_id)) {
       throw new McpToolError("ARCSUITE_FORBIDDEN", "cabinet_scope", false);
     }
-    if (expectedObjectId !== undefined && objectId !== expectedObjectId) {
-      throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
-    }
+    if (expectedObjectId !== undefined && objectId !== expectedObjectId) throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
   }
 
   private async verifyReturnedRootScope(profile: TokenProfile, scope: SemanticScope, objects: AdapterRepositoryObject[]): Promise<void> {
     if (!scope.arcsuite.root_object_id) return;
     for (const object of objects) {
-      if (object.pathObjects?.length) {
-        this.assertRootScope(object, scope);
-      } else {
-        await this.verifyObjectScope(profile, scope, object.id);
-      }
+      if (object.pathObjects?.length) this.assertRootScope(object, scope);
+      else await this.verifyObjectScope(profile, scope, object.id);
     }
   }
 
   private assertAllowedObjectType(scope: SemanticScope, object: AdapterRepositoryObject): void {
-    if (!this.scopes.isAllowedObjectType(scope, object.objectClass)) {
-      throw new McpToolError("ARCSUITE_FORBIDDEN", "object_type_not_allowed", false);
-    }
+    if (!this.scopes.isAllowedObjectType(scope, object.objectClass)) throw new McpToolError("ARCSUITE_FORBIDDEN", "object_type_not_allowed", false);
   }
 
   private assertRootScope(obj: { id: string; pathObjects?: Array<{ id: string }> }, scope: SemanticScope): void {
@@ -352,6 +471,12 @@ export class ToolRegistry {
     }
     if (docs.length && !operations.includes("getRepositoryObjectPath")) operations.push("getRepositoryObjectPath");
   }
+
+  private decorateDocument(scope: SemanticScope, doc: NormalizedDocument): NormalizedDocument {
+    const openUrl = this.scopes.documentUrl(scope, doc.document_id);
+    if (openUrl) doc.open_url = openUrl;
+    return doc;
+  }
 }
 
 function contentOptions(scope: SemanticScope): string[] {
@@ -370,8 +495,13 @@ function rejectRawArcSuiteFields(value: unknown): void {
 }
 
 function parseSearchArgs(args: Record<string, unknown>, config: AppConfig) {
-  assertExactKeys(args, ["scope", "query", "query_mode", "filters", "limit", "include_path"], "search arguments");
+  assertExactKeys(args, ["scope", "query", "query_mode", "filters", "limit", "include_path", "cursor"], "search arguments");
   const scope = stringValue(args.scope, "scope", 1, 100);
+  const cursor = optionalString(args.cursor, "cursor", 4096);
+  if (cursor) {
+    for (const key of ["query", "query_mode", "filters", "limit", "include_path"]) if (args[key] !== undefined) throw new TypeError(`${key} cannot be combined with cursor`);
+    return { scope, cursor, query: undefined, queryMode: "and" as const, filters: {}, limit: config.searchDefaultLimit, includePath: false };
+  }
   const queryValue = optionalString(args.query, "query", 200);
   const query = queryValue?.trim() || undefined;
   const queryMode = enumValue(args.query_mode, ["and", "or"] as const, "and");
@@ -383,7 +513,7 @@ function parseSearchArgs(args: Record<string, unknown>, config: AppConfig) {
   }
   if (!query && !Object.keys(filters).length) throw new TypeError("At least query or one semantic filter is required");
   const limit = args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit);
-  return { scope, query, queryMode, filters, limit, includePath: boolValue(args.include_path, false) };
+  return { scope, cursor: undefined, query, queryMode, filters, limit, includePath: boolValue(args.include_path, false) };
 }
 
 function parseGetDocumentArgs(args: Record<string, unknown>) {
@@ -395,10 +525,26 @@ function parseGetDocumentArgs(args: Record<string, unknown>) {
   };
 }
 
+function parseGetDocumentsArgs(args: Record<string, unknown>, config: AppConfig) {
+  assertExactKeys(args, ["scope", "document_ids", "include_path"], "get documents arguments");
+  const scope = stringValue(args.scope, "scope", 1, 100);
+  if (!Array.isArray(args.document_ids) || !args.document_ids.length || args.document_ids.length > config.batchMaxIds) throw new TypeError(`document_ids must contain 1..${config.batchMaxIds} items`);
+  const documentIds = args.document_ids.map((value, index) => repId(value, `document_ids[${index}]`));
+  if (new Set(documentIds).size !== documentIds.length) throw new TypeError("document_ids must not contain duplicates");
+  return { scope, documentIds, includePath: boolValue(args.include_path, false) };
+}
+
 function parseListFolderArgs(args: Record<string, unknown>, config: AppConfig) {
-  assertExactKeys(args, ["scope", "folder_id", "limit", "include_path"], "list folder arguments");
+  assertExactKeys(args, ["scope", "folder_id", "limit", "include_path", "cursor"], "list folder arguments");
+  const scope = stringValue(args.scope, "scope", 1, 100);
+  const cursor = optionalString(args.cursor, "cursor", 4096);
+  if (cursor) {
+    for (const key of ["folder_id", "limit", "include_path"]) if (args[key] !== undefined) throw new TypeError(`${key} cannot be combined with cursor`);
+    return { scope, cursor, folderId: undefined, limit: config.searchDefaultLimit, includePath: false };
+  }
   return {
-    scope: stringValue(args.scope, "scope", 1, 100),
+    scope,
+    cursor: undefined,
     folderId: args.folder_id === undefined ? undefined : repId(args.folder_id, "folder_id"),
     limit: args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit),
     includePath: boolValue(args.include_path, false)
@@ -407,35 +553,29 @@ function parseListFolderArgs(args: Record<string, unknown>, config: AppConfig) {
 
 function parseRevisionsArgs(args: Record<string, unknown>, config: AppConfig) {
   assertExactKeys(args, ["document_id", "limit"], "revision arguments");
-  return {
-    documentId: repId(args.document_id, "document_id"),
-    limit: args.limit === undefined ? 20 : intValue(args.limit, "limit", 1, config.searchMaxLimit)
-  };
+  return { documentId: repId(args.document_id, "document_id"), limit: args.limit === undefined ? 20 : intValue(args.limit, "limit", 1, config.searchMaxLimit) };
 }
 
 function parseContentInfoArgs(args: Record<string, unknown>) {
   assertExactKeys(args, ["document_id", "revision_number", "content_label"], "content info arguments");
   const label = optionalString(args.content_label, "content_label", 100) ?? "system:primary";
-  if (label !== "system:primary") throw new TypeError("Only system:primary content_label is allowed in v1");
+  if (label !== "system:primary") throw new TypeError("Only system:primary content_label is allowed in v1.1");
   return { documentId: repId(args.document_id, "document_id"), revisionNumber: optionalInt(args.revision_number, "revision_number", 1, 2_147_483_647) };
 }
 
 function parseReadArgs(args: Record<string, unknown>, config: AppConfig) {
   assertExactKeys(args, ["document_id", "revision_number", "content_label", "start_page", "end_page", "cursor", "max_chars"], "read arguments");
   const label = optionalString(args.content_label, "content_label", 100) ?? "system:primary";
-  if (label !== "system:primary") throw new TypeError("Only system:primary content_label is allowed in v1");
+  if (label !== "system:primary") throw new TypeError("Only system:primary content_label is allowed in v1.1");
   const cursor = optionalString(args.cursor, "cursor", 4096);
   const startPage = optionalInt(args.start_page, "start_page", 1, 1_000_000);
   const endPage = optionalInt(args.end_page, "end_page", 1, 1_000_000);
   if (cursor && startPage !== undefined) throw new TypeError("cursor and start_page cannot both be specified");
+  if (cursor && endPage !== undefined) throw new TypeError("cursor and end_page cannot both be specified");
   if (endPage !== undefined && startPage === undefined) throw new TypeError("end_page requires start_page");
   if (endPage !== undefined && startPage !== undefined && endPage < startPage) throw new TypeError("end_page must be >= start_page");
   const maxChars = args.max_chars === undefined ? config.readDefaultMaxChars : intValue(args.max_chars, "max_chars", 1000, config.readMaxChars);
-  return {
-    documentId: repId(args.document_id, "document_id"),
-    revisionNumber: optionalInt(args.revision_number, "revision_number", 1, 2_147_483_647),
-    startPage, endPage, cursor, maxChars
-  };
+  return { documentId: repId(args.document_id, "document_id"), revisionNumber: optionalInt(args.revision_number, "revision_number", 1, 2_147_483_647), startPage, endPage, cursor, maxChars };
 }
 
 function repId(value: unknown, label: string): string {
@@ -458,22 +598,24 @@ function shortSummary(name: string, data: Record<string, unknown>): string {
   return `ArcSuite MCP ${name} result:\n${JSON.stringify(data)}`;
 }
 
-function buildDefinitions(): ToolDefinition[] {
-  const scope = { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" };
+function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: AppConfig): ToolDefinition[] {
+  const descriptions = scopes.describe(profile.allowedScopes);
+  const scopeValues = descriptions.map((item) => item.id);
+  const scopeSummary = descriptions.map((item) => `${item.id} [${item.filters.map((filter) => filter.name).join(", ") || "no semantic filters"}]`).join("; ");
+  const scope = { type: "string", enum: scopeValues };
   const documentId = { type: "string", pattern: "^rep:", minLength: 5, maxLength: 2048 };
-  const limit = { type: "integer", minimum: 1, maximum: 50, default: 20 };
+  const limit = { type: "integer", minimum: 1, maximum: config.searchMaxLimit, default: config.searchDefaultLimit };
   const contentLabel = { type: "string", enum: ["system:primary"], default: "system:primary" };
   return [
     {
+      name: "arcsuite_describe_capabilities",
+      description: "Describe the semantic ArcSuite scopes, filters, object types, and read-only tools available to the authenticated client profile.",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} }
+    },
+    {
       name: "arcsuite_search_documents",
-      description: "Search an allowed semantic ArcSuite scope using text and configured semantic attribute filters. Physical cabinet and attribute identifiers are server-side configuration.",
-      inputSchema: {
-        type: "object", additionalProperties: false, required: ["scope"], properties: {
-          scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" },
-          filters: { type: "object", propertyNames: { pattern: "^[a-z][a-z0-9_]{0,63}$" }, additionalProperties: { type: "string", minLength: 1, maxLength: 255 } },
-          limit, include_path: { type: "boolean", default: false }
-        }
-      }
+      description: `Search an allowed semantic ArcSuite scope. Available scope/filter names: ${scopeSummary || "none"}. Use next_cursor by itself with scope to continue a stable bounded snapshot.`,
+      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: { type: "string", minLength: 1, maxLength: 255 } }, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 } } }
     },
     {
       name: "arcsuite_get_document",
@@ -481,9 +623,14 @@ function buildDefinitions(): ToolDefinition[] {
       inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, revision_number: { type: "integer", minimum: 1 }, include_path: { type: "boolean", default: true } } }
     },
     {
+      name: "arcsuite_get_documents",
+      description: `Get metadata for a bounded batch of document IDs in one allowed semantic scope. Partial failures are returned explicitly. Maximum batch size: ${config.batchMaxIds}.`,
+      inputSchema: { type: "object", additionalProperties: false, required: ["scope", "document_ids"], properties: { scope, document_ids: { type: "array", minItems: 1, maxItems: config.batchMaxIds, items: documentId }, include_path: { type: "boolean", default: false } } }
+    },
+    {
       name: "arcsuite_list_folder",
-      description: "List documents and folders below a configured semantic scope or a folder already proven to belong to that scope.",
-      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, folder_id: documentId, limit, include_path: { type: "boolean", default: false } } }
+      description: "List documents and folders below a configured semantic scope or proven folder. Use next_cursor by itself with scope to continue a stable bounded snapshot.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, folder_id: documentId, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 } } }
     },
     {
       name: "arcsuite_list_document_revisions",
@@ -492,13 +639,13 @@ function buildDefinitions(): ToolDefinition[] {
     },
     {
       name: "arcsuite_get_document_content_info",
-      description: "Inspect the primary content metadata and extraction support for a document. Binary content is never returned.",
+      description: "Inspect primary content metadata and extraction support. A short-lived private extracted-content snapshot may be warmed for a subsequent read; binary content is never returned.",
       inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, revision_number: { type: "integer", minimum: 1 }, content_label: contentLabel } }
     },
     {
       name: "arcsuite_read_document",
-      description: "Read the primary content through the configured ArcSuite adapter, extract supported text safely, and return bounded text with a signed cursor when needed. Binary/base64 content is never returned.",
-      inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, revision_number: { type: "integer", minimum: 1 }, content_label: contentLabel, start_page: { type: "integer", minimum: 1 }, end_page: { type: "integer", minimum: 1 }, cursor: { type: "string", maxLength: 4096 }, max_chars: { type: "integer", minimum: 1000, maximum: 50000, default: 20000 } } }
+      description: "Read primary content through the configured ArcSuite adapter, reuse a private bounded snapshot when available, and return bounded text with a signed cursor. Binary/base64 content is never returned.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, revision_number: { type: "integer", minimum: 1 }, content_label: contentLabel, start_page: { type: "integer", minimum: 1 }, end_page: { type: "integer", minimum: 1 }, cursor: { type: "string", maxLength: 4096 }, max_chars: { type: "integer", minimum: 1000, maximum: config.readMaxChars, default: config.readDefaultMaxChars } } }
     }
   ];
 }
