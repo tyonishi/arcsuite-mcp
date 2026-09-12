@@ -4,12 +4,14 @@ export type ContentCacheContext = {
   documentId: string;
   revisionNumber?: number;
   contentLabel: string;
+  variant?: string;
 };
 
 export type ContentSnapshot = {
   contentHash: string;
   fileName: string;
   contentType: string;
+  sizeBytes: number;
   extractor: string;
   text: string;
   warnings: string[];
@@ -136,7 +138,8 @@ function locatorKey(context: ContentCacheContext): string {
     context.scopeId,
     context.documentId,
     context.revisionNumber ?? "current",
-    context.contentLabel
+    context.contentLabel,
+    context.variant ?? "full"
   ].join("\u001f");
 }
 
@@ -145,6 +148,7 @@ function publicSnapshot(entry: StoredSnapshot): ContentSnapshot {
     contentHash: entry.contentHash,
     fileName: entry.fileName,
     contentType: entry.contentType,
+    sizeBytes: entry.sizeBytes,
     extractor: entry.extractor,
     text: entry.text,
     warnings: [...entry.warnings],
