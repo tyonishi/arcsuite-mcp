@@ -41,6 +41,8 @@ export type AdapterSearchRequest = {
   options: string[];
 };
 
+export type AdapterSearchIdsRequest = Omit<AdapterSearchRequest, "attrIds">;
+
 export type AdapterListRequest = {
   clientProfileId: string;
   locationId: string;
@@ -51,6 +53,8 @@ export type AdapterListRequest = {
   options: string[];
 };
 
+export type AdapterListIdsRequest = Omit<AdapterListRequest, "attrIds">;
+
 export type AdapterGetRequest = {
   clientProfileId: string;
   id: string;
@@ -59,6 +63,25 @@ export type AdapterGetRequest = {
   includePath: boolean;
   attrIds: AttributeId[];
   options: string[];
+};
+
+export type AdapterBatchFailure = {
+  index: number;
+  code: string;
+  upstreamCode?: string;
+};
+
+export type AdapterGetManyRequest = {
+  clientProfileId: string;
+  ids: string[];
+  resolveRef: boolean;
+  attrIds: AttributeId[];
+  options: string[];
+};
+
+export type AdapterGetManyResult = {
+  objects: AdapterRepositoryObject[];
+  failures: AdapterBatchFailure[];
 };
 
 export type AdapterRevisionsRequest = {
@@ -126,4 +149,5 @@ export type NormalizedDocument = {
   content_labels: string[];
   content_available: boolean;
   semantic_attributes?: Record<string, string | number | boolean | null>;
+  open_url?: string;
 };
