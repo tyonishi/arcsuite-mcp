@@ -2,7 +2,6 @@ package biz.capricornus.arcsuite.mcp.adapter;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-import org.w3c.dom.Node;
 
 import javax.xml.XMLConstants;
 import java.io.IOException;
@@ -16,7 +15,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.time.Duration;
 import java.util.*;
 
 /**
@@ -36,8 +34,8 @@ final class ArcSuiteSoapClient {
             "getAttributeSchema", "getAttributeSchemas", "getRepositoryObject",
             "getRepositoryObjects", "getRepositoryObjectByRevisionNumber",
             "getRepositoryObjectPath", "getRepositoryObjectPaths", "getRepositoryObjectContent",
-            "getRepositoryObjectContentWithOptions", "listRepositoryObjects",
-            "searchRepositoryObjects", "listRepositoryObjectRevisions", "listRepositoryServices",
+            "getRepositoryObjectContentWithOptions", "listRepositoryObjects", "listRepositoryObjectIds",
+            "searchRepositoryObjects", "searchRepositoryObjectIds", "listRepositoryObjectRevisions", "listRepositoryServices",
             "getCabinetInformation", "getCabinetInformations", "getRepositoryObjectClassDefinitions"
     );
 
@@ -79,9 +77,7 @@ final class ArcSuiteSoapClient {
         return result == null ? null : result.getTextContent();
     }
 
-    void logout(String sessionId) {
-        invoke("logout", "", sessionId, true);
-    }
+    void logout(String sessionId) { invoke("logout", "", sessionId, true); }
 
     Map<String,Object> getSessionInfo(String sessionId) {
         SoapResponse r = invoke("getSessionInfo", "", sessionId, true);
@@ -96,35 +92,20 @@ final class ArcSuiteSoapClient {
     }
 
     List<Map<String,Object>> search(Map<String,Object> req, String sessionId) {
-        StringBuilder b = new StringBuilder();
-        List<Map<String,Object>> conditions = maps(req.get("attributeConditions"));
-        if (!conditions.isEmpty()) b.append(attributeConditions("attrCondition", conditions));
-        Map<String,Object> text = mapOrNull(req.get("text"));
-        if (text != null && !strings(text.get("words")).isEmpty()) b.append(textCondition(text));
-        b.append(el("mode", string(req,"mode","AND")));
-        b.append("<t:option>");
-        List<String> regionIds = strings(req.get("searchRegionIds"));
-        if (!regionIds.isEmpty()) {
-            b.append("<t:searchRegion>");
-            for (String id:regionIds) b.append(el("id",id));
-            b.append(el("depth", String.valueOf(integer(req,"depth",0))));
-            b.append("</t:searchRegion>");
-        }
-        b.append(el("textSearchMode", string(req,"textSearchMode","NONE")));
-        b.append("</t:option>");
-        b.append(sortCondition(req.get("order")));
-        b.append(el("limit", String.valueOf(integer(req,"limit",20))));
-        b.append(attrIds(req.get("attrIds")));
-        b.append(options(req.get("options")));
-        SoapResponse r=invoke("searchRepositoryObjects",b.toString(),sessionId,true);
+        SoapResponse r=invoke("searchRepositoryObjects",searchBody(req,true),sessionId,true);
         Element ret=findResponseValue(r.document(),"searchRepositoryObjectsReturn","result");
         return parseRepositoryObjects(ret);
+    }
+
+    List<String> searchIds(Map<String,Object> req, String sessionId) {
+        SoapResponse r=invoke("searchRepositoryObjectIds",searchBody(req,false),sessionId,true);
+        Element ret=findResponseValue(r.document(),"searchRepositoryObjectIdsReturn","result");
+        return parseStringArray(ret);
     }
 
     List<Map<String,Object>> list(Map<String,Object> req, String sessionId) {
         StringBuilder b=new StringBuilder();
         b.append(el("id", requiredString(req,"locationId")));
-        // filter omitted => all object types
         b.append(el("latestOnly", String.valueOf(bool(req,"latestOnly",true))));
         b.append(sortCondition(req.get("order")));
         b.append(el("limit",String.valueOf(integer(req,"limit",20))));
@@ -133,6 +114,18 @@ final class ArcSuiteSoapClient {
         SoapResponse r=invoke("listRepositoryObjects",b.toString(),sessionId,true);
         Element ret=findResponseValue(r.document(),"listRepositoryObjectsReturn","result");
         return parseRepositoryObjects(ret);
+    }
+
+    List<String> listIds(Map<String,Object> req, String sessionId) {
+        StringBuilder b=new StringBuilder();
+        b.append(el("id", requiredString(req,"locationId")));
+        b.append(el("latestOnly", String.valueOf(bool(req,"latestOnly",true))));
+        b.append(sortCondition(req.get("order")));
+        b.append(el("limit",String.valueOf(integer(req,"limit",20))));
+        b.append(options(req.get("options")));
+        SoapResponse r=invoke("listRepositoryObjectIds",b.toString(),sessionId,true);
+        Element ret=findResponseValue(r.document(),"listRepositoryObjectIdsReturn","result");
+        return parseStringArray(ret);
     }
 
     Map<String,Object> get(Map<String,Object> req, String sessionId) {
@@ -150,8 +143,7 @@ final class ArcSuiteSoapClient {
         }
         b.append(attrIds(req.get("attrIds"))).append(options(req.get("options")));
         SoapResponse r=invoke(op,b.toString(),sessionId,true);
-        String returnName=op+"Return";
-        Element ret=findResponseValue(r.document(),returnName,"result");
+        Element ret=findResponseValue(r.document(),op+"Return","result");
         if(ret==null) throw new AdapterException("ARCSUITE_NOT_AVAILABLE","Repository object not available");
         Map<String,Object> out=parseRepositoryObject(ret);
         if(bool(req,"includePath",false)) {
@@ -160,6 +152,22 @@ final class ArcSuiteSoapClient {
             Element pv=findResponseValue(pr.document(),"getRepositoryObjectPathReturn","result");
             if(pv!=null) applyPath(out,pv);
         }
+        return out;
+    }
+
+    Map<String,Object> getMany(Map<String,Object> req, String sessionId) {
+        List<String> ids=strings(req.get("ids"));
+        if(ids.isEmpty()) throw new IllegalArgumentException("ids are required");
+        StringBuilder b=new StringBuilder();
+        b.append(stringArray("ids",ids));
+        b.append(el("resolveRef",String.valueOf(bool(req,"resolveRef",false))));
+        b.append(attrIds(req.get("attrIds")));
+        b.append(options(req.get("options")));
+        SoapResponse r=invoke("getRepositoryObjects",b.toString(),sessionId,true);
+        Element ret=findResponseValue(r.document(),"getRepositoryObjectsReturn","result");
+        LinkedHashMap<String,Object> out=new LinkedHashMap<>();
+        out.put("objects",parseRepositoryObjects(ret));
+        out.put("failures",parseFailures(ret));
         return out;
     }
 
@@ -174,9 +182,6 @@ final class ArcSuiteSoapClient {
         String id=requiredString(req,"id");
         Number revision=req.get("revisionNumber") instanceof Number n?n:null;
         if(revision!=null) {
-            // ArcSuite's content API accepts an object ID, not a separate revision number. Resolve the
-            // revision-specific RepositoryObject first and use the returned object ID, which in ArcSuite
-            // includes the revision suffix when applicable (Reference Guide p.100, p.108, p.111).
             Map<String,Object> getReq=new LinkedHashMap<>();
             getReq.put("id",id); getReq.put("revisionNumber",revision.longValue()); getReq.put("resolveRef",false); getReq.put("includePath",false);
             getReq.put("attrIds",List.of()); getReq.put("options",List.of());
@@ -195,8 +200,7 @@ final class ArcSuiteSoapClient {
         String fileName=value(c,"fileName"); if(fileName==null||fileName.isBlank())fileName="document.bin";
         String contentType=value(c,"contentType"); if(contentType==null||contentType.isBlank())contentType="application/octet-stream";
         Element labelEl=XmlUtil.child(c,"label"); String labelName=labelEl==null?"system:primary":labelEl.getAttribute("name");
-        Element data=XmlUtil.child(c,"data");
-        byte[] bytes=resolveData(data,r.attachments());
+        byte[] bytes=resolveData(XmlUtil.child(c,"data"),r.attachments());
         if(bytes.length>config.maxContentBytes()) throw new AdapterException("ARCSUITE_LIMIT_EXCEEDED","Content exceeds configured maximum size");
         String traceId=requiredString(req,"traceId").replaceAll("[^A-Za-z0-9._-]","_");
         String safeName=fileName.replaceAll("[\\\\/\\r\\n\\0]","_");
@@ -231,7 +235,6 @@ final class ArcSuiteSoapClient {
                 if(results!=null) for(Element schema:XmlUtil.children(results,"attributeSchema")) attrs.add(parseAttributeSchema(schema));
             } catch(AdapterException e){ errors.add("attributes:"+e.code); }
         }
-        // Evaluate required flags against the schemas by ns/name.
         Map<String,Map<String,Object>> byKey=new HashMap<>(); for(Map<String,Object> a:attrs)byKey.put(a.get("ns")+":"+a.get("name"),a);
         for(Map<String,Object> r:requested){ Map<String,Object> aid=map(r.get("attrId")); String key=string(aid,"ns","")+":"+requiredString(aid,"name"); Map<String,Object> a=byKey.get(key);
             if(a==null){errors.add("missing_attribute:"+key);continue;}
@@ -241,7 +244,32 @@ final class ArcSuiteSoapClient {
         out.put("attributes",attrs); out.put("errors",errors); out.put("ok",errors.isEmpty()); return out;
     }
 
+    private String searchBody(Map<String,Object> req, boolean includeAttrs) {
+        StringBuilder b = new StringBuilder();
+        List<Map<String,Object>> conditions = maps(req.get("attributeConditions"));
+        if (!conditions.isEmpty()) b.append(attributeConditions("attrCondition", conditions));
+        Map<String,Object> text = mapOrNull(req.get("text"));
+        if (text != null && !strings(text.get("words")).isEmpty()) b.append(textCondition(text));
+        b.append(el("mode", string(req,"mode","AND")));
+        b.append("<t:option>");
+        List<String> regionIds = strings(req.get("searchRegionIds"));
+        if (!regionIds.isEmpty()) {
+            b.append("<t:searchRegion>");
+            for (String id:regionIds) b.append(el("id",id));
+            b.append(el("depth", String.valueOf(integer(req,"depth",0))));
+            b.append("</t:searchRegion>");
+        }
+        b.append(el("textSearchMode", string(req,"textSearchMode","NONE")));
+        b.append("</t:option>");
+        b.append(sortCondition(req.get("order")));
+        b.append(el("limit", String.valueOf(integer(req,"limit",20))));
+        if(includeAttrs) b.append(attrIds(req.get("attrIds")));
+        b.append(options(req.get("options")));
+        return b.toString();
+    }
+
     private SoapResponse invoke(String operation,String innerXml,String sessionId,boolean sessionAware) {
+        if (!READ_ONLY_OPERATIONS.contains(operation)) throw new AdapterException("ARCSUITE_FORBIDDEN", "SOAP operation is not in the read-only allowlist");
         String header="";
         if(sessionId!=null&&!sessionId.isBlank()) {
             header="<soap:Header><t:Session locale=\""+XmlUtil.esc(config.locale())+"\" attachmentType=\"mtom\" requestVersion=\""+XmlUtil.esc(config.requestVersion())+"\" administratorMode=\"false\">"+XmlUtil.esc(sessionId)+"</t:Session></soap:Header>";
@@ -253,9 +281,6 @@ final class ArcSuiteSoapClient {
                 .timeout(config.requestTimeout()).header("Content-Type","text/xml; charset=utf-8").header("SOAPAction","\"\"")
                 .header("Accept","multipart/related, application/xop+xml, text/xml, application/soap+xml")
                 .POST(HttpRequest.BodyPublishers.ofString(xml,StandardCharsets.UTF_8)).build();
-        if (!READ_ONLY_OPERATIONS.contains(operation)) {
-            throw new AdapterException("ARCSUITE_FORBIDDEN", "SOAP operation is not in the read-only allowlist");
-        }
         HttpResponse<InputStream> response;
         try { response=http.send(request,HttpResponse.BodyHandlers.ofInputStream()); }
         catch(java.net.http.HttpTimeoutException e){throw new AdapterException("ARCSUITE_TIMEOUT","ArcSuite request timed out",true,null,e);}
@@ -293,14 +318,17 @@ final class ArcSuiteSoapClient {
         Element fault=XmlUtil.firstDesc(doc.getDocumentElement(),"Fault"); if(fault==null)return null;
         String faultString=value(fault,"faultstring"); if(faultString==null)faultString=fault.getTextContent();
         String code=findArcSuiteCode(faultString); Element detail=XmlUtil.child(fault,"detail"); if(code==null&&detail!=null)code=findArcSuiteCode(detail.getTextContent());
-        String stable="ARCSUITE_UPSTREAM_ERROR"; boolean retry=false;
-        if(code!=null) {
-            if(code.contains("08302001")||code.contains("08303101")) {stable="ARCSUITE_SESSION_EXPIRED";retry=true;}
-            else if(code.contains("08305028")) stable="ARCSUITE_NOT_AVAILABLE";
-            else if(code.contains("08305005")||code.contains("08305010")||code.contains("08305016")||code.contains("08305017")||code.contains("08305018")||code.contains("08302005")) stable="ARCSUITE_INVALID_ARGUMENT";
-            else if(code.contains("08303102")||code.contains("08303202")) stable="ARCSUITE_FORBIDDEN";
-        }
+        String stable=stableCode(code); boolean retry="ARCSUITE_SESSION_EXPIRED".equals(stable);
         return new AdapterException(stable,stable,retry,code);
+    }
+
+    private static String stableCode(String code) {
+        if(code==null)return "ARCSUITE_UPSTREAM_ERROR";
+        if(code.contains("08302001")||code.contains("08303101"))return "ARCSUITE_SESSION_EXPIRED";
+        if(code.contains("08305028"))return "ARCSUITE_NOT_AVAILABLE";
+        if(code.contains("08305005")||code.contains("08305010")||code.contains("08305016")||code.contains("08305017")||code.contains("08305018")||code.contains("08302005"))return "ARCSUITE_INVALID_ARGUMENT";
+        if(code.contains("08303102")||code.contains("08303202"))return "ARCSUITE_FORBIDDEN";
+        return "ARCSUITE_UPSTREAM_ERROR";
     }
 
     private static String findArcSuiteCode(String s){ if(s==null)return null; java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?:ARCSUITE_WS|DREP_[A-Z]+|RMS_WEBSVC|COLLABO|AWF_[A-Z]+)-?[0-9A-Za-z]+(?:-[0-9A-Za-z]+)?").matcher(s); return m.find()?m.group():null; }
@@ -311,6 +339,7 @@ final class ArcSuiteSoapClient {
 
     private static String keyed(String key,String value){return "<t:preferences key=\""+XmlUtil.esc(key)+"\">"+XmlUtil.esc(value)+"</t:preferences>";}
     private static String el(String name,String value){return "<t:"+name+">"+XmlUtil.esc(value)+"</t:"+name+">";}
+    private static String stringArray(String name,List<String> values){StringBuilder b=new StringBuilder("<t:").append(name).append('>');for(String value:values)b.append(el("string",value));return b.append("</t:").append(name).append('>').toString();}
     private static String attrId(Map<String,Object> id){String ns=string(id,"ns","");String name=requiredString(id,"name"); return "<t:attributeId"+(ns.isBlank()?"":" ns=\""+XmlUtil.esc(ns)+"\"")+" name=\""+XmlUtil.esc(name)+"\"/>";}
     private static String attrIds(Object o){List<Map<String,Object>> ids=maps(o);if(ids.isEmpty())return "<t:attrIds/>";StringBuilder b=new StringBuilder("<t:attrIds>");for(Map<String,Object> id:ids)b.append(attrId(id));return b.append("</t:attrIds>").toString();}
     private static String options(Object o){StringBuilder b=new StringBuilder();for(String x:strings(o))b.append(el("options",x));return b.toString();}
@@ -321,6 +350,14 @@ final class ArcSuiteSoapClient {
         return "<t:"+elementName+" xsi:type=\"t:BinaryOperatorCondition\" operator=\""+XmlUtil.esc(requiredString(c,"operator"))+"\">"+attrId(aid)+"<t:attributeValue xsi:type=\"t:"+xsi+"\">"+el(child,requiredString(val,"value"))+"</t:attributeValue></t:"+elementName+">"; }
     private static String textCondition(Map<String,Object> text){StringBuilder b=new StringBuilder("<t:textCondition xsi:type=\"t:TextCondition\"><t:wordList operator=\"").append(XmlUtil.esc(string(text,"operator","AND"))).append("\">");for(String w:strings(text.get("words")))b.append(el("word",w));return b.append("</t:wordList></t:textCondition>").toString();}
 
+    private static List<String> parseStringArray(Element container){
+        if(container==null)return List.of();
+        LinkedHashSet<String> values=new LinkedHashSet<>();
+        for(String name:List.of("string","item","ids","id"))for(Element e:XmlUtil.descendants(container,name)){String text=e.getTextContent();if(text!=null&&!text.isBlank()&&text.trim().startsWith("rep:"))values.add(text.trim());}
+        String direct=container.getTextContent();if(values.isEmpty()&&direct!=null&&direct.trim().startsWith("rep:"))values.add(direct.trim());
+        return new ArrayList<>(values);
+    }
+
     private static List<Map<String,Object>> parseRepositoryObjects(Element container){ List<Map<String,Object>> out=new ArrayList<>(); if(container==null)return out; List<Element> els=XmlUtil.descendants(container,"repositoryObject"); if(els.isEmpty()&&"repositoryObject".equals(container.getLocalName()))els=List.of(container); for(Element e:els)out.add(parseRepositoryObject(e)); return out; }
     private static Map<String,Object> parseRepositoryObject(Element e){LinkedHashMap<String,Object> out=new LinkedHashMap<>();String id=value(e,"id");if(id==null&&"repositoryObject".equals(e.getLocalName()))id=XmlUtil.childText(e,"id");out.put("id",id==null?"":id);
         Element oc=XmlUtil.child(e,"objectClass");String ocName=oc==null?"":oc.getAttribute("name");out.put("objectClass",ocName==null||ocName.isBlank()?"unknown":ocName);
@@ -329,6 +366,18 @@ final class ArcSuiteSoapClient {
         try { switch(t){case "StringValue"-> {o.put("type","string");o.put("value",value(av,"string"));} case "IntValue"->{o.put("type","int");o.put("value",Integer.parseInt(value(av,"int")));} case "LongValue"->{o.put("type","long");o.put("value",Long.parseLong(value(av,"long")));} case "DoubleValue"->{o.put("type","double");o.put("value",Double.parseDouble(value(av,"double")));} case "BooleanValue"->{o.put("type","boolean");o.put("value",Boolean.parseBoolean(value(av,"boolean")));} case "DateTimeValue"->{o.put("type","datetime");o.put("value",value(av,"dateTime"));} case "IdValue"->{o.put("type","id");o.put("value",value(av,"id"));} case "I18nStringValue"->{Element i=XmlUtil.child(av,"i18nString");o.put("type","i18n"); if(i!=null){o.put("ns",i.getAttribute("ns"));o.put("name",i.getAttribute("name"));String l=i18nLabel(i);if(l!=null)o.put("label",l);}} case "I18nStringValues"->{o.put("type","i18n[]");List<Object> vs=new ArrayList<>();for(Element i:XmlUtil.children(av,"i18nStrings")){LinkedHashMap<String,Object>x=new LinkedHashMap<>();x.put("ns",i.getAttribute("ns"));x.put("name",i.getAttribute("name"));String l=i18nLabel(i);if(l!=null)x.put("label",l);vs.add(x);}o.put("values",vs);} case "RmsObjectValueRmsObject"->{o.put("type","rmsObject");Element r=XmlUtil.firstDesc(av,"rmsObject");if(r!=null){String dn=value(r,"dn");if(dn!=null)o.put("dn",dn);Element oc=XmlUtil.child(r,"objectClass");String l=oc==null?null:i18nLabel(oc);if(l!=null)o.put("label",l);}} default->{o.put("type","unknown");o.put("rawType",t.isBlank()?"unknown":t);String text=av.getTextContent();if(text!=null&&!text.isBlank())o.put("value",text.trim());} } }
         catch(Exception ex){o.clear();o.put("type","unknown");o.put("rawType",t.isBlank()?"unknown":t);}return o;}
     private static String i18nLabel(Element i){for(Element l:XmlUtil.children(i,"label")){String lang=l.getAttribute("lang");if("ja".equalsIgnoreCase(lang))return l.getTextContent();}Element l=XmlUtil.child(i,"label");return l==null?null:l.getTextContent();}
+
+    private static List<Map<String,Object>> parseFailures(Element container){
+        List<Map<String,Object>> out=new ArrayList<>();if(container==null)return out;
+        for(Element failure:XmlUtil.descendants(container,"failure")){
+            LinkedHashMap<String,Object> item=new LinkedHashMap<>();String index=value(failure,"index");
+            try{item.put("index",Integer.parseInt(index));}catch(Exception ignored){continue;}
+            Element exception=XmlUtil.child(failure,"exception");String upstream=exception==null?findArcSuiteCode(failure.getTextContent()):findArcSuiteCode(exception.getTextContent());
+            item.put("code",stableCode(upstream));if(upstream!=null)item.put("upstreamCode",upstream);out.add(item);
+        }
+        return out;
+    }
+
     @SuppressWarnings("unchecked") private static void applyPath(Map<String,Object> out,Element p){Element objs=XmlUtil.child(p,"objects");List<Object> path=new ArrayList<>();if(objs!=null)for(Element ro:XmlUtil.children(objs,"repositoryObject")){Map<String,Object> parsed=parseRepositoryObject(ro);Map<String,Object> attrs=(Map<String,Object>)parsed.get("attributes");Object nv=attrs.get("rep:system:name");String name=null;if(nv instanceof Map<?,?> vm&&vm.get("value")!=null)name=String.valueOf(vm.get("value"));LinkedHashMap<String,Object>x=new LinkedHashMap<>();x.put("id",parsed.get("id"));if(name!=null)x.put("name",name);x.put("objectClass",parsed.get("objectClass"));path.add(x);}out.put("pathObjects",path);String f=value(p,"fullPath");if(f!=null)out.put("fullPath",Boolean.parseBoolean(f));}
     private static Map<String,Object> parseAttributeSchema(Element s){LinkedHashMap<String,Object> o=new LinkedHashMap<>();for(String k:List.of("ns","name","dataType")){String v=value(s,k);if(v!=null)o.put(k,v);}for(String k:List.of("searchable","sortable","modifiable")){String v=value(s,k);if(v!=null)o.put(k,Boolean.parseBoolean(v));}return o;}
     private static byte[] resolveData(Element data,Map<String,byte[]> attachments){if(data==null)return new byte[0];Element include=XmlUtil.firstDesc(data,"Include");if(include!=null){String href=include.getAttribute("href");String cid=MtomParser.normalizeCid(href);byte[] a=attachments.get(cid);if(a==null)throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","MTOM attachment referenced but missing");return a;}String text=data.getTextContent();if(text==null||text.isBlank())return new byte[0];try{return Base64.getMimeDecoder().decode(text);}catch(IllegalArgumentException e){throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Invalid base64 content",false,null,e);}}
