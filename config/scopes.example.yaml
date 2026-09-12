@@ -13,6 +13,11 @@ scopes:
       root_object_id: null
       resolve_references: true
 
+    # Optional v1.1 convenience. The server validates this as an absolute HTTPS
+    # URL with exactly one {document_id} placeholder and no credentials.
+    # ui:
+    #   document_url_template: "https://arcsuite.example.invalid/open?id={document_id}"
+
     allowed_object_types:
       - document
       - folder
