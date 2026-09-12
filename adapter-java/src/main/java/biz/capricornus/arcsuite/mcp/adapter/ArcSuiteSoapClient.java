@@ -156,19 +156,24 @@ final class ArcSuiteSoapClient {
     }
 
     Map<String,Object> getMany(Map<String,Object> req, String sessionId) {
-        List<String> ids=strings(req.get("ids"));
-        if(ids.isEmpty()) throw new IllegalArgumentException("ids are required");
-        StringBuilder b=new StringBuilder();
-        b.append(stringArray("ids",ids));
-        b.append(el("resolveRef",String.valueOf(bool(req,"resolveRef",false))));
-        b.append(attrIds(req.get("attrIds")));
-        b.append(options(req.get("options")));
-        SoapResponse r=invoke("getRepositoryObjects",b.toString(),sessionId,true);
+        String body=getRepositoryObjectsBody(req);
+        SoapResponse r=invoke("getRepositoryObjects",body,sessionId,true);
         Element ret=findResponseValue(r.document(),"getRepositoryObjectsReturn","result");
         LinkedHashMap<String,Object> out=new LinkedHashMap<>();
         out.put("objects",parseRepositoryObjects(ret));
         out.put("failures",parseFailures(ret));
         return out;
+    }
+
+    static String getRepositoryObjectsBody(Map<String,Object> req) {
+        List<String> ids=strings(req.get("ids"));
+        if(ids.isEmpty()) throw new IllegalArgumentException("ids are required");
+        StringBuilder b=new StringBuilder();
+        b.append(idsElement(ids));
+        b.append(el("resolveRef",String.valueOf(bool(req,"resolveRef",false))));
+        b.append(attrIds(req.get("attrIds")));
+        b.append(options(req.get("options")));
+        return b.toString();
     }
 
     List<Map<String,Object>> revisions(Map<String,Object> req,String sessionId) {
@@ -339,7 +344,7 @@ final class ArcSuiteSoapClient {
 
     private static String keyed(String key,String value){return "<t:preferences key=\""+XmlUtil.esc(key)+"\">"+XmlUtil.esc(value)+"</t:preferences>";}
     private static String el(String name,String value){return "<t:"+name+">"+XmlUtil.esc(value)+"</t:"+name+">";}
-    private static String stringArray(String name,List<String> values){StringBuilder b=new StringBuilder("<t:").append(name).append('>');for(String value:values)b.append(el("string",value));return b.append("</t:").append(name).append('>').toString();}
+    private static String idsElement(List<String> values){StringBuilder b=new StringBuilder("<t:ids>");for(String value:values)b.append(el("id",value));return b.append("</t:ids>").toString();}
     private static String attrId(Map<String,Object> id){String ns=string(id,"ns","");String name=requiredString(id,"name"); return "<t:attributeId"+(ns.isBlank()?"":" ns=\""+XmlUtil.esc(ns)+"\"")+" name=\""+XmlUtil.esc(name)+"\"/>";}
     private static String attrIds(Object o){List<Map<String,Object>> ids=maps(o);if(ids.isEmpty())return "<t:attrIds/>";StringBuilder b=new StringBuilder("<t:attrIds>");for(Map<String,Object> id:ids)b.append(attrId(id));return b.append("</t:attrIds>").toString();}
     private static String options(Object o){StringBuilder b=new StringBuilder();for(String x:strings(o))b.append(el("options",x));return b.toString();}
