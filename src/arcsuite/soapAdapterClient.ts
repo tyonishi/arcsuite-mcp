@@ -3,12 +3,16 @@ import { join } from "node:path";
 import type {
   AdapterContentRequest,
   AdapterContentResult,
+  AdapterGetManyRequest,
+  AdapterGetManyResult,
   AdapterGetRequest,
+  AdapterListIdsRequest,
   AdapterListRequest,
   AdapterRepositoryObject,
   AdapterRevisionsRequest,
   AdapterSchemaValidationRequest,
   AdapterSchemaValidationResult,
+  AdapterSearchIdsRequest,
   AdapterSearchRequest
 } from "./types.ts";
 import { ArcSuiteAdapterError } from "./errors.ts";
@@ -23,8 +27,11 @@ export interface ArcSuiteAdapterClient {
   logout(clientProfileId: string): Promise<void>;
   validateSchema(request: AdapterSchemaValidationRequest): Promise<AdapterSchemaValidationResult>;
   search(request: AdapterSearchRequest): Promise<AdapterRepositoryObject[]>;
+  searchIds(request: AdapterSearchIdsRequest): Promise<string[]>;
   list(request: AdapterListRequest): Promise<AdapterRepositoryObject[]>;
+  listIds(request: AdapterListIdsRequest): Promise<string[]>;
   get(request: AdapterGetRequest): Promise<AdapterRepositoryObject>;
+  getMany(request: AdapterGetManyRequest): Promise<AdapterGetManyResult>;
   revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]>;
   content(request: AdapterContentRequest): Promise<AdapterContentResult>;
 }
@@ -49,8 +56,11 @@ export class HttpArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   logout(clientProfileId: string) { return this.request("POST", "/internal/session/logout", { clientProfileId }).then(() => undefined); }
   validateSchema(request: AdapterSchemaValidationRequest) { return this.request("POST", "/internal/schema/validate", request) as Promise<AdapterSchemaValidationResult>; }
   search(request: AdapterSearchRequest) { return this.request("POST", "/internal/repository/search", request) as Promise<AdapterRepositoryObject[]>; }
+  searchIds(request: AdapterSearchIdsRequest) { return this.request("POST", "/internal/repository/search-ids", request) as Promise<string[]>; }
   list(request: AdapterListRequest) { return this.request("POST", "/internal/repository/list", request) as Promise<AdapterRepositoryObject[]>; }
+  listIds(request: AdapterListIdsRequest) { return this.request("POST", "/internal/repository/list-ids", request) as Promise<string[]>; }
   get(request: AdapterGetRequest) { return this.request("POST", "/internal/repository/get", request) as Promise<AdapterRepositoryObject>; }
+  getMany(request: AdapterGetManyRequest) { return this.request("POST", "/internal/repository/get-many", request) as Promise<AdapterGetManyResult>; }
   revisions(request: AdapterRevisionsRequest) { return this.request("POST", "/internal/repository/revisions", request) as Promise<AdapterRepositoryObject[]>; }
   content(request: AdapterContentRequest) { return this.request("POST", "/internal/repository/content", request) as Promise<AdapterContentResult>; }
 
@@ -154,6 +164,68 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   }
 
   async search(request: AdapterSearchRequest): Promise<AdapterRepositoryObject[]> {
+    return this.searchBase(request).slice(0, request.limit);
+  }
+
+  async searchIds(request: AdapterSearchIdsRequest): Promise<string[]> {
+    return this.searchBase(request).map((doc) => doc.id).slice(0, request.limit);
+  }
+
+  async list(request: AdapterListRequest): Promise<AdapterRepositoryObject[]> {
+    return this.listBase(request.locationId).slice(0, request.limit);
+  }
+
+  async listIds(request: AdapterListIdsRequest): Promise<string[]> {
+    return this.listBase(request.locationId).map((doc) => doc.id).slice(0, request.limit);
+  }
+
+  async get(request: AdapterGetRequest): Promise<AdapterRepositoryObject> {
+    const doc = this.docs.find((d) => d.id === request.id);
+    if (!doc) throw new ArcSuiteAdapterError("ARCSUITE_NOT_AVAILABLE", "Object not available");
+    const copy = structuredClone(doc);
+    if (request.revisionNumber !== undefined) {
+      copy.attributes["rep:system:revisionnumber"] = { type: "int", value: request.revisionNumber };
+    }
+    if (!request.includePath) delete copy.pathObjects;
+    return copy;
+  }
+
+  async getMany(request: AdapterGetManyRequest): Promise<AdapterGetManyResult> {
+    const objects: AdapterRepositoryObject[] = [];
+    const failures: AdapterGetManyResult["failures"] = [];
+    request.ids.forEach((id, index) => {
+      const doc = this.docs.find((item) => item.id === id);
+      if (!doc) {
+        failures.push({ index, code: "ARCSUITE_NOT_AVAILABLE" });
+      } else {
+        const copy = structuredClone(doc);
+        delete copy.pathObjects;
+        objects.push(copy);
+      }
+    });
+    return { objects, failures };
+  }
+
+  async revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]> {
+    const base = await this.get({ clientProfileId: request.clientProfileId, id: request.id, resolveRef: true, includePath: false, attrIds: request.attrIds, options: request.options });
+    const current: any = base.attributes["rep:system:currentrevisionnumber"];
+    const n = Number(current?.value ?? 1);
+    return Array.from({ length: n }, (_, index) => {
+      const copy = structuredClone(base);
+      copy.attributes["rep:system:revisionnumber"] = { type: "int", value: n - index };
+      return copy;
+    });
+  }
+
+  async content(request: AdapterContentRequest): Promise<AdapterContentResult> {
+    await this.get({ clientProfileId: request.clientProfileId, id: request.id, resolveRef: true, includePath: false, attrIds: [], options: [] });
+    const path = join(this.sharedDir, `${request.traceId}.txt`);
+    const text = `Synthetic ArcSuite document\nDocument ID: ${request.id}\nThis text is provided for local MCP testing.\n`;
+    writeFileSync(path, text, "utf8");
+    return { id: request.id, revisionNumber: request.revisionNumber, label: request.contentLabel.name, fileName: "mock-document.txt", contentType: "text/plain", sizeBytes: Buffer.byteLength(text), filePath: path };
+  }
+
+  private searchBase(request: AdapterSearchIdsRequest | AdapterSearchRequest): AdapterRepositoryObject[] {
     let docs = [...this.docs];
     for (const condition of request.attributeConditions) {
       const key = `${condition.attrId.ns}:${condition.attrId.name}`;
@@ -178,41 +250,11 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
         return request.text?.operator === "OR" ? words.some((w) => hay.includes(w)) : words.every((w) => hay.includes(w));
       });
     }
-    return docs.slice(0, request.limit);
+    return docs;
   }
 
-  async list(request: AdapterListRequest): Promise<AdapterRepositoryObject[]> {
-    return this.docs.filter((d) => d.id.startsWith("rep:mock:EXAMPLE_CABINET:")).slice(0, request.limit);
-  }
-
-  async get(request: AdapterGetRequest): Promise<AdapterRepositoryObject> {
-    const doc = this.docs.find((d) => d.id === request.id);
-    if (!doc) throw new ArcSuiteAdapterError("ARCSUITE_NOT_AVAILABLE", "Object not available");
-    const copy = structuredClone(doc);
-    if (request.revisionNumber !== undefined) {
-      copy.attributes["rep:system:revisionnumber"] = { type: "int", value: request.revisionNumber };
-    }
-    if (!request.includePath) delete copy.pathObjects;
-    return copy;
-  }
-
-  async revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]> {
-    const base = await this.get({ clientProfileId: request.clientProfileId, id: request.id, resolveRef: true, includePath: false, attrIds: request.attrIds, options: request.options });
-    const current: any = base.attributes["rep:system:currentrevisionnumber"];
-    const n = Number(current?.value ?? 1);
-    return Array.from({ length: n }, (_, index) => {
-      const copy = structuredClone(base);
-      copy.attributes["rep:system:revisionnumber"] = { type: "int", value: n - index };
-      return copy;
-    });
-  }
-
-  async content(request: AdapterContentRequest): Promise<AdapterContentResult> {
-    await this.get({ clientProfileId: request.clientProfileId, id: request.id, resolveRef: true, includePath: false, attrIds: [], options: [] });
-    const path = join(this.sharedDir, `${request.traceId}.txt`);
-    const text = `Synthetic ArcSuite document\nDocument ID: ${request.id}\nThis text is provided for local MCP testing.\n`;
-    writeFileSync(path, text, "utf8");
-    return { id: request.id, revisionNumber: request.revisionNumber, label: request.contentLabel.name, fileName: "mock-document.txt", contentType: "text/plain", sizeBytes: Buffer.byteLength(text), filePath: path };
+  private listBase(_locationId: string): AdapterRepositoryObject[] {
+    return this.docs.filter((d) => d.id.startsWith("rep:mock:EXAMPLE_CABINET:"));
   }
 }
 
