@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { realpath, stat, unlink } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import type { AdapterContentResult } from "../arcsuite/types.ts";
-import type { ContentExtractor, ExtractRequest, ExtractResult } from "./extractors/types.ts";
+import type { ContentExtractor, ExtractRequest } from "./extractors/types.ts";
 import { TextExtractor, CsvExtractor } from "./extractors/text.ts";
 import { JsonExtractor } from "./extractors/json.ts";
 import { XmlExtractor } from "./extractors/xml.ts";
@@ -10,6 +10,7 @@ import { PdfExtractor } from "./extractors/pdf.ts";
 import { OfficeOpenXmlExtractor } from "./extractors/officeOpenXml.ts";
 import { UnsupportedContentHandler } from "./extractors/unsupported.ts";
 import { CursorManager, type ReadCursorPayload } from "./cursor.ts";
+import { ContentSnapshotCache, type ContentCacheContext, type ContentSnapshot } from "./snapshotCache.ts";
 
 export type ContentInfo = {
   label: string;
@@ -18,6 +19,7 @@ export type ContentInfo = {
   size_bytes?: number;
   extractable: boolean;
   extractor: string;
+  cached?: boolean;
 };
 
 export type ReadContentOptions = {
@@ -41,6 +43,7 @@ export type ReadContentResult = {
   truncated: boolean;
   next_cursor: string | null;
   warnings: string[];
+  cached: boolean;
 };
 
 export class ContentBridge {
@@ -49,11 +52,19 @@ export class ContentBridge {
   private readonly cursors: CursorManager;
   private readonly maxContentBytes: number;
   private readonly maxExtractedChars: number;
-  constructor(sharedTempDir: string, cursors: CursorManager, limits: { maxContentBytes: number; maxExtractedChars: number }) {
+  private readonly cache?: ContentSnapshotCache;
+
+  constructor(
+    sharedTempDir: string,
+    cursors: CursorManager,
+    limits: { maxContentBytes: number; maxExtractedChars: number },
+    cache?: ContentSnapshotCache
+  ) {
     this.sharedTempDir = sharedTempDir;
     this.cursors = cursors;
     this.maxContentBytes = limits.maxContentBytes;
     this.maxExtractedChars = limits.maxExtractedChars;
+    this.cache = cache;
     this.extractors = [new TextExtractor(), new CsvExtractor(), new JsonExtractor(), new XmlExtractor(), new PdfExtractor(), new OfficeOpenXmlExtractor(), new UnsupportedContentHandler()];
   }
 
@@ -65,8 +76,23 @@ export class ContentBridge {
       content_type: content.contentType,
       size_bytes: content.sizeBytes,
       extractable: content.sizeBytes <= this.maxContentBytes && extractor.name !== "unsupported",
-      extractor: extractor.name
+      extractor: extractor.name,
+      cached: false
     };
+  }
+
+  async infoCachedOrLoad(context: ContentCacheContext, load: () => Promise<AdapterContentResult>): Promise<ContentInfo> {
+    const cached = this.cache?.get({ ...context, variant: "full" });
+    if (cached) return infoFromSnapshot(context.contentLabel, cached, true);
+    const content = await load();
+    const basic = this.info(content);
+    if (!basic.extractable) {
+      await this.discard(content);
+      return basic;
+    }
+    const snapshot = await this.extractSnapshot(content, undefined, undefined);
+    this.cache?.put({ ...context, variant: "full" }, snapshot);
+    return infoFromSnapshot(content.label, snapshot, Boolean(this.cache?.get({ ...context, variant: "full" })));
   }
 
   async discard(content: AdapterContentResult): Promise<void> {
@@ -75,21 +101,52 @@ export class ContentBridge {
   }
 
   async read(content: AdapterContentResult, options: ReadContentOptions): Promise<ReadContentResult> {
+    const cursorPayload = options.cursor ? this.cursors.parse(options.cursor) : undefined;
+    validateCursorIdentity(cursorPayload, options.documentId, options.revisionNumber);
+    const startPage = cursorPayload?.start_page ?? options.startPage;
+    const endPage = cursorPayload?.end_page ?? options.endPage;
+    const snapshot = await this.extractSnapshot(content, startPage, endPage);
+    return this.sliceSnapshot(snapshot, options, cursorPayload, undefined, false);
+  }
+
+  async readCachedOrLoad(
+    context: ContentCacheContext,
+    options: ReadContentOptions,
+    load: () => Promise<AdapterContentResult>
+  ): Promise<ReadContentResult> {
+    const cursorPayload = options.cursor ? this.cursors.parse(options.cursor) : undefined;
+    validateCursorIdentity(cursorPayload, options.documentId, options.revisionNumber, context.clientProfileId, context.scopeId);
+    const startPage = cursorPayload?.start_page ?? options.startPage;
+    const endPage = cursorPayload?.end_page ?? options.endPage;
+    const cacheContext = { ...context, variant: pageVariant(startPage, endPage) };
+    let snapshot = this.cache?.get(cacheContext);
+    const cacheHit = Boolean(snapshot);
+    if (!snapshot) {
+      const content = await load();
+      snapshot = await this.extractSnapshot(content, startPage, endPage);
+      this.cache?.put(cacheContext, snapshot);
+    }
+    return this.sliceSnapshot(snapshot, options, cursorPayload, context, cacheHit);
+  }
+
+  clearCache(): void {
+    this.cache?.clear();
+  }
+
+  private async extractSnapshot(content: AdapterContentResult, startPage?: number, endPage?: number): Promise<ContentSnapshot> {
     const safePath = await this.assertSharedPath(content.filePath);
     try {
       if (content.sizeBytes > this.maxContentBytes) throw new Error("CONTENT_SIZE_LIMIT");
       const fileStats = await stat(safePath);
       if (fileStats.size > this.maxContentBytes) throw new Error("CONTENT_SIZE_LIMIT");
-      let cursorPayload: ReadCursorPayload | undefined;
-      if (options.cursor) cursorPayload = this.cursors.parse(options.cursor);
       const extractor = this.selectExtractor(content.contentType, content.fileName);
       if (extractor.name === "unsupported") throw new Error("UNSUPPORTED_CONTENT_TYPE");
       const request: ExtractRequest = {
         filePath: safePath,
         fileName: content.fileName,
         contentType: content.contentType,
-        startPage: options.startPage,
-        endPage: options.endPage,
+        startPage,
+        endPage,
         maxExtractedChars: this.maxExtractedChars
       };
       const extracted = await extractor.extract(request);
@@ -97,39 +154,61 @@ export class ContentBridge {
       const warnings = [...extracted.warnings];
       if (extracted.text.length > this.maxExtractedChars) warnings.push("EXTRACTED_TEXT_LIMIT");
       const hash = `sha256:${createHash("sha256").update(normalized, "utf8").digest("hex")}`;
-      let offset = 0;
-      if (cursorPayload) {
-        if (cursorPayload.document_id !== options.documentId || cursorPayload.revision_number !== options.revisionNumber) throw new Error("CURSOR_DOCUMENT_MISMATCH");
-        if (cursorPayload.content_hash !== hash || cursorPayload.extractor !== extracted.extractor) throw new Error("CURSOR_CONTENT_CHANGED");
-        offset = cursorPayload.offset;
-      }
-      if (offset > normalized.length) throw new Error("CURSOR_OFFSET_INVALID");
-      const end = Math.min(normalized.length, offset + options.maxChars);
-      const chunk = normalized.slice(offset, end);
-      const truncated = end < normalized.length;
-      const next = truncated ? this.cursors.create({
-        trace_id: options.traceId,
-        document_id: options.documentId,
-        revision_number: options.revisionNumber,
-        content_hash: hash,
-        offset: end,
-        extractor: extracted.extractor
-      }) : null;
       return {
-        document_id: options.documentId,
-        revision_number: options.revisionNumber,
-        file_name: content.fileName,
-        content_type: content.contentType,
+        contentHash: hash,
+        fileName: content.fileName,
+        contentType: content.contentType,
+        sizeBytes: content.sizeBytes,
         extractor: extracted.extractor,
-        page_range: extracted.pageRange,
-        content: chunk,
-        truncated,
-        next_cursor: next,
-        warnings
+        text: normalized,
+        warnings,
+        pageRange: extracted.pageRange
       };
     } finally {
       await unlink(safePath).catch(() => undefined);
     }
+  }
+
+  private sliceSnapshot(
+    snapshot: ContentSnapshot,
+    options: ReadContentOptions,
+    cursorPayload?: ReadCursorPayload,
+    context?: ContentCacheContext,
+    cacheHit = false
+  ): ReadContentResult {
+    if (cursorPayload) {
+      if (cursorPayload.content_hash !== snapshot.contentHash || cursorPayload.extractor !== snapshot.extractor) throw new Error("CURSOR_CONTENT_CHANGED");
+    }
+    const offset = cursorPayload?.offset ?? 0;
+    if (offset > snapshot.text.length) throw new Error("CURSOR_OFFSET_INVALID");
+    const end = Math.min(snapshot.text.length, offset + options.maxChars);
+    const chunk = snapshot.text.slice(offset, end);
+    const truncated = end < snapshot.text.length;
+    const next = truncated ? this.cursors.create({
+      trace_id: options.traceId,
+      client_profile_id: context?.clientProfileId,
+      scope_id: context?.scopeId,
+      document_id: options.documentId,
+      revision_number: options.revisionNumber,
+      content_hash: snapshot.contentHash,
+      offset: end,
+      extractor: snapshot.extractor,
+      start_page: cursorPayload?.start_page ?? options.startPage,
+      end_page: cursorPayload?.end_page ?? options.endPage
+    }) : null;
+    return {
+      document_id: options.documentId,
+      revision_number: options.revisionNumber,
+      file_name: snapshot.fileName,
+      content_type: snapshot.contentType,
+      extractor: snapshot.extractor,
+      page_range: snapshot.pageRange,
+      content: chunk,
+      truncated,
+      next_cursor: next,
+      warnings: [...snapshot.warnings],
+      cached: cacheHit
+    };
   }
 
   private selectExtractor(contentType: string, fileName: string): ContentExtractor {
@@ -142,6 +221,35 @@ export class ContentBridge {
     if (actual !== root && !actual.startsWith(root + sep)) throw new Error("ADAPTER_FILE_PATH_OUTSIDE_SHARED_TEMP");
     return actual;
   }
+}
+
+function validateCursorIdentity(
+  cursor: ReadCursorPayload | undefined,
+  documentId: string,
+  revisionNumber?: number,
+  clientProfileId?: string,
+  scopeId?: string
+): void {
+  if (!cursor) return;
+  if (cursor.document_id !== documentId || cursor.revision_number !== revisionNumber) throw new Error("CURSOR_DOCUMENT_MISMATCH");
+  if (cursor.client_profile_id !== undefined && clientProfileId !== undefined && cursor.client_profile_id !== clientProfileId) throw new Error("CURSOR_PROFILE_MISMATCH");
+  if (cursor.scope_id !== undefined && scopeId !== undefined && cursor.scope_id !== scopeId) throw new Error("CURSOR_SCOPE_MISMATCH");
+}
+
+function pageVariant(startPage?: number, endPage?: number): string {
+  return startPage === undefined ? "full" : `pages:${startPage}-${endPage ?? "end"}`;
+}
+
+function infoFromSnapshot(label: string, snapshot: ContentSnapshot, cached: boolean): ContentInfo {
+  return {
+    label,
+    file_name: snapshot.fileName,
+    content_type: snapshot.contentType,
+    size_bytes: snapshot.sizeBytes,
+    extractable: true,
+    extractor: snapshot.extractor,
+    cached
+  };
 }
 
 export function normalizeExtractedText(text: string): string {
