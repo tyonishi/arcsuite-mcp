@@ -32,13 +32,16 @@ export class ContentSnapshotCache {
   private readonly entries = new Map<string, StoredSnapshot>();
   private readonly locatorIndex = new Map<string, string>();
   private totalBytes = 0;
+  private readonly ttlSeconds: number;
+  private readonly maxEntries: number;
+  private readonly maxEntriesPerClient: number;
+  private readonly maxBytes: number;
 
-  constructor(
-    private readonly ttlSeconds: number,
-    private readonly maxEntries: number,
-    private readonly maxEntriesPerClient: number,
-    private readonly maxBytes: number
-  ) {
+  constructor(ttlSeconds: number, maxEntries: number, maxEntriesPerClient: number, maxBytes: number) {
+    this.ttlSeconds = ttlSeconds;
+    this.maxEntries = maxEntries;
+    this.maxEntriesPerClient = maxEntriesPerClient;
+    this.maxBytes = maxBytes;
     for (const [name, value] of Object.entries({ ttlSeconds, maxEntries, maxEntriesPerClient, maxBytes })) {
       if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid content cache limit: ${name}`);
     }
@@ -74,7 +77,6 @@ export class ContentSnapshotCache {
       this.locatorIndex.set(locator, id);
       return publicSnapshot(existing);
     }
-
     this.makeRoom(context.clientProfileId, bytes);
     const now = Date.now();
     const stored: StoredSnapshot = {
@@ -93,39 +95,21 @@ export class ContentSnapshotCache {
     return snapshot;
   }
 
-  clear(): void {
-    this.entries.clear();
-    this.locatorIndex.clear();
-    this.totalBytes = 0;
-  }
+  clear(): void { this.entries.clear(); this.locatorIndex.clear(); this.totalBytes = 0; }
 
-  private pruneExpired(): void {
-    const now = Date.now();
-    for (const entry of this.entries.values()) {
-      if (entry.expiresAt <= now) this.remove(entry.id);
-    }
-  }
+  private pruneExpired(): void { const now = Date.now(); for (const entry of this.entries.values()) if (entry.expiresAt <= now) this.remove(entry.id); }
 
   private makeRoom(clientProfileId: string, incomingBytes: number): void {
     const byAge = () => [...this.entries.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt || a.createdAt - b.createdAt);
     while ([...this.entries.values()].filter((entry) => entry.clientProfileId === clientProfileId).length >= this.maxEntriesPerClient) {
-      const victim = byAge().find((entry) => entry.clientProfileId === clientProfileId);
-      if (!victim) break;
-      this.remove(victim.id);
+      const victim = byAge().find((entry) => entry.clientProfileId === clientProfileId); if (!victim) break; this.remove(victim.id);
     }
-    while (this.entries.size >= this.maxEntries || this.totalBytes + incomingBytes > this.maxBytes) {
-      const victim = byAge()[0];
-      if (!victim) break;
-      this.remove(victim.id);
-    }
-    if (this.entries.size >= this.maxEntries || this.totalBytes + incomingBytes > this.maxBytes) {
-      throw new Error("CONTENT_CACHE_LIMIT");
-    }
+    while (this.entries.size >= this.maxEntries || this.totalBytes + incomingBytes > this.maxBytes) { const victim = byAge()[0]; if (!victim) break; this.remove(victim.id); }
+    if (this.entries.size >= this.maxEntries || this.totalBytes + incomingBytes > this.maxBytes) throw new Error("CONTENT_CACHE_LIMIT");
   }
 
   private remove(id: string): void {
-    const entry = this.entries.get(id);
-    if (!entry) return;
+    const entry = this.entries.get(id); if (!entry) return;
     this.entries.delete(id);
     if (this.locatorIndex.get(entry.locator) === id) this.locatorIndex.delete(entry.locator);
     this.totalBytes -= entry.bytes;
@@ -133,14 +117,7 @@ export class ContentSnapshotCache {
 }
 
 function locatorKey(context: ContentCacheContext): string {
-  return [
-    context.clientProfileId,
-    context.scopeId,
-    context.documentId,
-    context.revisionNumber ?? "current",
-    context.contentLabel,
-    context.variant ?? "full"
-  ].join("\u001f");
+  return [context.clientProfileId, context.scopeId, context.documentId, context.revisionNumber ?? "current", context.contentLabel, context.variant ?? "full"].join("\u001f");
 }
 
 function publicSnapshot(entry: StoredSnapshot): ContentSnapshot {
