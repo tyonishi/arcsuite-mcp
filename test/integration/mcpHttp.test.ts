@@ -66,6 +66,17 @@ async function modernRpc(base: string, id: number, method: string, params: Recor
   });
 }
 
+const expectedNames = [
+  "arcsuite_describe_capabilities",
+  "arcsuite_get_document",
+  "arcsuite_get_document_content_info",
+  "arcsuite_get_documents",
+  "arcsuite_list_document_revisions",
+  "arcsuite_list_folder",
+  "arcsuite_read_document",
+  "arcsuite_search_documents"
+];
+
 test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
   const { rt, base } = await start();
   t.after(() => rt.server.close());
@@ -75,10 +86,10 @@ test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
 
   const list = await modernRpc(base, 2, "tools/list");
   assert.equal(list.status, 200);
-  assert.ok(list.json.result.tools.some((tool: { name: string }) => tool.name === "arcsuite_search_documents"));
+  assert.deepEqual(list.json.result.tools.map((tool: { name: string }) => tool.name).sort(), expectedNames);
 });
 
-test("MCP initialize, discovery and semantic search work over Streamable HTTP", async (t) => {
+test("MCP initialize, profile-aware discovery and semantic search work over Streamable HTTP", async (t) => {
   const { rt, base } = await start();
   t.after(() => rt.server.close());
   const init = await rpc(base, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test-client", version: "1" } } });
@@ -87,17 +98,17 @@ test("MCP initialize, discovery and semantic search work over Streamable HTTP", 
 
   const list = await rpc(base, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   assert.equal(list.status, 200);
-  const names = list.json.result.tools.map((tool: { name: string }) => tool.name).sort();
-  assert.deepEqual(names, [
-    "arcsuite_get_document",
-    "arcsuite_get_document_content_info",
-    "arcsuite_list_document_revisions",
-    "arcsuite_list_folder",
-    "arcsuite_read_document",
-    "arcsuite_search_documents"
-  ]);
+  const tools = list.json.result.tools;
+  assert.deepEqual(tools.map((tool: { name: string }) => tool.name).sort(), expectedNames);
+  const search = tools.find((tool: { name: string }) => tool.name === "arcsuite_search_documents");
+  assert.deepEqual(search.inputSchema.properties.scope.enum, ["example_documents"]);
+  assert.match(search.description, /document_number/);
 
-  const call = await rpc(base, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "arcsuite_search_documents", arguments: { scope: "example_documents", filters: { document_number: "DOC-000001" } } } });
+  const capabilities = await rpc(base, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "arcsuite_describe_capabilities", arguments: {} } });
+  assert.equal(capabilities.status, 200);
+  assert.equal(capabilities.json.result.structuredContent.scopes[0].id, "example_documents");
+
+  const call = await rpc(base, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "arcsuite_search_documents", arguments: { scope: "example_documents", filters: { document_number: "DOC-000001" } } } });
   assert.equal(call.status, 200);
   assert.equal(call.json.result.structuredContent.count, 1);
   assert.equal(call.json.result.structuredContent.results[0].semantic_attributes.document_number, "DOC-000001");
