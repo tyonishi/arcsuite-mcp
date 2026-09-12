@@ -53,6 +53,13 @@ The adapter serializes the `getRepositoryObjects` `ids` parameter as the ArcSuit
 locks this request shape so it cannot silently regress to a generic string-array
 wire representation.
 
+v1.1 batch metadata hydration deliberately sends `resolveRef=false` for
+`getRepositoryObjects`. Paging snapshots are keyed by the exact IDs returned by
+the ID-only operations, so reference resolution at this internal batch step
+would change object identity and make page/accounting checks ambiguous. Existing
+single-object and content paths continue to apply the configured reference
+resolution policy where their contracts allow it.
+
 ## Qualification limits
 
 Local tests use a mock adapter and synthetic content. They verify protocol
