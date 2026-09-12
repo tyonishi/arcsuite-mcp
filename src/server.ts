@@ -7,6 +7,7 @@ import { HttpArcSuiteAdapterClient, MockArcSuiteAdapterClient, type ArcSuiteAdap
 import { AdapterSessionManager } from "./arcsuite/sessionManager.ts";
 import { CursorManager } from "./content/cursor.ts";
 import { ContentBridge } from "./content/contentBridge.ts";
+import { ContentSnapshotCache } from "./content/snapshotCache.ts";
 import { AuditLogger } from "./audit/auditLogger.ts";
 import { ToolRegistry } from "./mcp/tools.ts";
 import { assertOperationAllowlistSafe } from "./arcsuite/operationAllowlist.ts";
@@ -23,10 +24,16 @@ export async function buildRuntime(env: NodeJS.ProcessEnv = process.env) {
     : new HttpArcSuiteAdapterClient(config.adapterBaseUrl, config.adapterInternalToken);
   const sessions = new AdapterSessionManager(adapter);
   const cursors = new CursorManager(config.cursorSecret, config.cursorTtlSeconds);
+  const contentCache = new ContentSnapshotCache(
+    config.contentCacheTtlSeconds,
+    config.contentCacheMaxEntries,
+    config.contentCacheMaxEntriesPerClient,
+    config.contentCacheMaxBytes
+  );
   const bridge = new ContentBridge(config.sharedTempDir, cursors, {
     maxContentBytes: config.maxContentBytes,
     maxExtractedChars: config.maxExtractedChars
-  });
+  }, contentCache);
   const audit = new AuditLogger(config.auditLogPath);
   const tools = new ToolRegistry(config, scopes, adapter, sessions, bridge, audit);
   let readyState: { ok: boolean; message?: string } = { ok: !config.validateOnStartup, message: config.validateOnStartup ? "validation pending" : undefined };
@@ -54,7 +61,7 @@ export async function buildRuntime(env: NodeJS.ProcessEnv = process.env) {
     health: () => adapter.health(),
     ready: async () => readyState
   });
-  return { config, scopes, adapter, tools, server, validate };
+  return { config, scopes, adapter, tools, server, validate, bridge };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -63,6 +70,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`ArcSuite MCP listening on http://${runtime.config.bindHost}:${runtime.config.port}`);
   });
   const shutdown = async () => {
+    runtime.bridge.clearCache();
     runtime.server.close();
     process.exitCode = 0;
   };
