@@ -13,8 +13,11 @@ final class AdapterService {
     Object sessionInfo(Map<String,Object> body){return sessions.read(profile(body),soap::getSessionInfo);}
     Object validate(Map<String,Object> body){return sessions.read(profile(body),sid->soap.validateSchema(body,sid));}
     Object search(Map<String,Object> body){return sessions.read(profile(body),sid->soap.search(body,sid));}
+    Object searchIds(Map<String,Object> body){return sessions.read(profile(body),sid->soap.searchIds(body,sid));}
     Object list(Map<String,Object> body){return sessions.read(profile(body),sid->soap.list(body,sid));}
+    Object listIds(Map<String,Object> body){return sessions.read(profile(body),sid->soap.listIds(body,sid));}
     Object get(Map<String,Object> body){return sessions.read(profile(body),sid->soap.get(body,sid));}
+    Object getMany(Map<String,Object> body){return sessions.read(profile(body),sid->soap.getMany(body,sid));}
     Object revisions(Map<String,Object> body){return sessions.read(profile(body),sid->soap.revisions(body,sid));}
     Object content(Map<String,Object> body){return sessions.read(profile(body),sid->soap.content(body,sid));}
 
