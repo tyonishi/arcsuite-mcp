@@ -49,17 +49,19 @@ public final class SelfTest {
     }
 
     static void soapRequestShapes() {
-        Map<String,Object> request = Map.of(
+        Map<String,Object> incoming = Map.of(
                 "ids", List.of("rep:example:one", "rep:example:two"),
                 "resolveRef", true,
                 "attrIds", List.of(Map.of("ns", "rep", "name", "system:name")),
-                "options", List.of("resolveRef")
+                "options", List.of("referenceId")
         );
+        Map<String,Object> request = AdapterService.prepareGetManyRequest(incoming);
+        if (!Boolean.FALSE.equals(request.get("resolveRef"))) throw new AssertionError("batch request must preserve requested object identity");
         String body = ArcSuiteSoapClient.getRepositoryObjectsBody(request);
         String expected = "<t:ids><t:id>rep:example:one</t:id><t:id>rep:example:two</t:id></t:ids>"
-                + "<t:resolveRef>true</t:resolveRef>"
+                + "<t:resolveRef>false</t:resolveRef>"
                 + "<t:attrIds><t:attributeId ns=\"rep\" name=\"system:name\"/></t:attrIds>"
-                + "<t:options>resolveRef</t:options>";
+                + "<t:options>referenceId</t:options>";
         if (!expected.equals(body)) throw new AssertionError("Unexpected getRepositoryObjects body: " + body);
         if (body.contains("<t:string>")) throw new AssertionError("Ids wire type must use <id>, not <string>");
 
