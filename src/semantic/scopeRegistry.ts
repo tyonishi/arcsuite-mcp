@@ -22,12 +22,29 @@ export type SemanticScope = {
     root_object_id: string | null;
     resolve_references: boolean;
   };
+  ui?: {
+    document_url_template?: string;
+  };
   allowed_object_types: string[];
   default_attr_ids: AttributeId[];
   semantic_attributes: Record<string, SemanticAttributeConfig>;
 };
 
 export type ScopeRegistryData = { version: number; scopes: Record<string, SemanticScope> };
+
+export type PublicScopeDescription = {
+  id: string;
+  description: string;
+  object_types: string[];
+  filters: Array<{
+    name: string;
+    type: SemanticAttributeConfig["type"];
+    operators: SemanticAttributeConfig["operators"];
+    allow_wildcards: boolean;
+    max_length?: number;
+  }>;
+  ui_deep_link: boolean;
+};
 
 export class ScopeRegistry {
   readonly data: ScopeRegistryData;
@@ -52,6 +69,10 @@ export class ScopeRegistry {
       }
       if (scope.arcsuite.root_object_id && !scope.arcsuite.root_object_id.startsWith(`${scope.arcsuite.cabinet_id}:`) && scope.arcsuite.root_object_id !== scope.arcsuite.cabinet_id) {
         throw new Error(`Scope ${name} root_object_id is outside its cabinet`);
+      }
+      if (scope.ui !== undefined) {
+        if (!scope.ui || typeof scope.ui !== "object" || Array.isArray(scope.ui)) throw new Error(`Scope ${name} ui must be an object`);
+        if (scope.ui.document_url_template !== undefined) validateDocumentUrlTemplate(scope.ui.document_url_template, name);
       }
       if (!Array.isArray(scope.allowed_object_types) || !scope.allowed_object_types.length || scope.allowed_object_types.some((value) => !safeConfigString(value, 128))) {
         throw new Error(`Scope ${name} requires non-empty allowed_object_types`);
@@ -99,6 +120,40 @@ export class ScopeRegistry {
     return this.get(scopeId);
   }
 
+  describe(allowedScopes: string[]): PublicScopeDescription[] {
+    const out: PublicScopeDescription[] = [];
+    for (const id of allowedScopes) {
+      const scope = this.data.scopes[id];
+      if (!scope?.enabled) continue;
+      out.push({
+        id,
+        description: scope.description,
+        object_types: [...scope.allowed_object_types],
+        filters: Object.entries(scope.semantic_attributes).map(([name, cfg]) => ({
+          name,
+          type: cfg.type,
+          operators: [...cfg.operators],
+          allow_wildcards: Boolean(cfg.allow_wildcards),
+          max_length: cfg.max_length
+        })),
+        ui_deep_link: Boolean(scope.ui?.document_url_template)
+      });
+    }
+    return out;
+  }
+
+  documentUrl(scope: SemanticScope, objectId: string): string | undefined {
+    const template = scope.ui?.document_url_template;
+    if (!template) return undefined;
+    const replaced = template.replace("{document_id}", encodeURIComponent(objectId));
+    const parsed = new URL(replaced);
+    const templateUrl = new URL(template.replace("{document_id}", "example"));
+    if (parsed.origin !== templateUrl.origin || parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) {
+      throw new Error("Configured document URL escaped its trusted origin");
+    }
+    return parsed.toString();
+  }
+
   inferScopeFromObjectId(objectId: string, allowedScopes: string[]): { id: string; scope: SemanticScope } | undefined {
     let match: { id: string; scope: SemanticScope } | undefined;
     for (const id of allowedScopes) {
@@ -131,7 +186,6 @@ export class ScopeRegistry {
         current.requireSearchable = true;
         attrs.set(key(cfg.attr_id), current);
       }
-      // v1 search/list sorts by modified date and/or name. Verify this assumption against the live schema.
       for (const sortAttr of [DEFAULT_ATTRS.modifiedOn, DEFAULT_ATTRS.name]) {
         if (!scope.default_attr_ids.some((a) => key(a) === key(sortAttr))) continue;
         const current: AdapterSchemaValidationRequest["attributes"][number] = attrs.get(key(sortAttr)) ?? { attrId: sortAttr };
@@ -160,4 +214,17 @@ function assertAttrId(attr: AttributeId, label: string): void {
 
 function safeConfigString(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.length >= 1 && value.length <= maxLength && !/[\u0000-\u001f\u007f\s]/.test(value);
+}
+
+function validateDocumentUrlTemplate(value: unknown, scopeId: string): asserts value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 2048) throw new Error(`Scope ${scopeId} has invalid document_url_template`);
+  if ((value.match(/\{document_id\}/g) ?? []).length !== 1 || /\{[^}]+\}/.test(value.replace("{document_id}", ""))) {
+    throw new Error(`Scope ${scopeId} document_url_template must contain exactly one {document_id} placeholder`);
+  }
+  let parsed: URL;
+  try { parsed = new URL(value.replace("{document_id}", "example")); }
+  catch { throw new Error(`Scope ${scopeId} document_url_template must be an absolute URL`); }
+  if (parsed.protocol !== "https:") throw new Error(`Scope ${scopeId} document_url_template must use https`);
+  if (parsed.username || parsed.password) throw new Error(`Scope ${scopeId} document_url_template must not contain credentials`);
+  if (parsed.hash) throw new Error(`Scope ${scopeId} document_url_template must not contain a fragment`);
 }
