@@ -52,3 +52,15 @@ export const toolInputSchemas = {
 } as const;
 
 export type ToolInputName = keyof typeof toolInputSchemas;
+
+export function toolInputSchemaForProfile(name: ToolInputName, allowedScopes: string[]) {
+  const schema = toolInputSchemas[name];
+  if (!isScopeTool(name)) return schema;
+  if (!allowedScopes.length) return (schema as any).extend({ scope: z.never() });
+  const scopeEnum = z.enum(allowedScopes as [string, ...string[]]);
+  return (schema as any).extend({ scope: scopeEnum });
+}
+
+function isScopeTool(name: ToolInputName): name is "arcsuite_search_documents" | "arcsuite_get_documents" | "arcsuite_list_folder" {
+  return name === "arcsuite_search_documents" || name === "arcsuite_get_documents" || name === "arcsuite_list_folder";
+}
