@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 
 public final class SelfTest {
@@ -13,6 +14,7 @@ public final class SelfTest {
         jsonRoundTrip();
         cryptoRoundTrip();
         mtomDecode();
+        soapRequestShapes();
         xmlXxeBlocked();
         boundedStreams();
         System.out.println("Java adapter self-test: PASS");
@@ -44,6 +46,27 @@ public final class SelfTest {
                 "--"+boundary+"\r\nContent-Type: application/octet-stream\r\nContent-ID: <bin>\r\n\r\nABC123\r\n--"+boundary+"--\r\n";
         MtomMessage m=MtomParser.parse("multipart/related; boundary=\""+boundary+"\"",body.getBytes(StandardCharsets.ISO_8859_1));
         if(!"ABC123".equals(new String(m.attachments().get("bin"),StandardCharsets.ISO_8859_1))) throw new AssertionError();
+    }
+
+    static void soapRequestShapes() {
+        Map<String,Object> request = Map.of(
+                "ids", List.of("rep:example:one", "rep:example:two"),
+                "resolveRef", true,
+                "attrIds", List.of(Map.of("ns", "rep", "name", "system:name")),
+                "options", List.of("resolveRef")
+        );
+        String body = ArcSuiteSoapClient.getRepositoryObjectsBody(request);
+        String expected = "<t:ids><t:id>rep:example:one</t:id><t:id>rep:example:two</t:id></t:ids>"
+                + "<t:resolveRef>true</t:resolveRef>"
+                + "<t:attrIds><t:attributeId ns=\"rep\" name=\"system:name\"/></t:attrIds>"
+                + "<t:options>resolveRef</t:options>";
+        if (!expected.equals(body)) throw new AssertionError("Unexpected getRepositoryObjects body: " + body);
+        if (body.contains("<t:string>")) throw new AssertionError("Ids wire type must use <id>, not <string>");
+
+        try {
+            ArcSuiteSoapClient.getRepositoryObjectsBody(Map.of("ids", List.of()));
+            throw new AssertionError("empty ids must be rejected");
+        } catch (IllegalArgumentException expectedFailure) {}
     }
 
     static void xmlXxeBlocked() {
