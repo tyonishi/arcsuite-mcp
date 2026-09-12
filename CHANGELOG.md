@@ -24,6 +24,13 @@
   v1.1 Read UX and Efficiency, v1.2 Rich Repository Read, and v1.3 Advanced
   Content and Scope. These roadmap releases preserve the read-only semantic
   security boundary.
+- Implemented ADR 0005 v1.1 Read UX and Efficiency: profile-aware semantic
+  capability discovery, bounded ID-snapshot paging for search/folder results,
+  bounded batch metadata reads, short-lived extracted-content snapshot reuse,
+  content-info/read reuse, and optional trusted ArcSuite UI deep links.
+- Added the read-only ArcSuite `searchRepositoryObjectIds` and
+  `listRepositoryObjectIds` operations to the mechanically checked allowlist;
+  mutation/admin/ACL/delete/privileged-print exclusions remain unchanged.
 
 Real ArcSuite and client qualification remain environment-dependent; see
 `docs/compatibility.md`.
