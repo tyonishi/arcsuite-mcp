@@ -75,7 +75,8 @@ const expectedNames = [
   "arcsuite_list_folder",
   "arcsuite_list_hard_references",
   "arcsuite_read_document",
-  "arcsuite_search_documents"
+  "arcsuite_search_documents",
+  "arcsuite_validate_document_integrity"
 ];
 
 test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
@@ -113,6 +114,10 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.ok(hardReferenceBranches.every((branch: any) => branch.additionalProperties === false));
   assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.cursor?.not && !branch.properties.limit?.not));
   assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.limit?.not && !branch.properties.cursor?.not));
+  const integrity = tools.find((tool: { name: string }) => tool.name === "arcsuite_validate_document_integrity");
+  assert.deepEqual(integrity.inputSchema.required, ["document_id"]);
+  assert.equal(integrity.inputSchema.properties.include_evidence.default, false);
+  assert.equal(integrity.inputSchema.additionalProperties, false);
 
   const capabilities = await rpc(base, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "arcsuite_describe_capabilities", arguments: {} } });
   assert.equal(capabilities.status, 200);
@@ -132,6 +137,23 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.equal(relationships.json.result.structuredContent.relationship, "hard_reference_incoming");
   assert.equal(relationships.json.result.structuredContent.count, 2);
   assert.equal(JSON.stringify(relationships.json.result.structuredContent).includes("hardref-001"), false);
+
+  const integrityCall = await rpc(base, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "arcsuite_validate_document_integrity", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001" } } });
+  assert.equal(integrityCall.status, 200);
+  assert.equal(integrityCall.json.result.structuredContent.status, "valid");
+  assert.equal(Object.hasOwn(integrityCall.json.result.structuredContent, "evidence"), false);
+
+  const integrityEvidenceCall = await rpc(base, { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "arcsuite_validate_document_integrity", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001", include_evidence: true } } });
+  assert.equal(integrityEvidenceCall.status, 200);
+  assert.deepEqual(integrityEvidenceCall.json.result.structuredContent.evidence, [
+    { cert_id: 101, evidence_available: true },
+    { cert_id: 102, evidence_available: false }
+  ]);
+
+  const invalidIntegrityCall = await rpc(base, { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "arcsuite_validate_document_integrity", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1002" } } });
+  assert.equal(invalidIntegrityCall.status, 200);
+  assert.equal(invalidIntegrityCall.json.result.structuredContent.status, "invalid_or_unverifiable");
+  assert.deepEqual(invalidIntegrityCall.json.result.structuredContent.warnings, ["VALIDATION_NOT_PROVEN"]);
 });
 
 test("MCP rejects unknown bearer token", async (t) => {

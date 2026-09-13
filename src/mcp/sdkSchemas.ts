@@ -18,6 +18,10 @@ const semanticFilterValue = z.union([
 
 export const toolInputSchemas = {
   arcsuite_describe_capabilities: z.object({}).strict(),
+  arcsuite_validate_document_integrity: z.object({
+    document_id: documentId,
+    include_evidence: z.boolean().default(false)
+  }).strict(),
   arcsuite_search_documents: z.object({
     scope,
     query: z.string().min(1).max(200).optional(),

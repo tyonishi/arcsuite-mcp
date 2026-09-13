@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { TokenProfile, AppConfig } from "../config.ts";
 import type { ArcSuiteAdapterClient } from "../arcsuite/soapAdapterClient.ts";
-import type { AdapterContentRequest, AdapterContentResult, AdapterGetManyResult, AdapterRepositoryObject, NormalizedDocument, PhysicalContentLabel } from "../arcsuite/types.ts";
+import type {
+  AdapterContentRequest,
+  AdapterContentResult,
+  AdapterGetManyResult,
+  AdapterIntegrityCertificateResult,
+  AdapterIntegrityValidationResult,
+  AdapterRepositoryObject,
+  NormalizedDocument,
+  PhysicalContentLabel
+} from "../arcsuite/types.ts";
 import { ArcSuiteAdapterError } from "../arcsuite/errors.ts";
 import { AdapterSessionManager } from "../arcsuite/sessionManager.ts";
 import { DEFAULT_ATTRS } from "../arcsuite/constants.ts";
@@ -26,7 +35,10 @@ export type ToolCallResult = {
   structuredContent: Record<string, unknown>;
 };
 
-const RAW_ARCSUITE_KEYS = /^(cabinet|cabinetId|cabinet_id|attr|attribute|attributes|attrId|attr_id|endpoint|baseUrl|serviceDn|service_dn|session|Session|sessionId|SearchCondition|operation|operations|option|options|soap|wsdl|raw)$/i;
+const RAW_ARCSUITE_KEYS = /^(cabinet|cabinetId|cabinet_id|attr|attribute|attributes|attrId|attr_id|certificate|certificateId|certId|certAttribute|certAttributes|endpoint|baseUrl|serviceDn|service_dn|session|Session|sessionId|SearchCondition|operation|operations|option|options|soap|wsdl|raw)$/i;
+
+const MAX_INTEGRITY_CERTIFICATES = 64;
+const MAX_INTEGRITY_EVIDENCE = 64;
 
 class ContentLabelNotFoundError extends Error {
   constructor() { super("CONTENT_LABEL_NOT_FOUND"); }
@@ -315,6 +327,68 @@ export class ToolRegistry {
           };
           break;
         }
+        case "arcsuite_validate_document_integrity": {
+          const parsed = parseIntegrityArgs(args);
+          const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
+          scopeId = scopeMatch.id;
+          objectIds = [parsed.documentId];
+          const scope = scopeMatch.scope;
+          if (scope.integrity?.enabled !== true) {
+            throw new McpToolError("ARCSUITE_FORBIDDEN", "integrity_not_allowed", false);
+          }
+          if (parsed.includeEvidence && scope.integrity?.allow_evidence !== true) {
+            throw new McpToolError("ARCSUITE_FORBIDDEN", "integrity_evidence_not_allowed", false);
+          }
+
+          await this.authorizeIntegrityTarget(profile, scope, parsed.documentId, soapOperations);
+
+          soapOperations.push("validateCertificate");
+          const rawValidation = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.validateIntegrity({
+            clientProfileId: profile.clientProfileId,
+            id: parsed.documentId
+          }));
+          const validation = normalizeIntegrityValidation(rawValidation);
+          const certificates = validation.certificates;
+          let status: "valid" | "invalid_or_unverifiable" | "validation_failed";
+          const warnings: string[] = [];
+          if (validation.failure === "per_id") {
+            status = "validation_failed";
+          } else if (certificates.length === 0) {
+            status = "invalid_or_unverifiable";
+            warnings.push("NO_VALIDATION_ELEMENTS");
+          } else {
+            const hasFalseResult = certificates.some((certificate) => certificate.result === false);
+            const hasException = certificates.some((certificate) => certificate.exceptionPresent);
+            status = !hasFalseResult && !hasException ? "valid" : "invalid_or_unverifiable";
+            if (hasFalseResult) warnings.push("VALIDATION_NOT_PROVEN");
+            if (hasException) warnings.push("VALIDATION_ELEMENT_EXCEPTION");
+          }
+
+          data = {
+            document_id: parsed.documentId,
+            status,
+            certificate_count: certificates.length,
+            warnings
+          };
+          if (parsed.includeEvidence) {
+            if (validation.failure === "per_id") {
+              data.evidence = [];
+            } else {
+              soapOperations.push("getCertificateEvidence");
+              const rawEvidence = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.certificateEvidence({
+                clientProfileId: profile.clientProfileId,
+                id: parsed.documentId
+              }));
+              const evidenceIds = normalizeCertificateEvidence(rawEvidence, certificates);
+              data.evidence = [...new Set(certificates.map((certificate) => certificate.certId))].map((certId) => ({
+                cert_id: certId,
+                evidence_available: evidenceIds.has(certId)
+              }));
+            }
+          }
+          resultCount = certificates.length;
+          break;
+        }
         case "arcsuite_list_document_revisions": {
           const parsed = parseRevisionsArgs(args, this.config);
           const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
@@ -459,6 +533,34 @@ export class ToolRegistry {
     if (!profile.allowedScopes.includes(scopeId)) throw new McpToolError("ARCSUITE_FORBIDDEN", "scope_not_allowed", false);
     try { return this.scopes.get(scopeId); }
     catch { throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "unknown_scope", false); }
+  }
+
+  private async authorizeIntegrityTarget(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    objectId: string,
+    operations: string[]
+  ): Promise<void> {
+    this.assertObjectIdInScope(scope, objectId);
+    const includePath = Boolean(scope.arcsuite.root_object_id);
+    operations.push("getRepositoryObject");
+    if (includePath) operations.push("getRepositoryObjectPath");
+    const target = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+      clientProfileId: profile.clientProfileId,
+      id: objectId,
+      resolveRef: false,
+      includePath,
+      attrIds: [],
+      options: []
+    }));
+    if (!isRepositoryObject(target)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_target_shape", false);
+    this.assertRepositoryObjectInScope(scope, target);
+    this.assertObjectIdInScope(scope, target.id, objectId);
+    this.assertAllowedObjectType(scope, target);
+    if (target.objectClass !== "document") {
+      throw new McpToolError("ARCSUITE_FORBIDDEN", "integrity_document_only", false);
+    }
+    this.assertRootScope(target, scope);
   }
 
   private requireScopeForObject(objectId: string, profile: TokenProfile): { id: string; scope: SemanticScope } {
@@ -933,6 +1035,76 @@ function parseHardReferencesArgs(args: Record<string, unknown>, config: AppConfi
   return { documentId, cursor, limit };
 }
 
+function parseIntegrityArgs(args: Record<string, unknown>) {
+  assertExactKeys(args, ["document_id", "include_evidence"], "document integrity arguments");
+  return {
+    documentId: repId(args.document_id, "document_id"),
+    includeEvidence: boolValue(args.include_evidence, false)
+  };
+}
+
+function normalizeIntegrityValidation(value: unknown): AdapterIntegrityValidationResult {
+  if (!isRecord(value) || !hasExactKeys(value, ["certificates", "failure"]) || !Array.isArray(value.certificates)) {
+    throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_validation_shape", false);
+  }
+  if (value.certificates.length > MAX_INTEGRITY_CERTIFICATES) {
+    throw new McpToolError("ARCSUITE_LIMIT_EXCEEDED", "integrity_certificate_limit", false);
+  }
+
+  if (value.failure === "per_id") {
+    if (value.certificates.length !== 0) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_validation_accounting", false);
+    }
+    return { certificates: [], failure: "per_id" };
+  }
+  if (value.failure !== null) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_validation_failure", false);
+
+  const certificates: AdapterIntegrityCertificateResult[] = [];
+  for (const certificate of value.certificates) {
+    if (!isRecord(certificate) || !hasExactKeys(certificate, ["certId", "result", "exceptionPresent"]) ||
+        !Number.isSafeInteger(certificate.certId) || typeof certificate.result !== "boolean" ||
+        typeof certificate.exceptionPresent !== "boolean") {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_certificate_shape", false);
+    }
+    certificates.push({
+      certId: certificate.certId as number,
+      result: certificate.result,
+      exceptionPresent: certificate.exceptionPresent
+    });
+  }
+  return { certificates, failure: null };
+}
+
+function normalizeCertificateEvidence(
+  value: unknown,
+  certificates: AdapterIntegrityCertificateResult[]
+): Set<number> {
+  if (!isRecord(value) || !hasExactKeys(value, ["certIds"]) || !Array.isArray(value.certIds)) {
+    throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_evidence_shape", false);
+  }
+  if (value.certIds.length > MAX_INTEGRITY_EVIDENCE) {
+    throw new McpToolError("ARCSUITE_LIMIT_EXCEEDED", "integrity_evidence_limit", false);
+  }
+  const validatedIds = new Set(certificates.map((certificate) => certificate.certId));
+  const evidenceIds = new Set<number>();
+  for (const certId of value.certIds) {
+    if (!Number.isSafeInteger(certId) || evidenceIds.has(certId as number) || !validatedIds.has(certId as number)) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_evidence_identity", false);
+    }
+    evidenceIds.add(certId as number);
+  }
+  return evidenceIds;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
 function parseRevisionsArgs(args: Record<string, unknown>, config: AppConfig) {
   assertExactKeys(args, ["document_id", "limit"], "revision arguments");
   return { documentId: repId(args.document_id, "document_id"), limit: args.limit === undefined ? 20 : intValue(args.limit, "limit", 1, config.searchMaxLimit) };
@@ -1138,6 +1310,11 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
       name: "arcsuite_list_hard_references",
       description: "List one page of incoming Hard Reference relationships for a target document in its authorized semantic scope. Continue with document_id and cursor; physical relationship object IDs are not returned.",
       inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, limit, cursor: { type: "string", maxLength: 4096 } } }
+    },
+    {
+      name: "arcsuite_validate_document_integrity",
+      description: "Read ArcSuite's validation result for one authorized document and optionally report already-calculated evidence availability. Valid means only that the reported validation elements succeeded; false or missing results are reported as invalid or unverifiable.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, include_evidence: { type: "boolean", default: false } } }
     }
   ];
 }

@@ -93,7 +93,8 @@ function loadTokenProfiles(env: NodeJS.ProcessEnv): TokenProfile[] {
           "arcsuite_list_document_revisions",
           "arcsuite_get_document_content_info",
           "arcsuite_read_document",
-          "arcsuite_list_hard_references"
+          "arcsuite_list_hard_references",
+          "arcsuite_validate_document_integrity"
         ],
         rateLimit: { requestsPerMinute: 120, burst: 30 }
       }];

@@ -34,7 +34,8 @@ function profile() {
       "arcsuite_list_document_revisions",
       "arcsuite_get_document_content_info",
       "arcsuite_read_document",
-      "arcsuite_list_hard_references"
+      "arcsuite_list_hard_references",
+      "arcsuite_validate_document_integrity"
     ],
     rateLimit: { requestsPerMinute: 120, burst: 30 }
   } as any;
@@ -49,7 +50,8 @@ const expectedTools = [
   "arcsuite_list_document_revisions",
   "arcsuite_get_document_content_info",
   "arcsuite_read_document",
-  "arcsuite_list_hard_references"
+  "arcsuite_list_hard_references",
+  "arcsuite_validate_document_integrity"
 ];
 
 test("mock tool surface exposes the v1.2 semantic read tools", async () => {
