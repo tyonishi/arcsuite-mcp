@@ -9,6 +9,7 @@ export type ContentCacheContext = {
 
 export type ContentSnapshot = {
   contentHash: string;
+  label: string;
   fileName: string;
   contentType: string;
   sizeBytes: number;
@@ -123,6 +124,7 @@ function locatorKey(context: ContentCacheContext): string {
 function publicSnapshot(entry: StoredSnapshot): ContentSnapshot {
   return {
     contentHash: entry.contentHash,
+    label: entry.label,
     fileName: entry.fileName,
     contentType: entry.contentType,
     sizeBytes: entry.sizeBytes,

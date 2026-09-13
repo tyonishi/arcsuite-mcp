@@ -15,6 +15,7 @@ public final class SelfTest {
         cryptoRoundTrip();
         mtomDecode();
         soapRequestShapes();
+        responseIdParsing();
         xmlXxeBlocked();
         boundedStreams();
         System.out.println("Java adapter self-test: PASS");
@@ -69,6 +70,19 @@ public final class SelfTest {
             ArcSuiteSoapClient.getRepositoryObjectsBody(Map.of("ids", List.of()));
             throw new AssertionError("empty ids must be rejected");
         } catch (IllegalArgumentException expectedFailure) {}
+    }
+
+    static void responseIdParsing() {
+        String searchXml = "<root xmlns=\"urn:test\"><searchRepositoryObjectIdsReturn><result><ids><id>rep:example:one</id><id>rep:example:two</id></ids></result></searchRepositoryObjectIdsReturn></root>";
+        String listXml = "<root xmlns=\"urn:test\"><listRepositoryObjectIdsReturn><result><ids><id>rep:example:three</id><id>rep:example:four</id></ids></result></listRepositoryObjectIdsReturn></root>";
+        var searchResult = XmlUtil.firstDesc(XmlUtil.parse(searchXml).getDocumentElement(), "result");
+        var listResult = XmlUtil.firstDesc(XmlUtil.parse(listXml).getDocumentElement(), "result");
+        if (!List.of("rep:example:one", "rep:example:two").equals(ArcSuiteSoapClient.parseStringArray(searchResult))) {
+            throw new AssertionError("Unexpected search ID response parsing");
+        }
+        if (!List.of("rep:example:three", "rep:example:four").equals(ArcSuiteSoapClient.parseStringArray(listResult))) {
+            throw new AssertionError("Unexpected list ID response parsing");
+        }
     }
 
     static void xmlXxeBlocked() {

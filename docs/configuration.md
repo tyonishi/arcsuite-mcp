@@ -16,8 +16,8 @@ scope registry. Tool callers cannot override these values.
 | `MCP_SCOPES_FILE` | mode-dependent | YAML semantic scope registry |
 | `ARCSUITE_MCP_CLIENT_TOKENS_JSON_FILE` | none | Hashed bearer-token profiles |
 | `MCP_DEV_BEARER_TOKEN` | none | Development-only single profile |
-| `MCP_CURSOR_HMAC_SECRET_FILE` | none | HMAC key for read and paging cursors; required in production |
-| `MCP_CURSOR_HMAC_SECRET` | none | Controlled local-development fallback for cursor HMAC |
+| `MCP_CURSOR_HMAC_SECRET_FILE` | none | Non-empty HMAC key file for read and paging cursors; required in production |
+| `MCP_CURSOR_HMAC_SECRET` | none | Controlled non-production fallback for cursor HMAC; ignored in production |
 | `MCP_VALIDATE_ON_STARTUP` | `true` | Validate adapter health and configured schema before readiness |
 | `MCP_ALLOWED_HOSTNAMES` | `localhost,127.0.0.1` | Host/DNS-rebinding allowlist |
 | `MCP_ALLOWED_ORIGIN_HOSTNAMES` | `localhost,127.0.0.1` | Browser Origin allowlist |
@@ -59,10 +59,11 @@ scope registry. Tool callers cannot override these values.
 
 Numeric values are validated as positive integers and bounded by repository
 hard limits. Default limits cannot be larger than their corresponding hard
-limits. The gateway-to-adapter token is read from
-`ARCSUITE_ADAPTER_INTERNAL_TOKEN_FILE`; the environment-variable fallback is
-intended only for controlled local development. The Java adapter supports the
-same file-first behavior.
+limits. In production, `MCP_CURSOR_HMAC_SECRET_FILE` must point to a non-empty
+secret; the inline cursor secret is ignored. The gateway-to-adapter token is
+read from `ARCSUITE_ADAPTER_INTERNAL_TOKEN_FILE`; the environment-variable
+fallback is intended only for controlled local development. The Java adapter
+supports the same file-first behavior.
 
 The current hard caps are 4 MiB for an MCP JSON request, 100 MiB for a
 materialized content file, 1,000,000 extracted characters, 50,000 characters
@@ -101,6 +102,8 @@ The template is operator configuration, not a tool argument. It must:
 
 - use absolute HTTPS;
 - contain exactly one `{document_id}` placeholder;
+- place `{document_id}` only in the URL path or query, never in the authority
+  (hostname or port);
 - contain no username/password or URL fragment;
 - keep the generated URL on the configured origin.
 
@@ -114,6 +117,9 @@ object IDs. The initial request uses ArcSuite ID-only list/search operations;
 later pages use the stored ID snapshot rather than re-running the search.
 Paging cursors are HMAC protected and bound to the client profile, semantic
 scope, result kind, snapshot, page size, offset, and expiry.
+
+`MCP_SEARCH_MAX_LIMIT` must not exceed `MCP_PAGING_SNAPSHOT_MAX_IDS`, so every
+accepted search or folder page size is valid for the snapshot store.
 
 A paging snapshot contains IDs and small navigation context only, never
 extracted document text or credentials. `snapshot_limited=true` means the

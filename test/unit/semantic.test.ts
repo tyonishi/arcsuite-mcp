@@ -62,3 +62,25 @@ test("scope registry rejects overlapping enabled cabinet mappings", () => {
     }
   }), /overlapping cabinet mappings/);
 });
+
+test("scope registry rejects document ID placeholders in URL authorities", () => {
+  const scope = {
+    description: "Synthetic linked scope",
+    enabled: true,
+    arcsuite: {
+      cabinet_alias: "EXAMPLE_CABINET",
+      cabinet_id: "rep:mock:EXAMPLE_CABINET",
+      root_object_id: null,
+      resolve_references: true
+    },
+    allowed_object_types: ["document"],
+    default_attr_ids: [{ ns: "rep", name: "system:name" }],
+    semantic_attributes: {}
+  };
+  for (const template of ["https://{document_id}.example.invalid/open", "https://example.invalid:{document_id}/open"]) {
+    assert.throws(() => new ScopeRegistry({ version: 1, scopes: { linked_scope: { ...scope, ui: { document_url_template: template } } } }), /document_url_template/);
+  }
+  const registry = new ScopeRegistry({ version: 1, scopes: { linked_scope: { ...scope, ui: { document_url_template: "https://example.invalid/open?id={document_id}" } } } });
+  const invalidScope = { ...scope, ui: { document_url_template: "https://{document_id}.example.invalid/open" } };
+  assert.equal(registry.documentUrl(invalidScope, "rep:mock:EXAMPLE_CABINET:1"), undefined);
+});

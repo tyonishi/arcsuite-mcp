@@ -145,13 +145,15 @@ export class ScopeRegistry {
   documentUrl(scope: SemanticScope, objectId: string): string | undefined {
     const template = scope.ui?.document_url_template;
     if (!template) return undefined;
-    const replaced = template.replace("{document_id}", encodeURIComponent(objectId));
-    const parsed = new URL(replaced);
-    const templateUrl = new URL(template.replace("{document_id}", "example"));
-    if (parsed.origin !== templateUrl.origin || parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) {
-      throw new Error("Configured document URL escaped its trusted origin");
+    try {
+      const replaced = template.replace("{document_id}", encodeURIComponent(objectId));
+      const parsed = new URL(replaced);
+      const templateUrl = new URL(template.replace("{document_id}", "example"));
+      if (parsed.origin !== templateUrl.origin || parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) return undefined;
+      return parsed.toString();
+    } catch {
+      return undefined;
     }
-    return parsed.toString();
   }
 
   inferScopeFromObjectId(objectId: string, allowedScopes: string[]): { id: string; scope: SemanticScope } | undefined {
@@ -227,4 +229,6 @@ function validateDocumentUrlTemplate(value: unknown, scopeId: string): asserts v
   if (parsed.protocol !== "https:") throw new Error(`Scope ${scopeId} document_url_template must use https`);
   if (parsed.username || parsed.password) throw new Error(`Scope ${scopeId} document_url_template must not contain credentials`);
   if (parsed.hash) throw new Error(`Scope ${scopeId} document_url_template must not contain a fragment`);
+  const authority = /^\s*https:\/\/([^/?#]*)/i.exec(value)?.[1];
+  if (authority?.includes("{document_id}")) throw new Error(`Scope ${scopeId} document_url_template must keep {document_id} out of the URL authority`);
 }

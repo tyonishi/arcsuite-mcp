@@ -2,6 +2,7 @@ package biz.capricornus.arcsuite.mcp.adapter;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 
 import javax.xml.XMLConstants;
 import java.io.IOException;
@@ -355,12 +356,26 @@ final class ArcSuiteSoapClient {
         return "<t:"+elementName+" xsi:type=\"t:BinaryOperatorCondition\" operator=\""+XmlUtil.esc(requiredString(c,"operator"))+"\">"+attrId(aid)+"<t:attributeValue xsi:type=\"t:"+xsi+"\">"+el(child,requiredString(val,"value"))+"</t:attributeValue></t:"+elementName+">"; }
     private static String textCondition(Map<String,Object> text){StringBuilder b=new StringBuilder("<t:textCondition xsi:type=\"t:TextCondition\"><t:wordList operator=\"").append(XmlUtil.esc(string(text,"operator","AND"))).append("\">");for(String w:strings(text.get("words")))b.append(el("word",w));return b.append("</t:wordList></t:textCondition>").toString();}
 
-    private static List<String> parseStringArray(Element container){
+    static List<String> parseStringArray(Element container){
         if(container==null)return List.of();
         LinkedHashSet<String> values=new LinkedHashSet<>();
-        for(String name:List.of("string","item","ids","id"))for(Element e:XmlUtil.descendants(container,name)){String text=e.getTextContent();if(text!=null&&!text.isBlank()&&text.trim().startsWith("rep:"))values.add(text.trim());}
-        String direct=container.getTextContent();if(values.isEmpty()&&direct!=null&&direct.trim().startsWith("rep:"))values.add(direct.trim());
+        for(String name:List.of("string","item","id")) {
+            for(Element e:XmlUtil.descendants(container,name)) {
+                if(!isLeaf(e))continue;
+                String text=e.getTextContent();
+                if(text!=null&&!text.isBlank()&&text.trim().startsWith("rep:"))values.add(text.trim());
+            }
+        }
+        if(values.isEmpty()&&isLeaf(container)) {
+            String direct=container.getTextContent();
+            if(direct!=null&&!direct.isBlank()&&direct.trim().startsWith("rep:"))values.add(direct.trim());
+        }
         return new ArrayList<>(values);
+    }
+
+    private static boolean isLeaf(Element element){
+        for(Node n=element.getFirstChild();n!=null;n=n.getNextSibling())if(n instanceof Element)return false;
+        return true;
     }
 
     private static List<Map<String,Object>> parseRepositoryObjects(Element container){ List<Map<String,Object>> out=new ArrayList<>(); if(container==null)return out; List<Element> els=XmlUtil.descendants(container,"repositoryObject"); if(els.isEmpty()&&"repositoryObject".equals(container.getLocalName()))els=List.of(container); for(Element e:els)out.add(parseRepositoryObject(e)); return out; }

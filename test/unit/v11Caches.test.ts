@@ -21,6 +21,7 @@ test("paging snapshots preserve order and bind cursors to profile scope and kind
 
   const second = store.next(first.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" });
   assert.deepEqual(second.ids, ["rep:a:3"]);
+  assert.equal(second.pageSize, 2);
   assert.equal(second.nextCursor, null);
   assert.equal(second.context.includePath, true);
 
@@ -60,6 +61,7 @@ test("content snapshots are isolated by client scope document revision and varia
   };
   const snapshot = {
     contentHash: "sha256:abc",
+    label: "system:primary",
     fileName: "example.txt",
     contentType: "text/plain",
     sizeBytes: 5,
@@ -80,6 +82,7 @@ test("content cache evicts old entries to enforce per-client and byte bounds", (
   const cache = new ContentSnapshotCache(600, 2, 1, 128);
   const snapshot = (text: string) => ({
     contentHash: `sha256:${text}`,
+    label: "system:primary",
     fileName: "example.txt",
     contentType: "text/plain",
     sizeBytes: Buffer.byteLength(text),
@@ -93,4 +96,24 @@ test("content cache evicts old entries to enforce per-client and byte bounds", (
   cache.put(second, snapshot("second"));
   assert.equal(cache.get(first), undefined);
   assert.equal(cache.get(second)?.text, "second");
+});
+
+test("content cache evicts the oldest entry when the total byte bound is exceeded", () => {
+  const cache = new ContentSnapshotCache(600, 2, 2, 128);
+  const snapshot = (text: string) => ({
+    contentHash: `sha256:${text}`,
+    label: "system:primary",
+    fileName: "example.txt",
+    contentType: "text/plain",
+    sizeBytes: Buffer.byteLength(text),
+    extractor: "text",
+    text,
+    warnings: []
+  });
+  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", contentLabel: "system:primary" };
+  const second = { clientProfileId: "client-b", scopeId: "scope", documentId: "rep:b:1", contentLabel: "system:primary" };
+  cache.put(first, snapshot("a".repeat(80)));
+  cache.put(second, snapshot("b".repeat(80)));
+  assert.equal(cache.get(first), undefined);
+  assert.equal(cache.get(second)?.text, "b".repeat(80));
 });

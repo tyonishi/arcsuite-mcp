@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContentBridge } from "../../src/content/contentBridge.ts";
 import { CursorManager } from "../../src/content/cursor.ts";
+import { ContentSnapshotCache } from "../../src/content/snapshotCache.ts";
 
-function bridge(root: string, maxContentBytes = 1024, maxExtractedChars = 10) {
-  return new ContentBridge(root, new CursorManager(Buffer.from("0123456789abcdef0123456789abcdef"), 600), { maxContentBytes, maxExtractedChars });
+function bridge(root: string, maxContentBytes = 1024, maxExtractedChars = 10, cache?: ContentSnapshotCache) {
+  return new ContentBridge(root, new CursorManager(Buffer.from("0123456789abcdef0123456789abcdef"), 600), { maxContentBytes, maxExtractedChars }, cache);
 }
 
 test("content bridge enforces byte bounds and removes rejected temp files", async () => {
@@ -34,4 +35,22 @@ test("content bridge bounds extracted text and fails unsupported formats safely"
   const unsupported = { ...textContent, fileName: "sample.bin", contentType: "application/octet-stream", sizeBytes: 3, filePath: unsupportedPath };
   await assert.rejects(() => bridge(root).read(unsupported, { traceId: "trace", documentId: unsupported.id, maxChars: 100 }), /UNSUPPORTED_CONTENT_TYPE/);
   await assert.rejects(() => readFile(unsupportedPath));
+});
+
+test("content info returns validated metadata when optional snapshot warming fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "content-info-warm-"));
+  const path = join(root, "invalid.json");
+  await writeFile(path, "not valid json");
+  const content = { id: "rep:mock:EXAMPLE_CABINET:1", fileName: "invalid.json", contentType: "application/json", sizeBytes: 14, label: "adapter:primary", filePath: path };
+  const result = await bridge(root, 1024, 100, new ContentSnapshotCache(600, 10, 5, 1024)).infoCachedOrLoad({
+    clientProfileId: "client-a",
+    scopeId: "scope",
+    documentId: content.id,
+    contentLabel: "system:primary"
+  }, async () => content);
+  assert.equal(result.label, "adapter:primary");
+  assert.equal(result.extractable, true);
+  assert.equal(result.extractor, "json");
+  assert.equal(result.cached, false);
+  await assert.rejects(() => readFile(path));
 });

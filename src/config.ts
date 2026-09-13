@@ -130,7 +130,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const mode = (env.ARCSUITE_ADAPTER_MODE ?? "http") as "http" | "mock";
   if (mode !== "http" && mode !== "mock") throw new Error("ARCSUITE_ADAPTER_MODE must be http or mock");
   let cursorSecret: Buffer;
-  const cursorSecretText = readSecretFile(env.MCP_CURSOR_HMAC_SECRET_FILE) ?? env.MCP_CURSOR_HMAC_SECRET;
+  const cursorSecretFile = readSecretFile(env.MCP_CURSOR_HMAC_SECRET_FILE);
+  const cursorSecretText = production ? cursorSecretFile : cursorSecretFile ?? env.MCP_CURSOR_HMAC_SECRET;
   if (cursorSecretText) cursorSecret = Buffer.from(cursorSecretText, "utf8");
   else if (production) throw new Error("MCP_CURSOR_HMAC_SECRET_FILE is required in production");
   else cursorSecret = randomBytes(32);
@@ -157,6 +158,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const pagingSnapshotMaxTotalIds = positiveInteger(env.MCP_PAGING_MAX_TOTAL_IDS ?? "10000", "MCP_PAGING_MAX_TOTAL_IDS", CONFIG_LIMITS.maxPagingTotalIds);
   if (pagingSnapshotMaxSnapshotsPerClient > pagingSnapshotMaxSnapshots) throw new Error("MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT cannot exceed MCP_PAGING_MAX_SNAPSHOTS");
   if (pagingSnapshotMaxIds > pagingSnapshotMaxTotalIds) throw new Error("MCP_PAGING_SNAPSHOT_MAX_IDS cannot exceed MCP_PAGING_MAX_TOTAL_IDS");
+  if (searchMaxLimit > pagingSnapshotMaxIds) throw new Error("MCP_SEARCH_MAX_LIMIT cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS");
   const contentCacheTtlSeconds = positiveInteger(env.MCP_CONTENT_CACHE_TTL_SECONDS ?? "600", "MCP_CONTENT_CACHE_TTL_SECONDS", CONFIG_LIMITS.maxCursorTtlSeconds);
   const contentCacheMaxEntries = positiveInteger(env.MCP_CONTENT_CACHE_MAX_ENTRIES ?? "64", "MCP_CONTENT_CACHE_MAX_ENTRIES", CONFIG_LIMITS.maxContentCacheEntries);
   const contentCacheMaxEntriesPerClient = positiveInteger(env.MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT ?? "16", "MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT", CONFIG_LIMITS.maxContentCacheEntriesPerClient);

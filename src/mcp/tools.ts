@@ -134,7 +134,7 @@ export class ToolRegistry {
           data = {
             scope: parsed.scope,
             count: pageData.results.length,
-            limit: page.ids.length,
+            limit: page.pageSize,
             truncated: Boolean(page.nextCursor) || page.snapshotLimited,
             snapshot_limited: page.snapshotLimited,
             next_cursor: page.nextCursor,
@@ -224,7 +224,7 @@ export class ToolRegistry {
             scope: parsed.scope,
             folder_id: page.context.folderId,
             count: pageData.results.length,
-            limit: page.ids.length,
+            limit: page.pageSize,
             truncated: Boolean(page.nextCursor) || page.snapshotLimited,
             snapshot_limited: page.snapshotLimited,
             next_cursor: page.nextCursor,
@@ -396,12 +396,28 @@ export class ToolRegistry {
       options
     }));
     if (!operations.includes("getRepositoryObjects")) operations.push("getRepositoryObjects");
-    const requested = new Set(ids);
-    const seen = new Set<string>();
-    for (const object of batch.objects) {
-      if (!requested.has(object.id) || seen.has(object.id)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
-      seen.add(object.id);
+    if (!batch || !Array.isArray(batch.objects) || !Array.isArray(batch.failures)) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_shape", false);
     }
+    const requestedIndexById = new Map<string, number>();
+    for (const [index, id] of ids.entries()) requestedIndexById.set(id, index);
+    if (requestedIndexById.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+    const coveredIndexes = new Set<number>();
+    const returnedIds = new Set<string>();
+    for (const object of batch.objects) {
+      const index = requestedIndexById.get(object.id);
+      if (index === undefined || returnedIds.has(object.id)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+      returnedIds.add(object.id);
+      coveredIndexes.add(index);
+    }
+    for (const failure of batch.failures) {
+      if (!Number.isSafeInteger(failure.index) || failure.index < 0 || failure.index >= ids.length) {
+        throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_index", false);
+      }
+      if (coveredIndexes.has(failure.index)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+      coveredIndexes.add(failure.index);
+    }
+    if (coveredIndexes.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_coverage", false);
     this.assertRepositoryObjectsInScope(scope, batch.objects);
     this.assertAllowedObjectTypes(scope, batch.objects);
     const normalized = batch.objects.map((item) => this.decorateDocument(scope, normalizeDocument(item, scope.semantic_attributes)));

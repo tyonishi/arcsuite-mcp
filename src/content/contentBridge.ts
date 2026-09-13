@@ -83,19 +83,27 @@ export class ContentBridge {
 
   async infoCachedOrLoad(context: ContentCacheContext, load: () => Promise<AdapterContentResult>): Promise<ContentInfo> {
     const cached = this.cache?.get({ ...context, variant: "full" });
-    if (cached) return infoFromSnapshot(context.contentLabel, cached, true);
+    if (cached) return infoFromSnapshot(cached.label, cached, true);
     const content = await load();
     const basic = this.info(content);
     if (!basic.extractable) {
       await this.discard(content);
       return basic;
     }
-    const snapshot = await this.extractSnapshot(content, undefined, undefined);
-    this.cache?.put({ ...context, variant: "full" }, snapshot);
-    // `cached` means this request was served from an existing private snapshot,
-    // not merely that a snapshot is available after this request. Keeping this
-    // false on a miss also preserves accurate SOAP-operation audit metadata.
-    return infoFromSnapshot(content.label, snapshot, false);
+    const safePath = await this.assertSharedPath(content.filePath);
+    try {
+      const snapshot = await this.extractSnapshot(content, undefined, undefined, safePath);
+      const stored = this.cache?.put({ ...context, variant: "full" }, snapshot) ?? snapshot;
+      // `cached` means this request was served from an existing private snapshot,
+      // not merely that a snapshot is available after this request. Keeping this
+      // false on a miss also preserves accurate SOAP-operation audit metadata.
+      return infoFromSnapshot(stored.label, stored, false);
+    } catch {
+      // Content-info is allowed to return validated adapter metadata when the
+      // optional snapshot warm-up fails. Document reads still propagate the
+      // extraction error through their separate path.
+      return basic;
+    }
   }
 
   async discard(content: AdapterContentResult): Promise<void> {
@@ -136,8 +144,8 @@ export class ContentBridge {
     this.cache?.clear();
   }
 
-  private async extractSnapshot(content: AdapterContentResult, startPage?: number, endPage?: number): Promise<ContentSnapshot> {
-    const safePath = await this.assertSharedPath(content.filePath);
+  private async extractSnapshot(content: AdapterContentResult, startPage?: number, endPage?: number, verifiedPath?: string): Promise<ContentSnapshot> {
+    const safePath = verifiedPath ?? await this.assertSharedPath(content.filePath);
     try {
       if (content.sizeBytes > this.maxContentBytes) throw new Error("CONTENT_SIZE_LIMIT");
       const fileStats = await stat(safePath);
@@ -159,6 +167,7 @@ export class ContentBridge {
       const hash = `sha256:${createHash("sha256").update(normalized, "utf8").digest("hex")}`;
       return {
         contentHash: hash,
+        label: content.label,
         fileName: content.fileName,
         contentType: content.contentType,
         sizeBytes: content.sizeBytes,

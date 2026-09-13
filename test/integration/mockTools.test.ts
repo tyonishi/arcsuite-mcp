@@ -112,6 +112,18 @@ test("synthetic search, metadata, batch, folder, revisions, content info and tex
   assert.equal("base64" in result, false);
 });
 
+test("content-info cache hits preserve the adapter-provided label", async () => {
+  const rt = await runtime();
+  const originalContent = (rt.adapter as any).content.bind(rt.adapter);
+  (rt.adapter as any).content = async (request: any) => ({ ...await originalContent(request), label: "adapter:canonical" });
+  const first: any = (await rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: "rep:mock:EXAMPLE_CABINET:1001" })).structuredContent;
+  const second: any = (await rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: "rep:mock:EXAMPLE_CABINET:1001" })).structuredContent;
+  assert.equal(first.label, "adapter:canonical");
+  assert.equal(first.cached, false);
+  assert.equal(second.label, "adapter:canonical");
+  assert.equal(second.cached, true);
+});
+
 test("search and folder paging use stable opaque cursors", async () => {
   const rt = await runtime(undefined, { MCP_SEARCH_DEFAULT_LIMIT: "1", MCP_SEARCH_MAX_LIMIT: "2" });
   const p = profile();
@@ -163,6 +175,25 @@ test("tool results cannot bypass object-type or cabinet scope", async () => {
     () => rt2.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "synthetic" }),
     (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "cabinet_scope"
   );
+});
+
+test("batch results fail closed when success and failure coverage is inconsistent", async () => {
+  const ids = ["rep:mock:EXAMPLE_CABINET:1001", "rep:mock:EXAMPLE_CABINET:missing"];
+  const object = { id: ids[0], objectClass: "document", attributes: {} };
+  const cases = [
+    { category: "batch_identity", result: { objects: [object, object], failures: [] } },
+    { category: "batch_identity", result: { objects: [object], failures: [{ index: 1, code: "ARCSUITE_NOT_AVAILABLE" }, { index: 1, code: "ARCSUITE_NOT_AVAILABLE" }] } },
+    { category: "batch_identity", result: { objects: [object], failures: [{ index: 0, code: "ARCSUITE_NOT_AVAILABLE" }] } },
+    { category: "batch_coverage", result: { objects: [object], failures: [] } }
+  ];
+  for (const item of cases) {
+    const rt = await runtime();
+    (rt.adapter as any).getMany = async () => item.result;
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_get_documents", { scope: "example_documents", document_ids: ids }),
+      (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === item.category
+    );
+  }
 });
 
 test("content responses must preserve the requested object identity", async () => {

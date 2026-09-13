@@ -143,9 +143,10 @@ not change authorization.
 
 An operator may configure a trusted HTTPS `document_url_template` in a scope.
 When configured, document metadata can include `open_url`. The template must
-contain exactly one `{document_id}` placeholder, cannot include credentials,
-and is validated server-side. MCP callers cannot supply or override the host,
-template, or credentials.
+contain exactly one `{document_id}` placeholder in the path or query, cannot
+include credentials, and is validated server-side. MCP callers cannot supply
+or override the host, template, or credentials. If an optional template is
+invalid at decoration time, the server omits `open_url`.
 
 ## Stable error behavior
 
