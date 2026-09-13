@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { CONTENT_LABEL_PRIMARY_ALIAS, isSemanticContentLabelAlias } from "../semantic/contentLabels.ts";
 
 export type ReadCursorPayload = {
   trace_id: string;
@@ -6,6 +7,8 @@ export type ReadCursorPayload = {
   scope_id?: string;
   document_id: string;
   revision_number?: number;
+  /** Optional only when parsing a v1.1 cursor; newly issued cursors always set it. */
+  content_label?: string;
   content_hash: string;
   offset: number;
   extractor: string;
@@ -24,7 +27,13 @@ export class CursorManager {
   }
 
   create(payload: Omit<ReadCursorPayload, "expires_at">): string {
-    const full: ReadCursorPayload = { ...payload, expires_at: Math.floor(Date.now() / 1000) + this.ttlSeconds };
+    const contentLabel = payload.content_label ?? CONTENT_LABEL_PRIMARY_ALIAS;
+    if (!isSemanticContentLabelAlias(contentLabel)) throw new Error("INVALID_CURSOR_PAYLOAD");
+    const full: ReadCursorPayload = {
+      ...payload,
+      content_label: contentLabel,
+      expires_at: Math.floor(Date.now() / 1000) + this.ttlSeconds
+    };
     const body = Buffer.from(JSON.stringify(full), "utf8").toString("base64url");
     const sig = this.sign(body);
     return `${body}.${sig}`;
@@ -41,6 +50,8 @@ export class CursorManager {
     try { parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as ReadCursorPayload; }
     catch { throw new Error("INVALID_CURSOR"); }
     if (!parsed.document_id || !parsed.content_hash || !Number.isInteger(parsed.offset) || parsed.offset < 0) throw new Error("INVALID_CURSOR_PAYLOAD");
+    if (!Number.isSafeInteger(parsed.expires_at) || parsed.expires_at < 1) throw new Error("INVALID_CURSOR_PAYLOAD");
+    if (parsed.content_label !== undefined && !isSemanticContentLabelAlias(parsed.content_label)) throw new Error("INVALID_CURSOR_PAYLOAD");
     if (parsed.start_page !== undefined && (!Number.isInteger(parsed.start_page) || parsed.start_page < 1)) throw new Error("INVALID_CURSOR_PAYLOAD");
     if (parsed.end_page !== undefined && (!Number.isInteger(parsed.end_page) || parsed.end_page < (parsed.start_page ?? 1))) throw new Error("INVALID_CURSOR_PAYLOAD");
     if (parsed.expires_at < Math.floor(Date.now() / 1000)) throw new Error("CURSOR_EXPIRED");

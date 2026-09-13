@@ -52,8 +52,10 @@ Planned scope:
 - operator-allowlisted full-text search modes;
 - operator-allowlisted additional content labels.
 
-v1.2 does not include timestamp attachment, evidence mutation, repository
-mutation, RMS, Collaboration, or Workflow operations.
+S1 Typed Search Foundation and S2 Content Labels are implemented slices of
+v1.2. S3 Hard References and S4 Integrity/Evidence remain future approved
+slices; v1.2 does not include timestamp attachment, evidence mutation,
+repository mutation, RMS, Collaboration, or Workflow operations.
 
 ## v1.3 — Advanced Content and Scope
 

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { mapFilter } from "../../src/semantic/attributeMapper.ts";
 import { normalizeDocument } from "../../src/semantic/responseNormalizer.ts";
 import { ScopeRegistry } from "../../src/semantic/scopeRegistry.ts";
+import { toolInputSchemas } from "../../src/mcp/sdkSchemas.ts";
 
 test("scope YAML and semantic filters map without exposing physical fields", () => {
   const registry = ScopeRegistry.load(resolve("config/scopes.mock.yaml"));
@@ -29,6 +30,23 @@ test("scope YAML and semantic filters map without exposing physical fields", () 
   assert.equal(normalized.semantic_attributes?.document_number, "DOC-000001");
   assert.equal("attributes" in normalized, false);
   assert.equal(["drawing", "number"].join("_") in normalized, false);
+
+  const withConfiguredAliases = normalizeDocument({
+    id: "rep:mock:EXAMPLE_CABINET:1001",
+    objectClass: "document",
+    attributes: {
+      "rep:system:contentlabellist": {
+        type: "i18n[]",
+        values: [
+          { ns: "rep", name: "system:primary" },
+          { ns: "rep", name: "user:EXAMPLE_PREVIEW" },
+          { ns: "other", name: "user:EXAMPLE_PREVIEW" }
+        ]
+      }
+    }
+  }, {}, registry.contentLabelAliases(scope));
+  assert.deepEqual(withConfiguredAliases.content_labels, ["system:primary", "preview"]);
+  assert.equal(JSON.stringify(withConfiguredAliases).includes("EXAMPLE_PREVIEW"), false);
 });
 
 test("typed predicates use the verified schema value representation", () => {
@@ -129,6 +147,49 @@ test("scope registry validates typed operator and enum configuration", () => {
   const registry = new ScopeRegistry({ version: 1, scopes: { typed: { ...base, search: { full_text_modes: ["none", "thesaurus"] }, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { ns: "rep", name: "ACTIVE" } } } } } } as any });
   assert.deepEqual(registry.describe(["typed"])[0].full_text_modes, ["none", "thesaurus"]);
   assert.deepEqual(registry.describe(["typed"])[0].filters[0].values, ["active"]);
+});
+
+test("scope registry validates additive content-label configuration and preserves primary", () => {
+  const base = {
+    description: "Synthetic content-label scope",
+    enabled: true,
+    arcsuite: { cabinet_alias: "LABELS", cabinet_id: "rep:mock:LABELS", root_object_id: null, resolve_references: true },
+    allowed_object_types: ["document"],
+    default_attr_ids: [{ ns: "rep", name: "system:name" }],
+    semantic_attributes: {}
+  };
+  const registry = new ScopeRegistry({
+    version: 1,
+    scopes: {
+      labels: {
+        ...base,
+        content_labels: { preview: { ns: "rep", name: "user:PREVIEW" } }
+      }
+    }
+  });
+  const scope = registry.get("labels");
+  assert.deepEqual(registry.describe(["labels"])[0].content_labels, ["system:primary", "preview"]);
+  assert.deepEqual(registry.resolveContentLabel(scope, "system:primary"), { ns: "rep", name: "system:primary" });
+  assert.deepEqual(registry.resolveContentLabel(scope, "preview"), { ns: "rep", name: "user:PREVIEW" });
+  assert.equal(registry.resolveContentLabel(scope, "unknown"), undefined);
+
+  for (const contentLabels of [
+    { "system:primary": { ns: "rep", name: "system:other" } },
+    { preview: { ns: "rep", name: "system:primary" } },
+    { preview: { ns: "rep", name: "user:SAME" }, other: { ns: "rep", name: "user:SAME" } },
+    { "Bad-Alias": { ns: "rep", name: "user:PREVIEW" } },
+    { preview: { ns: "rep other", name: "user:PREVIEW" } },
+    { preview: { ns: "rep", name: "user:PREVIEW", extra: "nope" } }
+  ]) {
+    assert.throws(() => new ScopeRegistry({ version: 1, scopes: { labels: { ...base, content_labels: contentLabels } } } as any), /content label|content_labels|physical/i);
+  }
+
+  const noBlock = new ScopeRegistry({ version: 1, scopes: { labels: base } });
+  assert.deepEqual(noBlock.describe(["labels"])[0].content_labels, ["system:primary"]);
+
+  const readSchema = toolInputSchemas.arcsuite_read_document;
+  assert.equal(readSchema.safeParse({ document_id: "rep:mock:LABELS:1", content_label: "not_configured" }).success, true);
+  assert.equal(readSchema.safeParse({ document_id: "rep:mock:LABELS:1", content_label: { ns: "rep", name: "user:PREVIEW" } }).success, false);
 });
 
 test("scope registry rejects string enum literals outside adapter constraints", async () => {

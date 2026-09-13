@@ -17,8 +17,8 @@ features. These features do not add new mutation authority.
 | `arcsuite_get_documents` | `scope`, `document_ids` | Bounded batch metadata with explicit per-input failures |
 | `arcsuite_list_folder` | `scope`; optional proven `folder_id`, or `scope` + `cursor` | Bounded child document/folder page and optional continuation cursor |
 | `arcsuite_list_document_revisions` | `document_id` | Revision metadata |
-| `arcsuite_get_document_content_info` | `document_id` | File name/type/size/extractor support; may warm a private short-lived extracted-content snapshot; never binary |
-| `arcsuite_read_document` | `document_id` | Bounded extracted text, cache indicator, and optional signed content cursor |
+| `arcsuite_get_document_content_info` | `document_id`; optional semantic `content_label` | File name/type/size/extractor support for one configured label; may warm a private short-lived extracted-content snapshot; never binary |
+| `arcsuite_read_document` | `document_id`; optional semantic `content_label` | Bounded extracted text, cache indicator, and optional signed content cursor |
 
 ## Capability discovery
 
@@ -46,7 +46,8 @@ the authenticated profile:
         }
       ],
       "full_text_modes": ["none"],
-      "ui_deep_link": false
+      "ui_deep_link": false,
+      "content_labels": ["system:primary", "preview"]
     }
   ]
 }
@@ -152,9 +153,28 @@ scope, validates every returned object, and returns upstream partial failures
 with their original request index and document ID. Missing or inconsistent
 batch coverage fails closed rather than silently dropping objects.
 
-## Content-info and read reuse
+## Content labels and read reuse
 
-`arcsuite_get_document_content_info` may extract a supported primary content
+`content_label` is a semantic alias. `system:primary` is always available and
+is the default. Additional aliases are configured per scope, for example:
+
+```yaml
+content_labels:
+  preview:
+    ns: "rep"
+    name: "user:YOUR_PREVIEW_CONTENT_LABEL"
+```
+
+The namespace/name pair is trusted server-side configuration, not an MCP input.
+Discovery returns only aliases. Runtime scope resolution still rejects an
+alias configured for another scope or an unknown alias. Before a cache miss can
+fetch content, the target document or requested revision must advertise the
+exact namespace and name in `rep:system:contentlabellist`. If the label is not
+present, content-info returns `extractable: false` with
+`reason: "CONTENT_LABEL_NOT_FOUND"`; a document read fails without dispatching
+the content operation.
+
+`arcsuite_get_document_content_info` may extract a supported selected label
 into a short-lived in-memory normalized-text snapshot. A subsequent
 `arcsuite_read_document` by the same client profile and semantic scope can
 reuse that snapshot instead of downloading/extracting the document again.
@@ -166,19 +186,27 @@ Read example:
 ```json
 {
   "document_id": "rep:mock:EXAMPLE_CABINET:1001",
+  "content_label": "preview",
   "max_chars": 20000
 }
 ```
 
 When a text read is truncated, send `next_cursor` back as `cursor` without
 also sending page-selection fields. Content cursors are signed, expire, and are
-bound to document, revision, extracted content, extractor, and (for v1.1
-cursors) client profile/scope. The page selection that produced the snapshot
-is preserved across continuation reads.
+bound to document, revision, extracted content, extractor, semantic
+`content_label`, client profile, and scope. The page selection that produced
+the snapshot is preserved across continuation reads. Omitting the label on a
+continuation uses the signed cursor label; supplying a different label fails.
+Valid short-lived v1.1 cursors without a label are interpreted as
+`system:primary`.
 
 The result field `cached` reports whether that specific read used an already
 existing private extracted-content snapshot. It is informational only and does
 not change authorization.
+
+The stable invalid-argument category `content_label_not_allowed` is used for
+unknown or scope-disallowed aliases. Physical namespace/name mappings never
+appear in normal tool output or these errors.
 
 ## Optional ArcSuite UI deep links
 

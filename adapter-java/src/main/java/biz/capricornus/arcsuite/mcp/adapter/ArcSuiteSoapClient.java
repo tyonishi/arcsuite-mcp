@@ -189,27 +189,35 @@ final class ArcSuiteSoapClient {
     }
 
     Map<String,Object> content(Map<String,Object> req,String sessionId) {
-        String id=requiredString(req,"id");
+        String requestId=requiredString(req,"id");
+        String id=requestId;
+        String effectiveId=requestId;
         Number revision=req.get("revisionNumber") instanceof Number n?n:null;
         if(revision!=null) {
             Map<String,Object> getReq=new LinkedHashMap<>();
-            getReq.put("id",id); getReq.put("revisionNumber",revision.longValue()); getReq.put("resolveRef",false); getReq.put("includePath",false);
+            getReq.put("id",requestId); getReq.put("revisionNumber",revision.longValue()); getReq.put("resolveRef",false); getReq.put("includePath",false);
             getReq.put("attrIds",List.of()); getReq.put("options",List.of());
             Map<String,Object> revisionObj=get(getReq,sessionId);
-            Object rid=revisionObj.get("id"); if(rid instanceof String s && !s.isBlank()) id=s;
+            Object rid=revisionObj.get("id");
+            if(!(rid instanceof String s)||s.isBlank()) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Revision object identity was not returned");
+            id=s; effectiveId=s;
+        } else if(strings(req.get("options")).contains("resolveRef")) {
+            Map<String,Object> getReq=new LinkedHashMap<>();
+            getReq.put("id",requestId); getReq.put("resolveRef",true); getReq.put("includePath",false);
+            getReq.put("attrIds",List.of()); getReq.put("options",List.of());
+            Map<String,Object> resolvedObj=get(getReq,sessionId);
+            Object rid=resolvedObj.get("id");
+            if(!(rid instanceof String s)||s.isBlank()) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Resolved object identity was not returned");
+            id=s; effectiveId=s;
         }
-        Map<String,Object> label=map(req.get("contentLabel"));
-        StringBuilder b=new StringBuilder();
-        b.append(el("id",id));
-        b.append("<t:contentLabels><t:i18nString ns=\"").append(XmlUtil.esc(string(label,"ns","rep"))).append("\" name=\"")
-                .append(XmlUtil.esc(string(label,"name","system:primary"))).append("\"/></t:contentLabels>");
-        b.append(options(req.get("options")));
-        SoapResponse r=invoke("getRepositoryObjectContentWithOptions",b.toString(),sessionId,true);
+        Map<String,Object> requestedLabel=map(req.get("contentLabel"));
+        SoapResponse r=invoke("getRepositoryObjectContentWithOptions",contentRequestBody(req,id),sessionId,true);
         Element c=findResponseValue(r.document(),"getRepositoryObjectContentWithOptionsReturn","result");
         if(c==null) throw new AdapterException("ARCSUITE_NOT_AVAILABLE","Content not available");
+        Map<String,Object> returnedLabel=parseContentLabel(c);
+        assertContentLabelMatches(requestedLabel,returnedLabel);
         String fileName=value(c,"fileName"); if(fileName==null||fileName.isBlank())fileName="document.bin";
         String contentType=value(c,"contentType"); if(contentType==null||contentType.isBlank())contentType="application/octet-stream";
-        Element labelEl=XmlUtil.child(c,"label"); String labelName=labelEl==null?"system:primary":labelEl.getAttribute("name");
         byte[] bytes=resolveData(XmlUtil.child(c,"data"),r.attachments());
         if(bytes.length>config.maxContentBytes()) throw new AdapterException("ARCSUITE_LIMIT_EXCEEDED","Content exceeds configured maximum size");
         String traceId=requiredString(req,"traceId").replaceAll("[^A-Za-z0-9._-]","_");
@@ -219,9 +227,41 @@ final class ArcSuiteSoapClient {
         try { Files.write(path,bytes,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE); }
         catch(IOException e){ throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Failed to materialize content",false,null,e); }
         LinkedHashMap<String,Object> out=new LinkedHashMap<>();
-        out.put("id",requiredString(req,"id")); if(revision!=null)out.put("revisionNumber",revision.longValue()); out.put("label",labelName);
+        out.put("id",requestId); if(!requestId.equals(effectiveId))out.put("effectiveId",effectiveId); if(revision!=null)out.put("revisionNumber",revision.longValue()); out.put("label",returnedLabel);
         out.put("fileName",fileName); out.put("contentType",contentType); out.put("sizeBytes",bytes.length); out.put("filePath",path.toString());
         return out;
+    }
+
+    static String contentRequestBody(Map<String,Object> req,String id) {
+        Map<String,Object> label=map(req.get("contentLabel"));
+        String ns=requiredString(label,"ns");
+        String name=requiredString(label,"name");
+        List<String> requestedOptions=strings(req.get("options"));
+        for(String option:requestedOptions) {
+            if(!Set.of("resolveRef","errorOnOfflineContent").contains(option)) throw new IllegalArgumentException("Unsupported content option");
+        }
+        return el("id",id)
+                +"<t:contentLabels><t:i18nString ns=\""+XmlUtil.esc(ns)+"\" name=\""+XmlUtil.esc(name)+"\"/></t:contentLabels>"
+                +options(requestedOptions);
+    }
+
+    static Map<String,Object> parseContentLabel(Element content) {
+        Element label=XmlUtil.child(content,"label");
+        if(label==null) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Content response did not include a label");
+        String ns=label.getAttribute("ns");
+        String name=label.getAttribute("name");
+        if(ns==null||ns.isBlank()||name==null||name.isBlank()) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Content response label was incomplete");
+        return Map.of("ns",ns,"name",name);
+    }
+
+    static void assertContentLabelMatches(Map<String,Object> requested,Map<String,Object> returned) {
+        String requestedNs=requiredString(requested,"ns");
+        String requestedName=requiredString(requested,"name");
+        String returnedNs=requiredString(returned,"ns");
+        String returnedName=requiredString(returned,"name");
+        if(!requestedNs.equals(returnedNs)||!requestedName.equals(returnedName)) {
+            throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Returned content label did not match the request");
+        }
     }
 
     Map<String,Object> validateSchema(Map<String,Object> req,String sessionId) {
@@ -298,14 +338,12 @@ final class ArcSuiteSoapClient {
         catch(java.net.http.HttpTimeoutException e){throw new AdapterException("ARCSUITE_TIMEOUT","ArcSuite request timed out",true,null,e);}
         catch(IOException|InterruptedException e){ if(e instanceof InterruptedException)Thread.currentThread().interrupt(); throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","ArcSuite transport failure",false,null,e); }
         long maxEnvelopeBytes = Math.addExact(config.maxContentBytes(), 16L * 1024 * 1024);
-        byte[] responseBody;
-        try (InputStream body = response.body()) {
-            long declared = response.headers().firstValueAsLong("content-length").orElse(-1L);
-            if (declared > maxEnvelopeBytes) throw new AdapterException("ARCSUITE_LIMIT_EXCEEDED", "SOAP/MTOM response exceeds configured maximum size");
-            responseBody = readBounded(body, maxEnvelopeBytes);
-        } catch (IOException e) {
-            throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "ArcSuite response could not be read", false, null, e);
+        long declared = response.headers().firstValueAsLong("content-length").orElse(-1L);
+        if (declared > maxEnvelopeBytes) {
+            try { response.body().close(); } catch (IOException ignored) {}
+            throw new AdapterException("ARCSUITE_LIMIT_EXCEEDED", "SOAP/MTOM response exceeds configured maximum size");
         }
+        byte[] responseBody = readAndClose(response.body(), maxEnvelopeBytes);
         String ct=response.headers().firstValue("content-type").orElse("text/xml");
         MtomMessage mtom=MtomParser.parse(ct,responseBody); Document doc=XmlUtil.parse(mtom.rootXml());
         AdapterException fault=parseFault(doc,response.statusCode()); if(fault!=null)throw fault;
@@ -324,6 +362,14 @@ final class ArcSuiteSoapClient {
             out.write(buffer, 0, n);
         }
         return out.toByteArray();
+    }
+
+    static byte[] readAndClose(InputStream input, long maxBytes) {
+        try (InputStream body = input) {
+            return readBounded(body, maxBytes);
+        } catch (IOException e) {
+            throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "ArcSuite response could not be read", false, null, e);
+        }
     }
 
     private AdapterException parseFault(Document doc,int httpStatus) {
@@ -410,7 +456,7 @@ final class ArcSuiteSoapClient {
     }
 
     private static List<Map<String,Object>> parseRepositoryObjects(Element container){ List<Map<String,Object>> out=new ArrayList<>(); if(container==null)return out; List<Element> els=XmlUtil.descendants(container,"repositoryObject"); if(els.isEmpty()&&"repositoryObject".equals(container.getLocalName()))els=List.of(container); for(Element e:els)out.add(parseRepositoryObject(e)); return out; }
-    private static Map<String,Object> parseRepositoryObject(Element e){LinkedHashMap<String,Object> out=new LinkedHashMap<>();String id=value(e,"id");if(id==null&&"repositoryObject".equals(e.getLocalName()))id=XmlUtil.childText(e,"id");out.put("id",id==null?"":id);
+    static Map<String,Object> parseRepositoryObject(Element e){LinkedHashMap<String,Object> out=new LinkedHashMap<>();String id=value(e,"id");if(id==null&&"repositoryObject".equals(e.getLocalName()))id=XmlUtil.childText(e,"id");out.put("id",id==null?"":id);
         Element oc=XmlUtil.child(e,"objectClass");String ocName=oc==null?"":oc.getAttribute("name");out.put("objectClass",ocName==null||ocName.isBlank()?"unknown":ocName);
         LinkedHashMap<String,Object> attrs=new LinkedHashMap<>();Element aroot=XmlUtil.child(e,"attributes");if(aroot!=null){for(Element a:XmlUtil.children(aroot,"attribute")){String ns=a.getAttribute("ns"),name=a.getAttribute("name");Element av=XmlUtil.child(a,"attributeValue");if(av!=null)attrs.put(ns+":"+name,parseAttributeValue(av));}}out.put("attributes",attrs);return out;}
     private static Object parseAttributeValue(Element av){String t=XmlUtil.localType(av);LinkedHashMap<String,Object> o=new LinkedHashMap<>();

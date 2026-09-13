@@ -12,6 +12,11 @@ scopes:
       root_object_id: null
       resolve_references: true
 
+    content_labels:
+      preview:
+        ns: "rep"
+        name: "user:EXAMPLE_PREVIEW"
+
     allowed_object_types:
       - document
       - folder

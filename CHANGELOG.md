@@ -33,6 +33,11 @@
   alias mapping; expanded AttributeSchema metadata; and explicitly configured
   `none`/`stemming`/`thesaurus` full-text modes. This slice adds no SOAP
   operations and preserves the v1.0/v1.1 read-only boundary.
+- Implemented the v1.2 S2 Content Labels slice: additive per-scope semantic
+  content-label aliases, exact document/revision membership proof, returned
+  label identity checks, namespace-safe extracted-content caches, and signed
+  cursors bound to semantic labels. S2 adds no SOAP operation; later v1.2
+  slices remain incomplete.
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and
   `listRepositoryObjectIds` operations to the mechanically checked allowlist;
   mutation/admin/ACL/delete/privileged-print exclusions remain unchanged.

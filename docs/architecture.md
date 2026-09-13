@@ -54,9 +54,13 @@ client checks its read-only SOAP allowlist before dispatch.
 3. The profile limits scopes, tools, and request rate.
 4. The semantic tool validates public arguments and rejects raw ArcSuite
    fields.
-5. The session manager invokes only a bounded read operation.
-6. The adapter performs ArcSuite-specific SOAP/MTOM work internally.
-7. The gateway returns semantic JSON and bounded text, never credentials,
+5. For a content cache miss, the selected document or exact revision is
+   fetched with the content-label-list attribute and scope/root/object-type
+   proof; only an exact namespace/name membership match may continue.
+6. The session manager invokes only bounded read operations.
+7. The adapter performs ArcSuite-specific SOAP/MTOM work internally and
+   verifies the returned content label identity.
+8. The gateway returns semantic JSON and bounded text, never credentials,
    session identifiers, raw SOAP, or ordinary binary/base64.
 
 ## Failure boundary

@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type { TokenProfile, AppConfig } from "../config.ts";
 import type { ArcSuiteAdapterClient } from "../arcsuite/soapAdapterClient.ts";
-import type { AdapterRepositoryObject, NormalizedDocument } from "../arcsuite/types.ts";
+import type { AdapterContentRequest, AdapterContentResult, AdapterRepositoryObject, NormalizedDocument, PhysicalContentLabel } from "../arcsuite/types.ts";
 import { AdapterSessionManager } from "../arcsuite/sessionManager.ts";
-import { DEFAULT_ATTRS, CONTENT_LABEL_PRIMARY } from "../arcsuite/constants.ts";
+import { DEFAULT_ATTRS } from "../arcsuite/constants.ts";
 import { ScopeRegistry, type SemanticScope } from "../semantic/scopeRegistry.ts";
 import { mapFilter, type SemanticFilterInput } from "../semantic/attributeMapper.ts";
-import { normalizeDocument } from "../semantic/responseNormalizer.ts";
-import { ContentBridge } from "../content/contentBridge.ts";
+import { contentLabelMembership, normalizeDocument } from "../semantic/responseNormalizer.ts";
+import { ContentBridge, type ContentInfo } from "../content/contentBridge.ts";
 import { AuditLogger } from "../audit/auditLogger.ts";
 import { PagingSnapshotStore } from "./paging.ts";
 import { McpToolError, toMcpToolError } from "./errors.ts";
 import { assertExactKeys, assertObject, boolValue, enumValue, intValue, optionalInt, optionalString, stringValue } from "../util/json.ts";
+import { CONTENT_LABEL_PRIMARY_ALIAS, isSemanticContentLabelAlias, samePhysicalContentLabel } from "../semantic/contentLabels.ts";
 
 export type ToolDefinition = {
   name: string;
@@ -25,6 +26,16 @@ export type ToolCallResult = {
 };
 
 const RAW_ARCSUITE_KEYS = /^(cabinet|cabinetId|cabinet_id|attr|attribute|attributes|attrId|attr_id|endpoint|baseUrl|serviceDn|service_dn|session|Session|sessionId|SearchCondition|operation|operations|option|options|soap|wsdl|raw)$/i;
+
+class ContentLabelNotFoundError extends Error {
+  constructor() { super("CONTENT_LABEL_NOT_FOUND"); }
+}
+
+type ContentMembershipProof = {
+  objectId: string;
+  revisionNumber?: number;
+  present: boolean;
+};
 
 export class ToolRegistry {
   private readonly config: AppConfig;
@@ -167,7 +178,7 @@ export class ToolRegistry {
           soapOperations = parsed.revisionNumber ? ["getRepositoryObjectByRevisionNumber"] : ["getRepositoryObject"];
           if (parsed.includePath || scope.arcsuite.root_object_id) soapOperations.push("getRepositoryObjectPath");
           this.assertRootScope(result, scope);
-          const normalized = this.decorateDocument(scope, normalizeDocument(result, scope.semantic_attributes));
+          const normalized = this.decorateDocument(scope, normalizeDocument(result, scope.semantic_attributes, this.scopes.contentLabelAliases(scope)));
           if (!parsed.includePath) delete normalized.path;
           objectIds = [normalized.document_id];
           resultCount = 1;
@@ -253,7 +264,7 @@ export class ToolRegistry {
           this.assertAllowedObjectTypes(scopeMatch.scope, result);
           await this.verifyReturnedRootScope(profile, scopeMatch.scope, result);
           soapOperations = ["listRepositoryObjectRevisions"];
-          const normalized = result.map((item) => this.decorateDocument(scopeMatch.scope, normalizeDocument(item, scopeMatch.scope.semantic_attributes))).slice(0, parsed.limit);
+          const normalized = result.map((item) => this.decorateDocument(scopeMatch.scope, normalizeDocument(item, scopeMatch.scope.semantic_attributes, this.scopes.contentLabelAliases(scopeMatch.scope)))).slice(0, parsed.limit);
           objectIds = [parsed.documentId];
           resultCount = normalized.length;
           data = { document_id: parsed.documentId, count: normalized.length, limit: parsed.limit, truncated: result.length > parsed.limit, revisions: normalized };
@@ -263,43 +274,70 @@ export class ToolRegistry {
           const parsed = parseContentInfoArgs(args);
           const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
           scopeId = scopeMatch.id;
-          await this.verifyObjectScope(profile, scopeMatch.scope, parsed.documentId);
+          const semanticLabel = this.resolveContentLabel(scopeMatch.scope, parsed.contentLabel ?? CONTENT_LABEL_PRIMARY_ALIAS);
+          await this.verifyObjectScope(profile, scopeMatch.scope, parsed.documentId, {
+            revisionNumber: parsed.revisionNumber,
+            resolveRef: parsed.revisionNumber === undefined && scopeMatch.scope.arcsuite.resolve_references
+          });
           const cacheContext = {
             clientProfileId: profile.clientProfileId,
             scopeId: scopeMatch.id,
             documentId: parsed.documentId,
             revisionNumber: parsed.revisionNumber,
-            contentLabel: CONTENT_LABEL_PRIMARY.name
+            contentLabel: semanticLabel.alias,
+            physicalContentLabel: semanticLabel.physical
           };
-          const info = await this.contentBridge.infoCachedOrLoad(cacheContext, async () => {
-            const content = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.content({
-              clientProfileId: profile.clientProfileId,
-              id: parsed.documentId,
-              revisionNumber: parsed.revisionNumber,
-              contentLabel: CONTENT_LABEL_PRIMARY,
-              options: contentOptions(scopeMatch.scope),
-              traceId
-            }));
-            this.assertObjectIdInScope(scopeMatch.scope, content.id, parsed.documentId);
-            return content;
-          });
-          if (!info.cached) soapOperations = ["getRepositoryObjectContentWithOptions"];
+          let info: ContentInfo | undefined;
+          try {
+            info = await this.contentBridge.infoCachedOrLoad(cacheContext, async () => {
+              const membership = await this.proveContentLabelMembership(profile, scopeMatch.scope, parsed.documentId, parsed.revisionNumber, semanticLabel.physical, soapOperations);
+              if (!membership.present) throw new ContentLabelNotFoundError();
+              return this.loadContent(profile, scopeMatch.scope, {
+                clientProfileId: profile.clientProfileId,
+                id: parsed.documentId,
+                revisionNumber: parsed.revisionNumber,
+                contentLabel: semanticLabel.physical,
+                options: contentOptions(scopeMatch.scope),
+                traceId
+              }, membership.proof, semanticLabel.physical, parsed.revisionNumber, soapOperations);
+            });
+          } catch (error) {
+            if (!(error instanceof ContentLabelNotFoundError)) throw error;
+          }
           objectIds = [parsed.documentId];
           resultCount = 1;
-          data = { document_id: parsed.documentId, revision_number: parsed.revisionNumber, ...info };
+          data = info
+            ? { document_id: parsed.documentId, revision_number: parsed.revisionNumber, content_label: semanticLabel.alias, ...info }
+            : {
+                document_id: parsed.documentId,
+                revision_number: parsed.revisionNumber,
+                content_label: semanticLabel.alias,
+                label: semanticLabel.alias,
+                extractable: false,
+                reason: "CONTENT_LABEL_NOT_FOUND"
+              };
           break;
         }
         case "arcsuite_read_document": {
           const parsed = parseReadArgs(args, this.config);
           const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
           scopeId = scopeMatch.id;
-          await this.verifyObjectScope(profile, scopeMatch.scope, parsed.documentId);
+          const cursorLabel = parsed.cursor ? this.contentBridge.resolveCursorContentLabel(parsed.cursor) : undefined;
+          if (parsed.contentLabel !== undefined && cursorLabel !== undefined && parsed.contentLabel !== cursorLabel) {
+            throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "content_label_cursor_mismatch", false);
+          }
+          const semanticLabel = this.resolveContentLabel(scopeMatch.scope, parsed.contentLabel ?? cursorLabel ?? CONTENT_LABEL_PRIMARY_ALIAS);
+          await this.verifyObjectScope(profile, scopeMatch.scope, parsed.documentId, {
+            revisionNumber: parsed.revisionNumber,
+            resolveRef: parsed.revisionNumber === undefined && scopeMatch.scope.arcsuite.resolve_references
+          });
           const cacheContext = {
             clientProfileId: profile.clientProfileId,
             scopeId: scopeMatch.id,
             documentId: parsed.documentId,
             revisionNumber: parsed.revisionNumber,
-            contentLabel: CONTENT_LABEL_PRIMARY.name
+            contentLabel: semanticLabel.alias,
+            physicalContentLabel: semanticLabel.physical
           };
           const read = await this.contentBridge.readCachedOrLoad(cacheContext, {
             traceId,
@@ -308,20 +346,20 @@ export class ToolRegistry {
             startPage: parsed.startPage,
             endPage: parsed.endPage,
             cursor: parsed.cursor,
+            contentLabel: semanticLabel.alias,
             maxChars: parsed.maxChars
           }, async () => {
-            const content = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.content({
+            const membership = await this.proveContentLabelMembership(profile, scopeMatch.scope, parsed.documentId, parsed.revisionNumber, semanticLabel.physical, soapOperations);
+            if (!membership.present) throw new ContentLabelNotFoundError();
+            return this.loadContent(profile, scopeMatch.scope, {
               clientProfileId: profile.clientProfileId,
               id: parsed.documentId,
               revisionNumber: parsed.revisionNumber,
-              contentLabel: CONTENT_LABEL_PRIMARY,
+              contentLabel: semanticLabel.physical,
               options: contentOptions(scopeMatch.scope),
               traceId
-            }));
-            this.assertObjectIdInScope(scopeMatch.scope, content.id, parsed.documentId);
-            return content;
+            }, membership.proof, semanticLabel.physical, parsed.revisionNumber, soapOperations);
           });
-          if (!read.cached) soapOperations = ["getRepositoryObjectContentWithOptions"];
           objectIds = [parsed.documentId];
           resultCount = 1;
           data = read as unknown as Record<string, unknown>;
@@ -364,7 +402,21 @@ export class ToolRegistry {
     return match;
   }
 
-  private async verifyObjectScope(profile: TokenProfile, scope: SemanticScope, objectId: string): Promise<void> {
+  private resolveContentLabel(scope: SemanticScope, alias: string): { alias: string; physical: PhysicalContentLabel } {
+    if (!isSemanticContentLabelAlias(alias)) {
+      throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "content_label_not_allowed", false);
+    }
+    const physical = this.scopes.resolveContentLabel(scope, alias);
+    if (!physical) throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "content_label_not_allowed", false);
+    return { alias, physical };
+  }
+
+  private async verifyObjectScope(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    objectId: string,
+    options: { revisionNumber?: number; resolveRef?: boolean } = {}
+  ): Promise<void> {
     if (!objectId.startsWith(`${scope.arcsuite.cabinet_id}:`) && objectId !== scope.arcsuite.cabinet_id) {
       throw new McpToolError("ARCSUITE_FORBIDDEN", "cabinet_scope", false);
     }
@@ -372,7 +424,8 @@ export class ToolRegistry {
     const obj = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
       clientProfileId: profile.clientProfileId,
       id: objectId,
-      resolveRef: false,
+      revisionNumber: options.revisionNumber,
+      resolveRef: options.resolveRef ?? false,
       includePath: true,
       attrIds: [DEFAULT_ATTRS.name],
       options: []
@@ -380,6 +433,102 @@ export class ToolRegistry {
     this.assertRepositoryObjectInScope(scope, obj);
     this.assertAllowedObjectType(scope, obj);
     this.assertRootScope(obj, scope);
+  }
+
+  private async proveContentLabelMembership(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    objectId: string,
+    revisionNumber: number | undefined,
+    expected: PhysicalContentLabel,
+    operations: string[]
+  ): Promise<{ proof: ContentMembershipProof; present: boolean }> {
+    const resolveRef = revisionNumber === undefined && scope.arcsuite.resolve_references;
+    this.recordSoapOperation(operations, revisionNumber === undefined ? "getRepositoryObject" : "getRepositoryObjectByRevisionNumber");
+    const object = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+      clientProfileId: profile.clientProfileId,
+      id: objectId,
+      revisionNumber,
+      resolveRef,
+      includePath: Boolean(scope.arcsuite.root_object_id),
+      attrIds: [
+        DEFAULT_ATTRS.name,
+        DEFAULT_ATTRS.objectType,
+        DEFAULT_ATTRS.revisionNumber,
+        DEFAULT_ATTRS.currentRevisionNumber,
+        DEFAULT_ATTRS.contentLabelList
+      ],
+      options: []
+    }));
+    this.assertRepositoryObjectInScope(scope, object);
+    this.assertAllowedObjectType(scope, object);
+    this.assertRootScope(object, scope);
+    if (!resolveRef && object.id !== objectId) throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
+    if (revisionNumber !== undefined && repositoryObjectRevisionNumber(object) !== revisionNumber) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_mismatch", false);
+    }
+    const membership = contentLabelMembership(object, expected);
+    if (membership === "unproven") {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_label_membership_unproven", false);
+    }
+    return {
+      proof: { objectId: object.id, revisionNumber, present: membership === "present" },
+      present: membership === "present"
+    };
+  }
+
+  private assertContentResult(
+    scope: SemanticScope,
+    content: {
+      id: string;
+      effectiveId?: string;
+      revisionNumber?: number;
+      label: PhysicalContentLabel;
+    },
+    requestedId: string,
+    proof: ContentMembershipProof,
+    expectedLabel: PhysicalContentLabel,
+    expectedRevision?: number
+  ): void {
+    this.assertObjectIdInScope(scope, content.id, requestedId);
+    const effectiveId = content.effectiveId ?? content.id;
+    this.assertObjectIdInScope(scope, effectiveId);
+    if (effectiveId !== proof.objectId) throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
+    if (expectedRevision !== undefined && content.revisionNumber !== undefined && content.revisionNumber !== expectedRevision) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_mismatch", false);
+    }
+    const returnedLabel = content.label;
+    if (!returnedLabel || typeof returnedLabel !== "object" || Array.isArray(returnedLabel)
+      || typeof returnedLabel.ns !== "string" || typeof returnedLabel.name !== "string"
+      || !returnedLabel.ns || !returnedLabel.name
+      || !samePhysicalContentLabel(returnedLabel, expectedLabel)) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_label_mismatch", false);
+    }
+  }
+
+  private async loadContent(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    request: AdapterContentRequest,
+    proof: ContentMembershipProof,
+    expectedLabel: PhysicalContentLabel,
+    expectedRevision: number | undefined,
+    operations: string[]
+  ): Promise<AdapterContentResult> {
+    this.recordSoapOperation(operations, "getRepositoryObjectContentWithOptions");
+    let content: AdapterContentResult | undefined;
+    try {
+      content = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.content(request));
+      this.assertContentResult(scope, content, request.id, proof, expectedLabel, expectedRevision);
+      return content;
+    } catch (error) {
+      if (content) await this.contentBridge.discard(content).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private recordSoapOperation(operations: string[], operation: string): void {
+    if (!operations.includes(operation)) operations.push(operation);
   }
 
   private async fetchObjectsByIds(
@@ -425,7 +574,7 @@ export class ToolRegistry {
     if (coveredIndexes.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_coverage", false);
     this.assertRepositoryObjectsInScope(scope, batch.objects);
     this.assertAllowedObjectTypes(scope, batch.objects);
-    const normalized = batch.objects.map((item) => this.decorateDocument(scope, normalizeDocument(item, scope.semantic_attributes)));
+    const normalized = batch.objects.map((item) => this.decorateDocument(scope, normalizeDocument(item, scope.semantic_attributes, this.scopes.contentLabelAliases(scope))));
     if (includePath || root) await this.attachPaths(profile, scope, normalized, operations);
     if (!includePath) for (const doc of normalized) delete doc.path;
     const failures = batch.failures.map((failure) => {
@@ -488,7 +637,7 @@ export class ToolRegistry {
       this.assertRepositoryObjectInScope(scope, obj);
       this.assertAllowedObjectType(scope, obj);
       this.assertRootScope(obj, scope);
-      doc.path = normalizeDocument(obj, scope.semantic_attributes).path;
+      doc.path = normalizeDocument(obj, scope.semantic_attributes, this.scopes.contentLabelAliases(scope)).path;
     }
     if (docs.length && !operations.includes("getRepositoryObjectPath")) operations.push("getRepositoryObjectPath");
   }
@@ -504,6 +653,12 @@ function contentOptions(scope: SemanticScope): string[] {
   const out = ["errorOnOfflineContent"];
   if (scope.arcsuite.resolve_references) out.unshift("resolveRef");
   return out;
+}
+
+function repositoryObjectRevisionNumber(object: AdapterRepositoryObject): number | undefined {
+  const value = object.attributes["rep:system:revisionnumber"];
+  if (value?.type === "int" || value?.type === "long") return value.value;
+  return undefined;
 }
 
 function rejectRawArcSuiteFields(value: unknown): void {
@@ -601,15 +756,17 @@ function parseRevisionsArgs(args: Record<string, unknown>, config: AppConfig) {
 
 function parseContentInfoArgs(args: Record<string, unknown>) {
   assertExactKeys(args, ["document_id", "revision_number", "content_label"], "content info arguments");
-  const label = optionalString(args.content_label, "content_label", 100) ?? "system:primary";
-  if (label !== "system:primary") throw new TypeError("Only system:primary content_label is allowed in v1.1");
-  return { documentId: repId(args.document_id, "document_id"), revisionNumber: optionalInt(args.revision_number, "revision_number", 1, 2_147_483_647) };
+  const contentLabel = optionalString(args.content_label, "content_label", 256);
+  return {
+    documentId: repId(args.document_id, "document_id"),
+    revisionNumber: optionalInt(args.revision_number, "revision_number", 1, 2_147_483_647),
+    contentLabel
+  };
 }
 
 function parseReadArgs(args: Record<string, unknown>, config: AppConfig) {
   assertExactKeys(args, ["document_id", "revision_number", "content_label", "start_page", "end_page", "cursor", "max_chars"], "read arguments");
-  const label = optionalString(args.content_label, "content_label", 100) ?? "system:primary";
-  if (label !== "system:primary") throw new TypeError("Only system:primary content_label is allowed in v1.1");
+  const contentLabel = optionalString(args.content_label, "content_label", 256);
   const cursor = optionalString(args.cursor, "cursor", 4096);
   const startPage = optionalInt(args.start_page, "start_page", 1, 1_000_000);
   const endPage = optionalInt(args.end_page, "end_page", 1, 1_000_000);
@@ -618,7 +775,7 @@ function parseReadArgs(args: Record<string, unknown>, config: AppConfig) {
   if (endPage !== undefined && startPage === undefined) throw new TypeError("end_page requires start_page");
   if (endPage !== undefined && startPage !== undefined && endPage < startPage) throw new TypeError("end_page must be >= start_page");
   const maxChars = args.max_chars === undefined ? config.readDefaultMaxChars : intValue(args.max_chars, "max_chars", 1000, config.readMaxChars);
-  return { documentId: repId(args.document_id, "document_id"), revisionNumber: optionalInt(args.revision_number, "revision_number", 1, 2_147_483_647), startPage, endPage, cursor, maxChars };
+  return { documentId: repId(args.document_id, "document_id"), revisionNumber: optionalInt(args.revision_number, "revision_number", 1, 2_147_483_647), contentLabel, startPage, endPage, cursor, maxChars };
 }
 
 function repId(value: unknown, label: string): string {
@@ -648,7 +805,12 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
   const scope = { type: "string", enum: scopeValues };
   const documentId = { type: "string", pattern: "^rep:", minLength: 5, maxLength: 2048 };
   const limit = { type: "integer", minimum: 1, maximum: config.searchMaxLimit, default: config.searchDefaultLimit };
-  const contentLabel = { type: "string", enum: ["system:primary"], default: "system:primary" };
+  const contentLabelValues = [...new Set(descriptions.flatMap((item) => item.content_labels))];
+  const contentLabel = {
+    type: "string",
+    enum: contentLabelValues.length ? contentLabelValues : [CONTENT_LABEL_PRIMARY_ALIAS],
+    default: CONTENT_LABEL_PRIMARY_ALIAS
+  };
   const filterScalar = { oneOf: [{ type: "string", minLength: 1, maxLength: 255 }, { type: "number" }, { type: "boolean" }] };
   const filterValue = { oneOf: [filterScalar, { type: "object", additionalProperties: false, required: ["operator", "value"], properties: { operator: { type: "string", enum: ["eq", "like", "gte", "lte"] }, value: filterScalar } }] };
   return [
@@ -684,12 +846,12 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
     },
     {
       name: "arcsuite_get_document_content_info",
-      description: "Inspect primary content metadata and extraction support. A short-lived private extracted-content snapshot may be warmed for a subsequent read; binary content is never returned.",
+      description: "Inspect configured semantic content-label metadata and extraction support. A short-lived private extracted-content snapshot may be warmed for a subsequent read; binary content is never returned.",
       inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, revision_number: { type: "integer", minimum: 1 }, content_label: contentLabel } }
     },
     {
       name: "arcsuite_read_document",
-      description: "Read primary content through the configured ArcSuite adapter, reuse a private bounded snapshot when available, and return bounded text with a signed cursor. Binary/base64 content is never returned.",
+      description: "Read a configured semantic content label through the ArcSuite adapter, reuse a private bounded snapshot when available, and return bounded text with a signed cursor. Binary/base64 content is never returned.",
       inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, revision_number: { type: "integer", minimum: 1 }, content_label: contentLabel, start_page: { type: "integer", minimum: 1 }, end_page: { type: "integer", minimum: 1 }, cursor: { type: "string", maxLength: 4096 }, max_chars: { type: "integer", minimum: 1000, maximum: config.readMaxChars, default: config.readDefaultMaxChars } } }
     }
   ];

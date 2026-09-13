@@ -1,5 +1,7 @@
 export type AttributeId = { ns: string; name: string };
 
+export type PhysicalContentLabel = { ns: string; name: string };
+
 export type AttributeValue =
   | { type: "string"; value: string }
   | { type: "int"; value: number }
@@ -104,7 +106,7 @@ export type AdapterContentRequest = {
   clientProfileId: string;
   id: string;
   revisionNumber?: number;
-  contentLabel: { ns: string; name: string };
+  contentLabel: PhysicalContentLabel;
   options: string[];
   traceId: string;
 };
@@ -112,7 +114,10 @@ export type AdapterContentRequest = {
 export type AdapterContentResult = {
   id: string;
   revisionNumber?: number;
-  label: string;
+  /** Exact physical label returned by ArcSuite; never exposed directly by MCP. */
+  label: PhysicalContentLabel;
+  /** Effective object identity after adapter-side reference/revision resolution. */
+  effectiveId?: string;
   fileName: string;
   contentType: string;
   sizeBytes: number;

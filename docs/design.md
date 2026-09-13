@@ -14,9 +14,10 @@ hidden options.
 ## Semantic scopes
 
 A scope has a public name, description, allowed object types, configured
-ArcSuite cabinet/root mapping, default system attributes, and optional
-semantic attributes. Semantic filter names are validated against the selected
-scope before an adapter request is built.
+ArcSuite cabinet/root mapping, default system attributes, optional semantic
+attributes, and optional semantic content-label aliases. Semantic filter and
+content-label names are validated against the selected scope before an adapter
+request is built.
 
 The physical registry is operator configuration. The model sees names such as
 `document_number` only when the operator has deliberately configured that
@@ -44,7 +45,12 @@ ArcSuite content is materialized into a private shared directory only long
 enough for extraction. The TypeScript bridge enforces a maximum byte size and
 maximum extracted character count, supports signed cursors, and deletes the
 file in a `finally` path. Unsupported content fails without returning the
-binary payload.
+binary payload. Every selected label is resolved from trusted scope policy to
+one physical ArcSuite `I18nString`; membership is proved with an exact
+namespace/name comparison against `rep:system:contentlabellist`, and the
+adapter's returned `Content.label` is checked against the same pair. The
+semantic alias, not the physical mapping, is retained in MCP results and read
+cursors.
 
 Extractors do not execute macros or embedded objects. XML DTD/external entity
 input is rejected. OOXML archive traversal, decompression, member size, and

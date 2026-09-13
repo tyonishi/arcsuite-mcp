@@ -1,8 +1,14 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import type { AttributeId, AdapterSchemaValidationRequest, AttributeSchemaInfo } from "../arcsuite/types.ts";
+import type { AttributeId, AdapterSchemaValidationRequest, AttributeSchemaInfo, PhysicalContentLabel } from "../arcsuite/types.ts";
 import type { ArcSuiteAdapterClient } from "../arcsuite/soapAdapterClient.ts";
 import { DEFAULT_ATTRS } from "../arcsuite/constants.ts";
+import {
+  contentLabelAliasesForScope,
+  contentLabelsForScope,
+  validateContentLabelConfiguration,
+  type ContentLabelConfiguration
+} from "./contentLabels.ts";
 
 export type SemanticType = "string" | "integer" | "number" | "boolean" | "date" | "datetime" | "enum";
 export type SemanticOperator = "eq" | "like" | "gte" | "lte";
@@ -30,6 +36,7 @@ export type SemanticScope = {
     root_object_id: string | null;
     resolve_references: boolean;
   };
+  content_labels?: ContentLabelConfiguration;
   search?: {
     full_text_modes?: FullTextSearchMode[];
   };
@@ -57,6 +64,7 @@ export type PublicScopeDescription = {
   }>;
   full_text_modes: FullTextSearchMode[];
   ui_deep_link: boolean;
+  content_labels: string[];
 };
 
 export const SEMANTIC_OPERATOR_MATRIX: Record<SemanticType, readonly SemanticOperator[]> = {
@@ -96,6 +104,7 @@ export class ScopeRegistry {
       if (scope.arcsuite.root_object_id && !scope.arcsuite.root_object_id.startsWith(`${scope.arcsuite.cabinet_id}:`) && scope.arcsuite.root_object_id !== scope.arcsuite.cabinet_id) {
         throw new Error(`Scope ${name} root_object_id is outside its cabinet`);
       }
+      validateContentLabelConfiguration(scope.content_labels, name);
       validateSearchConfiguration(scope.search, name);
       if (scope.ui !== undefined) {
         if (!scope.ui || typeof scope.ui !== "object" || Array.isArray(scope.ui)) throw new Error(`Scope ${name} ui must be an object`);
@@ -168,6 +177,19 @@ export class ScopeRegistry {
     return this.validatedSchemas.get(`${scopeId}:${semanticName}`);
   }
 
+  contentLabels(scope: SemanticScope): Map<string, PhysicalContentLabel> {
+    return contentLabelsForScope(scope.content_labels);
+  }
+
+  resolveContentLabel(scope: SemanticScope, alias: string): PhysicalContentLabel | undefined {
+    const label = this.contentLabels(scope).get(alias);
+    return label ? { ...label } : undefined;
+  }
+
+  contentLabelAliases(scope: SemanticScope): Map<string, string> {
+    return contentLabelAliasesForScope(scope.content_labels);
+  }
+
   describe(allowedScopes: string[]): PublicScopeDescription[] {
     const out: PublicScopeDescription[] = [];
     for (const id of allowedScopes) {
@@ -186,7 +208,8 @@ export class ScopeRegistry {
           values: cfg.type === "enum" ? Object.keys(cfg.values ?? {}) : undefined
         })),
         full_text_modes: fullTextModes(scope),
-        ui_deep_link: Boolean(scope.ui?.document_url_template)
+        ui_deep_link: Boolean(scope.ui?.document_url_template),
+        content_labels: [...this.contentLabels(scope).keys()]
       });
     }
     return out;

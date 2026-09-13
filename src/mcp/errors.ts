@@ -29,6 +29,8 @@ export function toMcpToolError(error: unknown): McpToolError {
     return new McpToolError(code, code.replace(/^ARCSUITE_/, "").toLowerCase(), error.retryable, code);
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (message === "CONTENT_LABEL_NOT_FOUND") return new McpToolError("ARCSUITE_NOT_AVAILABLE", "content_label_not_found", false);
+  if (message === "CURSOR_CONTENT_LABEL_MISMATCH") return new McpToolError("ARCSUITE_INVALID_ARGUMENT", "content_label_cursor_mismatch", false);
   if (message.startsWith("UNSUPPORTED_CONTENT_TYPE")) return new McpToolError("UNSUPPORTED_CONTENT_TYPE", "unsupported_content_type", false);
   if (/CURSOR/.test(message)) return new McpToolError("ARCSUITE_INVALID_ARGUMENT", "invalid_cursor", false);
   if (error instanceof TypeError) return new McpToolError("ARCSUITE_INVALID_ARGUMENT", "invalid_argument", false);

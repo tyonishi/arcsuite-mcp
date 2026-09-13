@@ -57,6 +57,7 @@ test("content snapshots are isolated by client scope document revision and varia
     documentId: "rep:a:1",
     revisionNumber: 3,
     contentLabel: "system:primary",
+    physicalContentLabel: { ns: "rep", name: "system:primary" },
     variant: "full"
   };
   const snapshot = {
@@ -78,6 +79,43 @@ test("content snapshots are isolated by client scope document revision and varia
   assert.equal(cache.get({ ...base, variant: "pages:1-2" }), undefined);
 });
 
+test("content cache separates semantic labels and same-name labels in different namespaces", () => {
+  const cache = new ContentSnapshotCache(600, 10, 5, 1024 * 1024);
+  const snapshot = (label: string, text: string) => ({
+    contentHash: `sha256:${text}`,
+    label,
+    fileName: `${label}.txt`,
+    contentType: "text/plain",
+    sizeBytes: Buffer.byteLength(text),
+    extractor: "text",
+    text,
+    warnings: []
+  });
+  const primary = {
+    clientProfileId: "client-a",
+    scopeId: "scope",
+    documentId: "rep:a:1",
+    contentLabel: "system:primary",
+    physicalContentLabel: { ns: "rep", name: "system:primary" }
+  };
+  const preview = {
+    ...primary,
+    contentLabel: "preview",
+    physicalContentLabel: { ns: "rep", name: "user:SAME_NAME" }
+  };
+  const otherNamespace = {
+    ...primary,
+    contentLabel: "preview",
+    physicalContentLabel: { ns: "other", name: "user:SAME_NAME" }
+  };
+  cache.put(primary, snapshot("system:primary", "primary"));
+  cache.put(preview, snapshot("preview", "preview"));
+  cache.put(otherNamespace, snapshot("other", "other"));
+  assert.equal(cache.get(primary)?.text, "primary");
+  assert.equal(cache.get(preview)?.text, "preview");
+  assert.equal(cache.get(otherNamespace)?.text, "other");
+});
+
 test("content cache evicts old entries to enforce per-client and byte bounds", () => {
   const cache = new ContentSnapshotCache(600, 2, 1, 128);
   const snapshot = (text: string) => ({
@@ -90,8 +128,8 @@ test("content cache evicts old entries to enforce per-client and byte bounds", (
     text,
     warnings: []
   });
-  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", contentLabel: "system:primary" };
-  const second = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:2", contentLabel: "system:primary" };
+  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
+  const second = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:2", contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
   cache.put(first, snapshot("first"));
   cache.put(second, snapshot("second"));
   assert.equal(cache.get(first), undefined);
@@ -110,8 +148,8 @@ test("content cache evicts the oldest entry when the total byte bound is exceede
     text,
     warnings: []
   });
-  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", contentLabel: "system:primary" };
-  const second = { clientProfileId: "client-b", scopeId: "scope", documentId: "rep:b:1", contentLabel: "system:primary" };
+  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
+  const second = { clientProfileId: "client-b", scopeId: "scope", documentId: "rep:b:1", contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
   cache.put(first, snapshot("a".repeat(80)));
   cache.put(second, snapshot("b".repeat(80)));
   assert.equal(cache.get(first), undefined);
