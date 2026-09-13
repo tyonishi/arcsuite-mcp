@@ -35,8 +35,7 @@ public final class SelfTest {
         byte[] modulus = unsigned(pub.getModulus().toByteArray());
         byte[] exponent = unsigned(pub.getPublicExponent().toByteArray());
         String encrypted = Crypto.encryptCredential("challenge", "password", Base64.getEncoder().encodeToString(modulus), Base64.getEncoder().encodeToString(exponent));
-        var cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-        cipher.init(Cipher.DECRYPT_MODE, pair.getPrivate());
+        var cipher = Crypto.credentialCipher(Cipher.DECRYPT_MODE, pair.getPrivate());
         String plain = new String(cipher.doFinal(Base64.getDecoder().decode(encrypted)), StandardCharsets.UTF_8);
         if (!"challengepassword".equals(plain)) throw new AssertionError(plain);
     }

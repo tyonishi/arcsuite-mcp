@@ -60,6 +60,12 @@ would change object identity and make page/accounting checks ambiguous. Existing
 single-object and content paths continue to apply the configured reference
 resolution policy where their contracts allow it.
 
+The Java adapter encrypts the `getLoginInfo` challenge concatenated with the
+configured password using explicitly parameterized RSA-OAEP (SHA-256 with
+SHA-256 MGF1). This padding choice is part of the adapter's wire behavior and
+must be qualified against the operator's licensed ArcSuite version before
+deployment.
+
 ## Qualification limits
 
 Local tests use a mock adapter and synthetic content. They verify protocol

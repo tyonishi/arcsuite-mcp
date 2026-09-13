@@ -112,6 +112,22 @@ test("synthetic search, metadata, batch, folder, revisions, content info and tex
   assert.equal("base64" in result, false);
 });
 
+test("LIKE filters treat only wildcard characters as pattern syntax", async () => {
+  const rt = await runtime();
+  const p = profile();
+  const wildcard: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { document_number: "DOC-00000?" }
+  })).structuredContent;
+  assert.equal(wildcard.count, 2);
+
+  const punctuation: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { document_number: "DOC-00000." }
+  })).structuredContent;
+  assert.equal(punctuation.count, 0);
+});
+
 test("content-info cache hits preserve the adapter-provided label", async () => {
   const rt = await runtime();
   const originalContent = (rt.adapter as any).content.bind(rt.adapter);

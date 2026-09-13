@@ -16,10 +16,10 @@ TypeScript semantic gateway.
 - Preserve the ArcSuite Session header behavior, request version, locale, and
   MTOM attachment type required by the operator's licensed service.
 - RSA credential handling must use the server challenge and public key with
-  the documented encrypted-login scheme. Passwords and the gateway token are
-  read from secret files when configured, with environment variables only as
-  a controlled local-development fallback; neither is ever logged or
-  returned.
+  explicitly parameterized RSA-OAEP (SHA-256 with SHA-256 MGF1). Passwords and
+  the gateway token are read from secret files when configured, with
+  environment variables only as a controlled local-development fallback;
+  neither is ever logged or returned.
 
 ## MTOM and content lifecycle
 

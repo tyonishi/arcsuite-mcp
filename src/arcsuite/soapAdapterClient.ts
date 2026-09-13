@@ -235,7 +235,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
         const target = condition.value.value;
         if (condition.operator === "EQUAL") return text === target;
         if (condition.operator === "LIKE") {
-          const regex = new RegExp(`^${escapeRegex(target).replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
+          const regex = new RegExp(wildcardToRegex(target), "i");
           return regex.test(String(text));
         }
         if (condition.operator === "GREATER_EQUAL") return String(text) >= target;
@@ -259,5 +259,18 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
 }
 
 function escapeRegex(text: string): string {
-  return text.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function wildcardToRegex(target: string): string {
+  let pattern = "^";
+  let literalStart = 0;
+  for (let index = 0; index < target.length; index += 1) {
+    const wildcard = target[index];
+    if (wildcard !== "*" && wildcard !== "?") continue;
+    pattern += escapeRegex(target.slice(literalStart, index));
+    pattern += wildcard === "*" ? ".*" : ".";
+    literalStart = index + 1;
+  }
+  return `${pattern}${escapeRegex(target.slice(literalStart))}$`;
 }

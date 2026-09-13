@@ -16,12 +16,17 @@
   and path IDs are checked against the selected cabinet, and configured root
   membership is revalidated before results are exposed.
 - The TypeScript and Java layers enforce a read-only SOAP operation allowlist.
+- ArcSuite challenge/password credentials use the server public key with
+  explicitly parameterized RSA-OAEP (SHA-256 with SHA-256 MGF1); the resulting
+  wire behavior remains subject to live ArcSuite qualification.
 - Administrator mode is fixed false; privileged-print, ACL, delete, workflow,
   delegation, and arbitrary SOAP operations are absent.
 - Content is size-bounded, character-bounded, extracted by allowlisted
   handlers, and deleted from the shared directory in all normal paths.
 - XML DTD/external entities, unsafe archive paths, suspicious compression, and
-  macro/embedded-object execution are rejected or never attempted.
+  macro/embedded-object execution are rejected or never attempted. XML entity
+  decoding leaves ampersands until the final pass, preventing nested entities
+  from being decoded twice.
 - Audit records contain request metadata only. Query and extracted content are
   excluded from audit output.
 - GitHub Actions workflow references and container base images are pinned to

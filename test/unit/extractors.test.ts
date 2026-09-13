@@ -23,6 +23,15 @@ test("XML extractor rejects DTD/entity declarations", async () => {
   await assert.rejects(() => extractor.extract({ filePath: path, fileName: "bad.xml", contentType: "application/xml" }), /UNSAFE_XML_DECLARATION/);
 });
 
+test("XML extractor decodes ampersands last to avoid double unescaping", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xml-entities-"));
+  const path = join(dir, "nested.xml");
+  await writeFile(path, "<root>&amp;lt; &amp;#x41; &amp;#65;</root>");
+  const extractor = new XmlExtractor();
+  const result = await extractor.extract({ filePath: path, fileName: "nested.xml", contentType: "application/xml" });
+  assert.equal(result.text, "&lt; &#x41; &#65;");
+});
+
 test("DOCX OOXML extractor returns text without external libraries", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ooxml-"));
   const path = join(dir, "sample.docx");
