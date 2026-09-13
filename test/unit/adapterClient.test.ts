@@ -60,3 +60,27 @@ test("adapter client rejects an oversized declared response before materializati
     await close(server);
   }
 });
+
+test("hard-reference adapter method uses the narrow internal route and contract", async () => {
+  let requestPath = "";
+  let requestBody = "";
+  const server = createServer((req, res) => {
+    requestPath = req.url ?? "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => { requestBody += chunk; });
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ids: ["rep:example:EXAMPLE_CABINET:hardref-001"] }));
+    });
+  });
+  const port = await listen(server);
+  try {
+    const client = new HttpArcSuiteAdapterClient(`http://127.0.0.1:${port}`, "synthetic-internal-token");
+    const request = { clientProfileId: "synthetic-client", id: "rep:example:EXAMPLE_CABINET:target-001", maxResults: 200 };
+    assert.deepEqual(await client.hardReferences(request), { ids: ["rep:example:EXAMPLE_CABINET:hardref-001"] });
+    assert.equal(requestPath, "/internal/repository/hard-references");
+    assert.deepEqual(JSON.parse(requestBody), request);
+  } finally {
+    await close(server);
+  }
+});

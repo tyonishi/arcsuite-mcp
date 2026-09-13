@@ -35,6 +35,7 @@ final class InternalServer implements AutoCloseable {
         server.createContext("/internal/repository/list-ids",ex->dispatch(ex,true,()->service.listIds(body(ex))));
         server.createContext("/internal/repository/get",ex->dispatch(ex,true,()->service.get(body(ex))));
         server.createContext("/internal/repository/get-many",ex->dispatch(ex,true,()->service.getMany(body(ex))));
+        server.createContext("/internal/repository/hard-references",ex->dispatch(ex,true,()->service.hardReferences(body(ex))));
         server.createContext("/internal/repository/revisions",ex->dispatch(ex,true,()->service.revisions(body(ex))));
         server.createContext("/internal/repository/content",ex->dispatch(ex,true,()->service.content(body(ex))));
     }
