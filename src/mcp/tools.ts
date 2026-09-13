@@ -1060,14 +1060,20 @@ function normalizeIntegrityValidation(value: unknown): AdapterIntegrityValidatio
   if (value.failure !== null) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_validation_failure", false);
 
   const certificates: AdapterIntegrityCertificateResult[] = [];
+  const seenCertificateIds = new Set<number>();
   for (const certificate of value.certificates) {
     if (!isRecord(certificate) || !hasExactKeys(certificate, ["certId", "result", "exceptionPresent"]) ||
         !Number.isSafeInteger(certificate.certId) || typeof certificate.result !== "boolean" ||
         typeof certificate.exceptionPresent !== "boolean") {
       throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_certificate_shape", false);
     }
+    const certId = certificate.certId as number;
+    if (seenCertificateIds.has(certId)) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "integrity_certificate_duplicate", false);
+    }
+    seenCertificateIds.add(certId);
     certificates.push({
-      certId: certificate.certId as number,
+      certId,
       result: certificate.result,
       exceptionPresent: certificate.exceptionPresent
     });

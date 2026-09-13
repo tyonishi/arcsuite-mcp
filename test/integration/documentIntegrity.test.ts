@@ -296,6 +296,22 @@ test("malformed or excessive adapter integrity results fail closed", async () =>
   );
 });
 
+test("duplicate validation certificate IDs fail closed", async () => {
+  const rt = await runtime();
+  installValidation(rt.adapter as any, {
+    certificates: [
+      { certId: 73, result: true, exceptionPresent: false },
+      { certId: 73, result: true, exceptionPresent: false }
+    ],
+    failure: null
+  });
+
+  await assert.rejects(
+    () => rt.tools.call(profile(), toolName, { document_id: documentA }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR"
+  );
+});
+
 test("unexpected evidence IDs fail closed", async () => {
   const rt = await runtime();
   installValidation(rt.adapter as any, validValidation);
