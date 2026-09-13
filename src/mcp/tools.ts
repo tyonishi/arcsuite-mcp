@@ -260,11 +260,11 @@ export class ToolRegistry {
           const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
           scopeId = scopeMatch.id;
           const scope = scopeMatch.scope;
-          await this.authorizeHardReferenceTarget(profile, scope, parsed.documentId, soapOperations);
-          objectIds = [parsed.documentId];
           if (!scope.relationships?.hard_references) {
             throw new McpToolError("ARCSUITE_FORBIDDEN", "relationship_not_allowed", false);
           }
+          await this.authorizeHardReferenceTarget(profile, scope, parsed.documentId, soapOperations);
+          objectIds = [parsed.documentId];
 
           let page;
           let initiallyAuthorizedResults: Map<string, Record<string, unknown>> | undefined;

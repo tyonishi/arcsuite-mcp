@@ -107,8 +107,12 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.match(JSON.stringify(search.inputSchema.properties.filters), /operator/);
   assert.match(search.description, /document_number/);
   const hardReferences = tools.find((tool: { name: string }) => tool.name === "arcsuite_list_hard_references");
-  assert.deepEqual(hardReferences.inputSchema.required, ["document_id"]);
-  assert.deepEqual(Object.keys(hardReferences.inputSchema.properties).sort(), ["cursor", "document_id", "limit"]);
+  const hardReferenceBranches = hardReferences.inputSchema.anyOf;
+  assert.equal(hardReferenceBranches.length, 2);
+  assert.ok(hardReferenceBranches.every((branch: any) => branch.required.includes("document_id")));
+  assert.ok(hardReferenceBranches.every((branch: any) => branch.additionalProperties === false));
+  assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.cursor?.not && !branch.properties.limit?.not));
+  assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.limit?.not && !branch.properties.cursor?.not));
 
   const capabilities = await rpc(base, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "arcsuite_describe_capabilities", arguments: {} } });
   assert.equal(capabilities.status, 200);

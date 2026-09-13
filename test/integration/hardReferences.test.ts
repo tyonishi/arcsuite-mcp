@@ -154,10 +154,19 @@ test("profile and scope must both enable hard-reference reads", async () => {
   const disabled = await runtime(await rootScopedConfig(false));
   const disabledAdapter: any = disabled.adapter;
   disabledAdapter.hardReferences = async () => { dispatched = true; return { ids: referenceIds }; };
-  await assert.rejects(
-    () => disabled.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId }),
-    (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "relationship_not_allowed"
-  );
+  const targetLookups: string[] = [];
+  const originalGet = disabledAdapter.get.bind(disabledAdapter);
+  disabledAdapter.get = async (request: { id: string }) => {
+    targetLookups.push(request.id);
+    return originalGet(request);
+  };
+  for (const documentId of [targetId, "rep:mock:EXAMPLE_CABINET:missing"]) {
+    await assert.rejects(
+      () => disabled.tools.call(profile(), "arcsuite_list_hard_references", { document_id: documentId }),
+      (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "relationship_not_allowed"
+    );
+  }
+  assert.deepEqual(targetLookups, []);
   assert.equal(dispatched, false);
 });
 
