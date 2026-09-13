@@ -61,13 +61,100 @@ test("capability discovery exposes only semantic scope metadata", async () => {
   const rt = await runtime();
   const result = await rt.tools.call(profile(), "arcsuite_describe_capabilities", {});
   const data: any = result.structuredContent;
-  assert.equal(data.version, "1.1");
+  assert.equal(data.version, "1.2");
   assert.equal(data.read_only, true);
   assert.deepEqual(data.allowed_tools, expectedTools);
   assert.equal(data.scopes[0].id, "example_documents");
   assert.ok(data.scopes[0].filters.some((filter: any) => filter.name === "document_number"));
+  assert.deepEqual(data.scopes[0].full_text_modes, ["none", "stemming", "thesaurus"]);
+  assert.deepEqual(data.scopes[0].filters.find((filter: any) => filter.name === "lifecycle").values, ["active", "retired"]);
   assert.equal(JSON.stringify(data).includes("EXAMPLE_CABINET"), false);
   assert.equal(JSON.stringify(data).includes("example_document_number"), false);
+});
+
+test("typed semantic predicates and configured full-text modes work in the mock", async () => {
+  const rt = await runtime();
+  const p = profile();
+  const page: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { page_count: { operator: "gte", value: 10 } }
+  })).structuredContent;
+  assert.equal(page.count, 1);
+  assert.equal(page.results[0].document_id, "rep:mock:EXAMPLE_CABINET:1001");
+
+  const approved: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { approved: true }
+  })).structuredContent;
+  assert.equal(approved.count, 1);
+
+  const quality: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { quality_score: { operator: "gte", value: 0.9 } }
+  })).structuredContent;
+  assert.equal(quality.count, 1);
+
+  const published: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { published_on: { operator: "gte", value: "2026-09-01" } }
+  })).structuredContent;
+  assert.equal(published.count, 1);
+
+  const lifecycle: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { lifecycle: "active" }
+  })).structuredContent;
+  assert.equal(lifecycle.count, 1);
+
+  const fullText: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: "DOC",
+    text_search_mode: "thesaurus"
+  })).structuredContent;
+  assert.equal(fullText.count, 2);
+  await assert.rejects(() => rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { approved: true },
+    text_search_mode: "stemming"
+  }), (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT");
+  await assert.rejects(() => rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { page_count: { operator: "gte", value: Number.MAX_SAFE_INTEGER + 1 } }
+  }), (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT");
+});
+
+test("omitted full-text configuration defaults to none and rejects other modes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-scope-default-"));
+  const scopeFile = join(dir, "scopes.yaml");
+  await writeFile(scopeFile, [
+    "version: 1",
+    "scopes:",
+    "  example_documents:",
+    "    description: Synthetic default-mode scope",
+    "    enabled: true",
+    "    arcsuite:",
+    "      cabinet_alias: EXAMPLE_CABINET",
+    "      cabinet_id: rep:mock:EXAMPLE_CABINET",
+    "      root_object_id: null",
+    "      resolve_references: true",
+    "    allowed_object_types: [document]",
+    "    default_attr_ids:",
+    "      - {ns: rep, name: system:name}",
+    "    semantic_attributes:",
+    "      name:",
+    "        attr_id: {ns: rep, name: system:name}",
+    "        type: string",
+    "        operators: [eq, like]",
+    "        allow_wildcards: true"
+  ].join("\n"));
+  const rt = await runtime(scopeFile);
+  const capabilities: any = (await rt.tools.call(profile(), "arcsuite_describe_capabilities", {})).structuredContent;
+  assert.deepEqual(capabilities.scopes[0].full_text_modes, ["none"]);
+  await assert.rejects(() => rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: "DOC",
+    text_search_mode: "stemming"
+  }), (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT");
 });
 
 test("synthetic search, metadata, batch, folder, revisions, content info and text read work", async () => {

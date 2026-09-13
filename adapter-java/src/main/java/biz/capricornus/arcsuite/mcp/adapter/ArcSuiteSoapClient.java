@@ -16,6 +16,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 /**
@@ -30,6 +32,8 @@ final class ArcSuiteSoapClient {
     static final String SOAP_NS = "http://schemas.xmlsoap.org/soap/envelope/";
     static final String XSI_NS = XMLConstants.W3C_XML_SCHEMA_INSTANCE_NS_URI;
     static final String ENCRYPTED_PASSWORD_URI = BASE_NS + "#EncryptedPassword";
+    private static final Set<String> SEARCH_BINARY_OPERATORS = Set.of("EQUAL", "LIKE", "GREATER_EQUAL", "LESS_EQUAL");
+    private static final Set<String> SEARCH_TEXT_MODES = Set.of("NONE", "STEMMING", "THESAURUS");
     static final Set<String> READ_ONLY_OPERATIONS = Set.of(
             "getVersionInfo", "getLoginInfo", "login", "logout", "getSessionInfo",
             "getAttributeSchema", "getAttributeSchemas", "getRepositoryObject",
@@ -250,7 +254,7 @@ final class ArcSuiteSoapClient {
         out.put("attributes",attrs); out.put("errors",errors); out.put("ok",errors.isEmpty()); return out;
     }
 
-    private String searchBody(Map<String,Object> req, boolean includeAttrs) {
+    static String searchBody(Map<String,Object> req, boolean includeAttrs) {
         StringBuilder b = new StringBuilder();
         List<Map<String,Object>> conditions = maps(req.get("attributeConditions"));
         if (!conditions.isEmpty()) b.append(attributeConditions("attrCondition", conditions));
@@ -265,7 +269,9 @@ final class ArcSuiteSoapClient {
             b.append(el("depth", String.valueOf(integer(req,"depth",0))));
             b.append("</t:searchRegion>");
         }
-        b.append(el("textSearchMode", string(req,"textSearchMode","NONE")));
+        String textSearchMode = string(req,"textSearchMode","NONE");
+        if (!SEARCH_TEXT_MODES.contains(textSearchMode)) throw new IllegalArgumentException("Unsupported text search mode: " + textSearchMode);
+        b.append(el("textSearchMode", textSearchMode));
         b.append("</t:option>");
         b.append(sortCondition(req.get("order")));
         b.append(el("limit", String.valueOf(integer(req,"limit",20))));
@@ -351,9 +357,34 @@ final class ArcSuiteSoapClient {
     private static String options(Object o){StringBuilder b=new StringBuilder();for(String x:strings(o))b.append(el("options",x));return b.toString();}
     private static String sortCondition(Object o){List<Map<String,Object>> order=maps(o);if(order.isEmpty())return "";StringBuilder b=new StringBuilder("<t:order>");for(Map<String,Object>x:order){b.append("<t:sortItem isDescending=\"").append(bool(x,"descending",false)).append("\">").append(attrId(map(x.get("attrId")))).append("</t:sortItem>");}return b.append("</t:order>").toString();}
 
-    private static String attributeConditions(String elementName,List<Map<String,Object>> cs){ if(cs.size()==1)return singleCondition(elementName,cs.get(0)); StringBuilder b=new StringBuilder("<t:").append(elementName).append(" xsi:type=\"t:AndCondition\">"); for(Map<String,Object> c:cs)b.append(singleCondition("attributeSearchCondition",c)); return b.append("</t:").append(elementName).append('>').toString(); }
-    private static String singleCondition(String elementName,Map<String,Object> c){Map<String,Object> aid=map(c.get("attrId"));Map<String,Object> val=map(c.get("value"));String type=string(val,"type","string");String child="datetime".equals(type)?"dateTime":"string";String xsi="datetime".equals(type)?"DateTimeValue":"StringValue";
-        return "<t:"+elementName+" xsi:type=\"t:BinaryOperatorCondition\" operator=\""+XmlUtil.esc(requiredString(c,"operator"))+"\">"+attrId(aid)+"<t:attributeValue xsi:type=\"t:"+xsi+"\">"+el(child,requiredString(val,"value"))+"</t:attributeValue></t:"+elementName+">"; }
+    static String attributeConditions(String elementName,List<Map<String,Object>> cs){ if(cs.size()==1)return singleCondition(elementName,cs.get(0)); StringBuilder b=new StringBuilder("<t:").append(elementName).append(" xsi:type=\"t:AndCondition\">"); for(Map<String,Object> c:cs)b.append(singleCondition("attributeSearchCondition",c)); return b.append("</t:").append(elementName).append('>').toString(); }
+    private static String singleCondition(String elementName,Map<String,Object> c){Map<String,Object> aid=map(c.get("attrId"));Map<String,Object> val=map(c.get("value"));
+        String operator=requiredString(c,"operator");
+        if(!SEARCH_BINARY_OPERATORS.contains(operator))throw new IllegalArgumentException("Unsupported binary search operator: "+operator);
+        return "<t:"+elementName+" xsi:type=\"t:BinaryOperatorCondition\" mode=\"ONEVAL\" operator=\""+XmlUtil.esc(operator)+"\">"+attrId(aid)+attributeValueBody(val)+"</t:"+elementName+">"; }
+    static String attributeValueBody(Map<String,Object> val){
+        String type=string(val,"type","string");
+        String xsi;
+        String child;
+        String lexical;
+        switch(type){
+            case "string" -> { xsi="StringValue"; child="string"; lexical=requiredValueType(val,"value",String.class); }
+            case "boolean" -> { xsi="BooleanValue"; child="boolean"; lexical=booleanLexical(val.get("value")); }
+            case "int" -> { xsi="IntValue"; child="int"; lexical=String.valueOf(exactInt(val.get("value"))); }
+            case "long" -> { xsi="LongValue"; child="long"; lexical=String.valueOf(exactLong(val.get("value"))); }
+            case "double" -> { xsi="DoubleValue"; child="double"; lexical=doubleLexical(val.get("value")); }
+            case "date" -> { xsi="DateValue"; child="date"; lexical=dateLexical(val.get("value")); }
+            case "datetime" -> { xsi="DateTimeValue"; child="dateTime"; lexical=dateTimeLexical(val.get("value")); }
+            case "i18n" -> {
+                xsi="I18nStringValue";
+                String ns=requiredValueType(val,"ns",String.class);
+                String name=requiredValueType(val,"name",String.class);
+                return "<t:attributeValue xsi:type=\"t:I18nStringValue\"><t:i18nString ns=\""+XmlUtil.esc(ns)+"\" name=\""+XmlUtil.esc(name)+"\"/></t:attributeValue>";
+            }
+            default -> throw new IllegalArgumentException("Unsupported attribute value type: "+type);
+        }
+        return "<t:attributeValue xsi:type=\"t:"+xsi+"\">"+el(child,lexical)+"</t:attributeValue>";
+    }
     private static String textCondition(Map<String,Object> text){StringBuilder b=new StringBuilder("<t:textCondition xsi:type=\"t:TextCondition\"><t:wordList operator=\"").append(XmlUtil.esc(string(text,"operator","AND"))).append("\">");for(String w:strings(text.get("words")))b.append(el("word",w));return b.append("</t:wordList></t:textCondition>").toString();}
 
     static List<String> parseStringArray(Element container){
@@ -383,7 +414,7 @@ final class ArcSuiteSoapClient {
         Element oc=XmlUtil.child(e,"objectClass");String ocName=oc==null?"":oc.getAttribute("name");out.put("objectClass",ocName==null||ocName.isBlank()?"unknown":ocName);
         LinkedHashMap<String,Object> attrs=new LinkedHashMap<>();Element aroot=XmlUtil.child(e,"attributes");if(aroot!=null){for(Element a:XmlUtil.children(aroot,"attribute")){String ns=a.getAttribute("ns"),name=a.getAttribute("name");Element av=XmlUtil.child(a,"attributeValue");if(av!=null)attrs.put(ns+":"+name,parseAttributeValue(av));}}out.put("attributes",attrs);return out;}
     private static Object parseAttributeValue(Element av){String t=XmlUtil.localType(av);LinkedHashMap<String,Object> o=new LinkedHashMap<>();
-        try { switch(t){case "StringValue"-> {o.put("type","string");o.put("value",value(av,"string"));} case "IntValue"->{o.put("type","int");o.put("value",Integer.parseInt(value(av,"int")));} case "LongValue"->{o.put("type","long");o.put("value",Long.parseLong(value(av,"long")));} case "DoubleValue"->{o.put("type","double");o.put("value",Double.parseDouble(value(av,"double")));} case "BooleanValue"->{o.put("type","boolean");o.put("value",Boolean.parseBoolean(value(av,"boolean")));} case "DateTimeValue"->{o.put("type","datetime");o.put("value",value(av,"dateTime"));} case "IdValue"->{o.put("type","id");o.put("value",value(av,"id"));} case "I18nStringValue"->{Element i=XmlUtil.child(av,"i18nString");o.put("type","i18n"); if(i!=null){o.put("ns",i.getAttribute("ns"));o.put("name",i.getAttribute("name"));String l=i18nLabel(i);if(l!=null)o.put("label",l);}} case "I18nStringValues"->{o.put("type","i18n[]");List<Object> vs=new ArrayList<>();for(Element i:XmlUtil.children(av,"i18nStrings")){LinkedHashMap<String,Object>x=new LinkedHashMap<>();x.put("ns",i.getAttribute("ns"));x.put("name",i.getAttribute("name"));String l=i18nLabel(i);if(l!=null)x.put("label",l);vs.add(x);}o.put("values",vs);} case "RmsObjectValueRmsObject"->{o.put("type","rmsObject");Element r=XmlUtil.firstDesc(av,"rmsObject");if(r!=null){String dn=value(r,"dn");if(dn!=null)o.put("dn",dn);Element oc=XmlUtil.child(r,"objectClass");String l=oc==null?null:i18nLabel(oc);if(l!=null)o.put("label",l);}} default->{o.put("type","unknown");o.put("rawType",t.isBlank()?"unknown":t);String text=av.getTextContent();if(text!=null&&!text.isBlank())o.put("value",text.trim());} } }
+        try { switch(t){case "StringValue"-> {o.put("type","string");o.put("value",value(av,"string"));} case "IntValue"->{o.put("type","int");o.put("value",Integer.parseInt(value(av,"int")));} case "LongValue"->{long n=Long.parseLong(value(av,"long"));if(n<-9007199254740991L||n>9007199254740991L)throw new IllegalArgumentException("unsafe long");o.put("type","long");o.put("value",n);} case "DoubleValue"->{double n=Double.parseDouble(value(av,"double"));if(!Double.isFinite(n))throw new IllegalArgumentException("non-finite double");o.put("type","double");o.put("value",n);} case "BooleanValue"->{o.put("type","boolean");o.put("value",parseBooleanLexical(value(av,"boolean")));} case "DateTimeValue"->{o.put("type","datetime");o.put("value",value(av,"dateTime"));} case "DateValue"->{o.put("type","date");o.put("value",value(av,"date"));} case "IdValue"->{o.put("type","id");o.put("value",value(av,"id"));} case "I18nStringValue"->{Element i=XmlUtil.child(av,"i18nString");o.put("type","i18n"); if(i!=null){o.put("ns",i.getAttribute("ns"));o.put("name",i.getAttribute("name"));String l=i18nLabel(i);if(l!=null)o.put("label",l);}} case "I18nStringValues"->{o.put("type","i18n[]");List<Object> vs=new ArrayList<>();for(Element i:XmlUtil.children(av,"i18nStrings")){LinkedHashMap<String,Object>x=new LinkedHashMap<>();x.put("ns",i.getAttribute("ns"));x.put("name",i.getAttribute("name"));String l=i18nLabel(i);if(l!=null)x.put("label",l);vs.add(x);}o.put("values",vs);} case "RmsObjectValueRmsObject"->{o.put("type","rmsObject");Element r=XmlUtil.firstDesc(av,"rmsObject");if(r!=null){String dn=value(r,"dn");if(dn!=null)o.put("dn",dn);Element oc=XmlUtil.child(r,"objectClass");String l=oc==null?null:i18nLabel(oc);if(l!=null)o.put("label",l);}} default->{o.put("type","unknown");o.put("rawType",t.isBlank()?"unknown":t);String text=av.getTextContent();if(text!=null&&!text.isBlank())o.put("value",text.trim());} } }
         catch(Exception ex){o.clear();o.put("type","unknown");o.put("rawType",t.isBlank()?"unknown":t);}return o;}
     private static String i18nLabel(Element i){for(Element l:XmlUtil.children(i,"label")){String lang=l.getAttribute("lang");if("ja".equalsIgnoreCase(lang))return l.getTextContent();}Element l=XmlUtil.child(i,"label");return l==null?null:l.getTextContent();}
 
@@ -399,7 +430,74 @@ final class ArcSuiteSoapClient {
     }
 
     @SuppressWarnings("unchecked") private static void applyPath(Map<String,Object> out,Element p){Element objs=XmlUtil.child(p,"objects");List<Object> path=new ArrayList<>();if(objs!=null)for(Element ro:XmlUtil.children(objs,"repositoryObject")){Map<String,Object> parsed=parseRepositoryObject(ro);Map<String,Object> attrs=(Map<String,Object>)parsed.get("attributes");Object nv=attrs.get("rep:system:name");String name=null;if(nv instanceof Map<?,?> vm&&vm.get("value")!=null)name=String.valueOf(vm.get("value"));LinkedHashMap<String,Object>x=new LinkedHashMap<>();x.put("id",parsed.get("id"));if(name!=null)x.put("name",name);x.put("objectClass",parsed.get("objectClass"));path.add(x);}out.put("pathObjects",path);String f=value(p,"fullPath");if(f!=null)out.put("fullPath",Boolean.parseBoolean(f));}
-    private static Map<String,Object> parseAttributeSchema(Element s){LinkedHashMap<String,Object> o=new LinkedHashMap<>();for(String k:List.of("ns","name","dataType")){String v=value(s,k);if(v!=null)o.put(k,v);}for(String k:List.of("searchable","sortable","modifiable")){String v=value(s,k);if(v!=null)o.put(k,Boolean.parseBoolean(v));}return o;}
+    static Map<String,Object> parseAttributeSchema(Element s){
+        LinkedHashMap<String,Object> o=new LinkedHashMap<>();
+        for(String k:List.of("ns","name","dataType","nativeDataType","pattern")){String v=value(s,k);if(v!=null)o.put(k,v);}
+        for(String k:List.of("multiValued","required","enumerated","modifiable","searchable","sortable","minInclusive","maxInclusive")){String v=value(s,k);if(v!=null)o.put(k,parseBooleanLexical(v));}
+        for(String k:List.of("minLength","maxLength","minCount","maxCount")){String v=value(s,k);if(v!=null)o.put(k,parseInteger(v,k));}
+        for(String k:List.of("minIntegralValue","maxIntegralValue")){String v=value(s,k);if(v!=null)o.put(k,parseLongLexical(v,k));}
+        for(String k:List.of("minFloatingValue","maxFloatingValue")){String v=value(s,k);if(v!=null)o.put(k,parseDouble(v,k));}
+        Element labels=XmlUtil.child(s,"enumLabels");
+        if(labels!=null){List<Object> values=new ArrayList<>();for(Element i:XmlUtil.children(labels,"i18nString")){LinkedHashMap<String,Object>x=new LinkedHashMap<>();String ns=i.getAttribute("ns"),name=i.getAttribute("name");if(ns!=null&&!ns.isBlank())x.put("ns",ns);if(name==null||name.isBlank())throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","AttributeSchema enumLabels contains an unnamed value");x.put("name",name);String label=i18nLabel(i);if(label!=null)x.put("label",label);values.add(x);}o.put("enumLabels",values);}
+        return o;
+    }
+    private static String requiredValueType(Map<String,Object> value,String key,Class<?> type){
+        Object raw=value.get(key);
+        if(!type.isInstance(raw))throw new IllegalArgumentException(key+" must be "+type.getSimpleName());
+        String text=String.valueOf(raw);
+        if(text.isBlank())throw new IllegalArgumentException(key+" is required");
+        return text;
+    }
+    private static int exactInt(Object raw){
+        long value=exactLong(raw);
+        if(value<Integer.MIN_VALUE||value>Integer.MAX_VALUE)throw new IllegalArgumentException("int value is out of range");
+        return (int)value;
+    }
+    private static long exactLong(Object raw){
+        if(raw instanceof Byte||raw instanceof Short||raw instanceof Integer||raw instanceof Long)return ((Number)raw).longValue();
+        if(raw instanceof java.math.BigInteger integer&&integer.bitLength()<64)return integer.longValue();
+        if(raw instanceof java.math.BigDecimal decimal){try{return decimal.toBigIntegerExact().longValueExact();}catch(ArithmeticException ignored){}}
+        throw new IllegalArgumentException("integer value is required");
+    }
+    private static String booleanLexical(Object raw){
+        if(!(raw instanceof Boolean value))throw new IllegalArgumentException("boolean value is required");
+        return value?"true":"false";
+    }
+    private static String doubleLexical(Object raw){
+        if(!(raw instanceof Number number))throw new IllegalArgumentException("double value is required");
+        double value=number.doubleValue();
+        if(!Double.isFinite(value))throw new IllegalArgumentException("double value must be finite");
+        return Double.toString(value);
+    }
+    private static String dateLexical(Object raw){
+        if(!(raw instanceof String value)||value.isBlank())throw new IllegalArgumentException("date value is required");
+        try{LocalDate.parse(value);return value;}catch(DateTimeParseException e){throw new IllegalArgumentException("date value must be ISO date",e);}
+    }
+    private static String dateTimeLexical(Object raw){
+        if(!(raw instanceof String value)||value.isBlank())throw new IllegalArgumentException("datetime value is required");
+        var match = java.util.regex.Pattern.compile(
+                "^(\\d{4}-\\d{2}-\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.\\d+)?(Z|[+-](\\d{2}):(\\d{2}))$"
+        ).matcher(value);
+        if(!match.matches()
+                || "-00:00".equals(match.group(5))
+                || Integer.parseInt(match.group(2)) > 23
+                || Integer.parseInt(match.group(3)) > 59
+                || Integer.parseInt(match.group(4)) > 59
+                || (match.group(6) != null
+                    && (Integer.parseInt(match.group(6)) > 23
+                        || Integer.parseInt(match.group(7)) > 59))) {
+            throw new IllegalArgumentException("datetime value must be RFC3339");
+        }
+        try{LocalDate.parse(match.group(1));return value;}catch(DateTimeParseException e){throw new IllegalArgumentException("datetime value must be RFC3339",e);}
+    }
+    private static boolean parseBooleanLexical(String raw){
+        if("true".equals(raw)||"1".equals(raw))return true;
+        if("false".equals(raw)||"0".equals(raw))return false;
+        throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Invalid boolean in ArcSuite response");
+    }
+    private static int parseInteger(String raw,String field){try{return Integer.parseInt(raw);}catch(NumberFormatException e){throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Invalid AttributeSchema "+field);}}
+    private static String parseLongLexical(String raw,String field){try{Long.parseLong(raw);return raw;}catch(NumberFormatException e){throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Invalid AttributeSchema "+field);}}
+    private static double parseDouble(String raw,String field){try{double d=Double.parseDouble(raw);if(!Double.isFinite(d))throw new NumberFormatException();return d;}catch(NumberFormatException e){throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Invalid AttributeSchema "+field);}}
     private static byte[] resolveData(Element data,Map<String,byte[]> attachments){if(data==null)return new byte[0];Element include=XmlUtil.firstDesc(data,"Include");if(include!=null){String href=include.getAttribute("href");String cid=MtomParser.normalizeCid(href);byte[] a=attachments.get(cid);if(a==null)throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","MTOM attachment referenced but missing");return a;}String text=data.getTextContent();if(text==null||text.isBlank())return new byte[0];try{return Base64.getMimeDecoder().decode(text);}catch(IllegalArgumentException e){throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Invalid base64 content",false,null,e);}}
 
     @SuppressWarnings("unchecked") private static Map<String,Object> map(Object o){ if(!(o instanceof Map<?,?>m))throw new IllegalArgumentException("object required");return (Map<String,Object>)m; }

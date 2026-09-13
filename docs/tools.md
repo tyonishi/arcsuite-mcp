@@ -5,9 +5,9 @@ server-side scope registry and are filtered by the authenticated client
 profile. Physical cabinet IDs, Attribute IDs, SOAP operations, endpoints,
 credentials, and Session IDs are not tool inputs.
 
-v1.1 adds profile-aware discovery, bounded result paging, batch metadata reads,
-short-lived extracted-content reuse, and optional operator-controlled ArcSuite
-UI deep links. These features do not add new mutation authority.
+v1.2 adds typed semantic predicates and explicitly configured full-text modes to
+the v1.1 discovery, paging, batch metadata, extraction reuse, and UI deep-link
+features. These features do not add new mutation authority.
 
 | Tool | Required input | Result |
 | --- | --- | --- |
@@ -28,7 +28,7 @@ the authenticated profile:
 
 ```json
 {
-  "version": "1.1",
+  "version": "1.2",
   "read_only": true,
   "allowed_tools": ["arcsuite_search_documents"],
   "scopes": [
@@ -45,6 +45,7 @@ the authenticated profile:
           "max_length": 128
         }
       ],
+      "full_text_modes": ["none"],
       "ui_deep_link": false
     }
   ]
@@ -72,6 +73,46 @@ Initial search example:
 
 `document_number` and other semantic names are examples only. An operator must
 configure and validate the corresponding ArcSuite schema first.
+
+### Typed predicates and full-text modes
+
+Scalar filter values remain supported for v1.1-compatible equality and wildcard
+search. v1.2 also accepts an explicit predicate. The semantic scope determines
+the type and permitted operators; callers never provide physical Attribute IDs
+or ArcSuite operator names.
+
+```json
+{
+  "scope": "example_documents",
+  "query": "annual report",
+  "text_search_mode": "stemming",
+  "filters": {
+    "document_number": "DOC-*",
+    "page_count": {"operator": "gte", "value": 10},
+    "approved": true,
+    "published_on": {"operator": "gte", "value": "2026-01-01"}
+  }
+}
+```
+
+The v1.2 operator matrix is deliberately limited: strings use `eq`/`like`,
+integers and numbers use `eq`/`gte`/`lte`, booleans use `eq`, dates and
+date-times use `eq`/`gte`/`lte`, and enums use `eq`. Explicit date-times must be
+unambiguous RFC3339 values. Legacy scalar date-time forms remain accepted where
+the v1.1 configuration depended on them. Long integer inputs outside the
+JavaScript safe-integer range are rejected without rounding.
+
+`text_search_mode` defaults to `none`, and a non-`none` mode requires a text
+query. `stemming` and `thesaurus` are available only when the selected scope
+explicitly lists them in `search.full_text_modes`; the operator must qualify
+those modes in the target environment.
+
+Enum discovery returns only configured semantic aliases. For an
+`I18N_STRING_TYPE` attribute, the server maps an alias to the configured
+`ns`/`name` and checks it against `AttributeSchema.enumLabels`. For a
+string-valued enumerated attribute, the mapping uses `{ "value": "..." }` and
+is serialized as `StringValue`. A declared type that does not match the
+validated schema fails startup or the request closed.
 
 If `next_cursor` is non-null, continue the same result snapshot with only the
 scope and cursor:

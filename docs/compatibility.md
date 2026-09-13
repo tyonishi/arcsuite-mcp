@@ -66,6 +66,23 @@ SHA-256 MGF1). This padding choice is part of the adapter's wire behavior and
 must be qualified against the operator's licensed ArcSuite version before
 deployment.
 
+## ArcSuite v1.2 S1 typed search requirements
+
+S1 adds no ArcSuite operation. It uses the existing repository search
+operations with the following verified wire shapes: `AttributeValue` is
+serialized as the concrete `StringValue`, `BooleanValue`, `IntValue`,
+`LongValue`, `DoubleValue`, `DateValue`, `DateTimeValue`, or
+`I18nStringValue` type; attribute conditions use `BinaryOperatorCondition`
+with `ONEVAL`; and the search option carries `TextSearchMode`.
+
+The semantic layer permits only its configured `eq`/`like`/`gte`/`lte` matrix.
+`stemming` and `thesaurus` are never enabled from the WSDL alone. Enum aliases
+are checked against the returned schema for `I18N_STRING_TYPE`; a
+`STRING_TYPE` enumerated attribute is mapped to a `StringValue` literal and
+must be operator-qualified against the target environment's actual enum
+values. These checks are implementation and synthetic-contract qualified;
+they are not a live ArcSuite qualification claim.
+
 ## Qualification limits
 
 Local tests use a mock adapter and synthetic content. They verify protocol

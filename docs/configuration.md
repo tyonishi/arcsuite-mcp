@@ -85,9 +85,58 @@ semantic attributes that callers may filter. A real deployment must replace
 
 The registry may contain physical IDs because it is server-side operator
 configuration, but it must never be sent to MCP callers or committed with real
-environment values. v1.1 capability discovery exposes only safe semantic scope
+environment values. v1.2 capability discovery exposes only safe semantic scope
 metadata: scope ID/description, allowed object classes, semantic filter names,
-semantic types/operators, wildcard policy, and whether a deep link is enabled.
+types/operators, enum aliases, configured full-text modes, wildcard policy, and
+whether a deep link is enabled.
+
+### Typed semantic filters
+
+Semantic attributes may declare `string`, `integer`, `number`, `boolean`,
+`date`, `datetime`, or `enum`. Operators are restricted to the v1.2 matrix
+advertised by `arcsuite_describe_capabilities`; arbitrary ArcSuite operator
+names are not accepted. The server checks each declaration against the
+operator-returned `AttributeSchema` before using it.
+
+```yaml
+semantic_attributes:
+  page_count:
+    attr_id: {ns: "rep", name: "user:YOUR_PAGE_COUNT_ATTRIBUTE"}
+    type: integer
+    operators: [eq, gte, lte]
+  approved:
+    attr_id: {ns: "rep", name: "user:YOUR_APPROVED_ATTRIBUTE"}
+    type: boolean
+    operators: [eq]
+  lifecycle:
+    attr_id: {ns: "rep", name: "system:status"}
+    type: enum
+    operators: [eq]
+    values:
+      active: {ns: "rep", name: "ACTIVE"}
+      retired: {ns: "rep", name: "RETIRED"}
+```
+
+For `I18N_STRING_TYPE` enums, `values` entries use `ns`/`name` and must be
+present in the validated schema's `enumLabels`. For a string-valued enumerated
+attribute (`STRING_TYPE` with `enumerated: true`), use a literal mapping such
+as `active: {value: "ACTIVE"}`; it is sent as `StringValue`. The alias names,
+not physical mappings, are returned to MCP clients. Long integer requests must
+be JavaScript safe integers; unsafe values fail closed.
+
+### Full-text search modes
+
+The optional scope block below is additive and defaults to `none` when omitted:
+
+```yaml
+search:
+  full_text_modes: [none]
+```
+
+Only explicitly configured modes can be selected by a client. `stemming` and
+`thesaurus` require operator/live-environment qualification and are never
+auto-enabled from the WSDL. A non-`none` mode is rejected when no text query is
+provided.
 
 ### Optional document deep link
 

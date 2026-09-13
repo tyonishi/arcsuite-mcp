@@ -10,6 +10,11 @@ with attention to these topics:
   attachment behavior;
 - Repository object search, listing, metadata retrieval, path retrieval, and
   revision listing;
+- typed repository search conditions (`AttributeValue`, `BinaryOperatorCondition`,
+  `SearchOption`, `SearchRegion`, and `TextSearchMode`);
+- `AttributeSchema` data types, constraints, searchability, sortability, and
+  the distinction between `I18nStringValue` system enum values and
+  `StringValue` user enum values;
 - Repository content retrieval with content labels and MTOM attachments;
 - cabinet information and attribute schema metadata used for scope validation;
 - SOAP faults and ArcSuite ProcessingException structures used to classify

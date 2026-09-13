@@ -5,7 +5,7 @@ import type { AdapterRepositoryObject, NormalizedDocument } from "../arcsuite/ty
 import { AdapterSessionManager } from "../arcsuite/sessionManager.ts";
 import { DEFAULT_ATTRS, CONTENT_LABEL_PRIMARY } from "../arcsuite/constants.ts";
 import { ScopeRegistry, type SemanticScope } from "../semantic/scopeRegistry.ts";
-import { mapFilter } from "../semantic/attributeMapper.ts";
+import { mapFilter, type SemanticFilterInput } from "../semantic/attributeMapper.ts";
 import { normalizeDocument } from "../semantic/responseNormalizer.ts";
 import { ContentBridge } from "../content/contentBridge.ts";
 import { AuditLogger } from "../audit/auditLogger.ts";
@@ -82,7 +82,7 @@ export class ToolRegistry {
         case "arcsuite_describe_capabilities": {
           assertExactKeys(args, [], "describe capabilities arguments");
           data = {
-            version: "1.1",
+            version: "1.2",
             read_only: true,
             allowed_tools: this.list(profile).map((tool) => tool.name),
             scopes: this.scopes.describe(profile.allowedScopes)
@@ -94,11 +94,16 @@ export class ToolRegistry {
           const parsed = parseSearchArgs(args, this.config);
           scopeId = parsed.scope;
           const scope = this.allowedScope(profile, parsed.scope);
+          if (parsed.textSearchMode !== "none" && !parsed.query) throw new TypeError("text_search_mode requires a text query");
+          const allowedTextSearchModes = scope.search?.full_text_modes ?? ["none"];
+          if (!allowedTextSearchModes.includes(parsed.textSearchMode)) {
+            throw new TypeError(`text_search_mode ${parsed.textSearchMode} is not allowed for scope ${parsed.scope}`);
+          }
           let page;
           if (parsed.cursor) {
             page = this.paging.next(parsed.cursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.scope, kind: "search" });
           } else {
-            const attrConditions = Object.entries(parsed.filters).map(([key, value]) => mapFilter(scope, key, value));
+            const attrConditions = Object.entries(parsed.filters).map(([key, value]) => mapFilter(scope, key, value, this.scopes.schemaFor(parsed.scope, key)));
             const words = parsed.query ? tokenizeQuery(parsed.query) : [];
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
             const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
@@ -108,7 +113,7 @@ export class ToolRegistry {
               mode: attrConditions.length && words.length ? "AND" : parsed.queryMode.toUpperCase() as "AND" | "OR",
               searchRegionIds: [scope.arcsuite.root_object_id ?? scope.arcsuite.cabinet_id],
               depth: 0,
-              textSearchMode: "NONE",
+              textSearchMode: parsed.textSearchMode.toUpperCase() as "NONE" | "STEMMING" | "THESAURUS",
               order: [
                 { attrId: DEFAULT_ATTRS.modifiedOn, descending: true },
                 { attrId: DEFAULT_ATTRS.name, descending: false }
@@ -511,25 +516,47 @@ function rejectRawArcSuiteFields(value: unknown): void {
 }
 
 function parseSearchArgs(args: Record<string, unknown>, config: AppConfig) {
-  assertExactKeys(args, ["scope", "query", "query_mode", "filters", "limit", "include_path", "cursor"], "search arguments");
+  assertExactKeys(args, ["scope", "query", "query_mode", "filters", "limit", "include_path", "cursor", "text_search_mode"], "search arguments");
   const scope = stringValue(args.scope, "scope", 1, 100);
   const cursor = optionalString(args.cursor, "cursor", 4096);
   if (cursor) {
-    for (const key of ["query", "query_mode", "filters", "limit", "include_path"]) if (args[key] !== undefined) throw new TypeError(`${key} cannot be combined with cursor`);
-    return { scope, cursor, query: undefined, queryMode: "and" as const, filters: {}, limit: config.searchDefaultLimit, includePath: false };
+    for (const key of ["query", "query_mode", "filters", "limit", "include_path", "text_search_mode"]) if (args[key] !== undefined) throw new TypeError(`${key} cannot be combined with cursor`);
+    return { scope, cursor, query: undefined, queryMode: "and" as const, filters: {} as Record<string, SemanticFilterInput>, textSearchMode: "none" as const, limit: config.searchDefaultLimit, includePath: false };
   }
   const queryValue = optionalString(args.query, "query", 200);
   const query = queryValue?.trim() || undefined;
   const queryMode = enumValue(args.query_mode, ["and", "or"] as const, "and");
+  const textSearchMode = enumValue(args.text_search_mode, ["none", "stemming", "thesaurus"] as const, "none");
   const filterObj = args.filters === undefined ? {} : assertObject(args.filters, "filters");
-  const filters: Record<string, string> = {};
+  const filters: Record<string, SemanticFilterInput> = {};
   for (const [key, value] of Object.entries(filterObj)) {
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(key)) throw new TypeError(`Invalid semantic filter name: ${key}`);
-    filters[key] = stringValue(value, `filters.${key}`, 1, 255);
+    filters[key] = parseSemanticFilterInput(value, `filters.${key}`);
   }
   if (!query && !Object.keys(filters).length) throw new TypeError("At least query or one semantic filter is required");
+  if (!query && textSearchMode !== "none") throw new TypeError("text_search_mode requires a text query");
   const limit = args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit);
-  return { scope, cursor: undefined, query, queryMode, filters, limit, includePath: boolValue(args.include_path, false) };
+  return { scope, cursor: undefined, query, queryMode, filters, textSearchMode, limit, includePath: boolValue(args.include_path, false) };
+}
+
+function parseSemanticFilterInput(value: unknown, label: string): SemanticFilterInput {
+  if (typeof value === "string") return stringValue(value, label, 1, 255);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError(`${label} must be a finite number`);
+    return value;
+  }
+  const predicate = assertObject(value, label);
+  assertExactKeys(predicate, ["operator", "value"], `${label} predicate`);
+  const operator = enumValue(predicate.operator, ["eq", "like", "gte", "lte"] as const);
+  return { operator, value: parseSemanticFilterScalar(predicate.value, `${label}.value`) };
+}
+
+function parseSemanticFilterScalar(value: unknown, label: string): string | number | boolean {
+  if (typeof value === "string") return stringValue(value, label, 1, 255);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  throw new TypeError(`${label} must be a non-empty string, finite number, or boolean`);
 }
 
 function parseGetDocumentArgs(args: Record<string, unknown>) {
@@ -617,11 +644,13 @@ function shortSummary(name: string, data: Record<string, unknown>): string {
 function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: AppConfig): ToolDefinition[] {
   const descriptions = scopes.describe(profile.allowedScopes);
   const scopeValues = descriptions.map((item) => item.id);
-  const scopeSummary = descriptions.map((item) => `${item.id} [${item.filters.map((filter) => filter.name).join(", ") || "no semantic filters"}]`).join("; ");
+  const scopeSummary = descriptions.map((item) => `${item.id} [${item.filters.map((filter) => `${filter.name}:${filter.type}(${filter.operators.join(",")})`).join(", ") || "no semantic filters"}; text=${item.full_text_modes.join(",")}]`).join("; ");
   const scope = { type: "string", enum: scopeValues };
   const documentId = { type: "string", pattern: "^rep:", minLength: 5, maxLength: 2048 };
   const limit = { type: "integer", minimum: 1, maximum: config.searchMaxLimit, default: config.searchDefaultLimit };
   const contentLabel = { type: "string", enum: ["system:primary"], default: "system:primary" };
+  const filterScalar = { oneOf: [{ type: "string", minLength: 1, maxLength: 255 }, { type: "number" }, { type: "boolean" }] };
+  const filterValue = { oneOf: [filterScalar, { type: "object", additionalProperties: false, required: ["operator", "value"], properties: { operator: { type: "string", enum: ["eq", "like", "gte", "lte"] }, value: filterScalar } }] };
   return [
     {
       name: "arcsuite_describe_capabilities",
@@ -631,7 +660,7 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
     {
       name: "arcsuite_search_documents",
       description: `Search an allowed semantic ArcSuite scope. Available scope/filter names: ${scopeSummary || "none"}. Use next_cursor by itself with scope to continue a stable bounded snapshot.`,
-      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: { type: "string", minLength: 1, maxLength: 255 } }, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 } } }
+      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: filterValue }, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 }, text_search_mode: { type: "string", enum: ["none", "stemming", "thesaurus"], default: "none" } } }
     },
     {
       name: "arcsuite_get_document",

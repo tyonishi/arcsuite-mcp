@@ -13,6 +13,12 @@ scopes:
       root_object_id: null
       resolve_references: true
 
+    # Full-text modes are opt-in per semantic scope. The default, when this
+    # block is omitted, is [none]. Enable stemming/thesaurus only after the
+    # operator has verified the ArcSuite environment.
+    search:
+      full_text_modes: [none]
+
     # Optional v1.1 convenience. The server validates this as an absolute HTTPS
     # URL with exactly one {document_id} placeholder in the path/query and no credentials.
     # ui:
@@ -64,3 +70,33 @@ scopes:
           name: "system:modifiedon"
         type: datetime
         operators: [lte]
+
+      # Typed filters are validated against AttributeSchema at startup.
+      # integer maps to ArcSuite INT_TYPE or LONG_TYPE; LONG values must fit
+      # JavaScript's safe-integer range at request time.
+      # page_count:
+      #   attr_id: {ns: "rep", name: "user:YOUR_PAGE_COUNT_ATTRIBUTE"}
+      #   type: integer
+      #   operators: [eq, gte, lte]
+      # approved:
+      #   attr_id: {ns: "rep", name: "user:YOUR_APPROVED_ATTRIBUTE"}
+      #   type: boolean
+      #   operators: [eq]
+      # quality_score:
+      #   attr_id: {ns: "rep", name: "user:YOUR_QUALITY_SCORE_ATTRIBUTE"}
+      #   type: number
+      #   operators: [eq, gte, lte]
+      # published_on:
+      #   attr_id: {ns: "rep", name: "user:YOUR_PUBLISHED_ON_ATTRIBUTE"}
+      #   type: date
+      #   operators: [eq, gte, lte]
+      # lifecycle:
+      #   attr_id: {ns: "rep", name: "system:status"}
+      #   type: enum
+      #   operators: [eq]
+      #   # I18N_STRING_TYPE enum values use ns/name and are checked against
+      #   # AttributeSchema.enumLabels. String-valued enum attributes instead
+      #   # use {value: "..."} and are serialized as StringValue.
+      #   values:
+      #     active: {ns: "rep", name: "ACTIVE"}
+      #     retired: {ns: "rep", name: "RETIRED"}

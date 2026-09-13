@@ -27,6 +27,9 @@ scopes:
       - {ns: "rep", name: "system:contentlabellist"}
       - {ns: "rep", name: "user:example_document_number"}
 
+    search:
+      full_text_modes: [none, stemming, thesaurus]
+
     semantic_attributes:
       document_number:
         attr_id:
@@ -56,3 +59,36 @@ scopes:
           name: "system:modifiedon"
         type: datetime
         operators: [lte]
+      page_count:
+        attr_id:
+          ns: "rep"
+          name: "user:page_count"
+        type: integer
+        operators: [eq, gte, lte]
+      approved:
+        attr_id:
+          ns: "rep"
+          name: "user:approved"
+        type: boolean
+        operators: [eq]
+      quality_score:
+        attr_id:
+          ns: "rep"
+          name: "user:quality_score"
+        type: number
+        operators: [eq, gte, lte]
+      published_on:
+        attr_id:
+          ns: "rep"
+          name: "user:published_on"
+        type: date
+        operators: [eq, gte, lte]
+      lifecycle:
+        attr_id:
+          ns: "rep"
+          name: "system:status"
+        type: enum
+        operators: [eq]
+        values:
+          active: {ns: "rep", name: "ACTIVE"}
+          retired: {ns: "rep", name: "RETIRED"}
