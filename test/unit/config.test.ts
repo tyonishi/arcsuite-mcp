@@ -69,3 +69,14 @@ test("configuration keeps search page sizes compatible with paging snapshots", (
   assert.equal(config.searchMaxLimit, 5);
   assert.equal(config.pagingSnapshotMaxIds, 5);
 });
+
+test("hard-reference candidates have a bounded default and cannot exceed snapshot capacity", () => {
+  const defaults = loadConfig(baseEnv);
+  assert.equal(defaults.hardReferenceMaxCandidates, 200);
+
+  const bounded = loadConfig({ ...baseEnv, MCP_HARD_REFERENCE_MAX_CANDIDATES: "300" });
+  assert.equal(bounded.hardReferenceMaxCandidates, 300);
+
+  assert.throws(() => loadConfig({ ...baseEnv, MCP_HARD_REFERENCE_MAX_CANDIDATES: "1001" }), /MCP_HARD_REFERENCE_MAX_CANDIDATES/);
+  assert.throws(() => loadConfig({ ...baseEnv, MCP_HARD_REFERENCE_MAX_CANDIDATES: "6", MCP_SEARCH_DEFAULT_LIMIT: "5", MCP_SEARCH_MAX_LIMIT: "5", MCP_PAGING_SNAPSHOT_MAX_IDS: "5" }), /MCP_HARD_REFERENCE_MAX_CANDIDATES cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS/);
+});

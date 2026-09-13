@@ -1,9 +1,10 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
-export type PagingKind = "search" | "folder";
+export type PagingKind = "search" | "folder" | "hard_reference";
 
 export type PagingSnapshotContext = {
   folderId?: string;
+  targetDocumentId?: string;
   includePath: boolean;
 };
 
@@ -68,6 +69,7 @@ export class PagingSnapshotStore {
   create(input: { clientProfileId: string; scopeId: string; kind: PagingKind; ids: string[]; pageSize: number; context: PagingSnapshotContext; upstreamLimited?: boolean }): PagingPage {
     this.pruneExpired();
     if (!Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > this.maxIdsPerSnapshot) throw new Error("INVALID_PAGE_SIZE");
+    if (input.kind === "hard_reference" && (!input.context.targetDocumentId || !/^rep:\S+$/.test(input.context.targetDocumentId))) throw new Error("INVALID_HARD_REFERENCE_TARGET");
     const unique = new Set(input.ids);
     if (unique.size !== input.ids.length) throw new Error("DUPLICATE_PAGING_IDS");
     const snapshotLimited = Boolean(input.upstreamLimited) || input.ids.length > this.maxIdsPerSnapshot;
@@ -87,7 +89,7 @@ export class PagingSnapshotStore {
     return { ids: first, nextCursor: this.createCursor(snapshot, input.pageSize), snapshotLimited, pageSize: snapshot.pageSize, context: { ...snapshot.context } };
   }
 
-  next(cursor: string, expected: { clientProfileId: string; scopeId: string; kind: PagingKind }): PagingPage {
+  next(cursor: string, expected: { clientProfileId: string; scopeId: string; kind: PagingKind; targetDocumentId?: string }): PagingPage {
     this.pruneExpired();
     const payload = this.parseCursor(cursor);
     if (payload.client_profile_id !== expected.clientProfileId || payload.scope_id !== expected.scopeId || payload.kind !== expected.kind) throw new Error("PAGING_CURSOR_SCOPE_MISMATCH");
@@ -95,6 +97,7 @@ export class PagingSnapshotStore {
     if (!snapshot) throw new Error("PAGING_SNAPSHOT_EXPIRED");
     if (snapshot.expiresAt <= Date.now()) { this.remove(snapshot.id); throw new Error("PAGING_SNAPSHOT_EXPIRED"); }
     if (snapshot.clientProfileId !== expected.clientProfileId || snapshot.scopeId !== expected.scopeId || snapshot.kind !== expected.kind) throw new Error("PAGING_CURSOR_SCOPE_MISMATCH");
+    if (expected.kind === "hard_reference" && (!expected.targetDocumentId || snapshot.context.targetDocumentId !== expected.targetDocumentId)) throw new Error("PAGING_CURSOR_TARGET_MISMATCH");
     if (payload.page_size !== snapshot.pageSize || payload.offset < 0 || payload.offset >= snapshot.ids.length) throw new Error("INVALID_PAGING_CURSOR");
     snapshot.lastAccessAt = Date.now();
     const end = Math.min(snapshot.ids.length, payload.offset + snapshot.pageSize);
@@ -125,7 +128,7 @@ export class PagingSnapshotStore {
     if (left.length !== right.length || !timingSafeEqual(left, right)) throw new Error("INVALID_PAGING_CURSOR_SIGNATURE");
     let parsed: PagingCursorPayload;
     try { parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as PagingCursorPayload; } catch { throw new Error("INVALID_PAGING_CURSOR"); }
-    if (parsed.v !== 1 || !parsed.snapshot_id || !parsed.client_profile_id || !parsed.scope_id || (parsed.kind !== "search" && parsed.kind !== "folder") || !Number.isSafeInteger(parsed.offset) || !Number.isSafeInteger(parsed.page_size) || !Number.isSafeInteger(parsed.expires_at)) throw new Error("INVALID_PAGING_CURSOR");
+    if (parsed.v !== 1 || !parsed.snapshot_id || !parsed.client_profile_id || !parsed.scope_id || (parsed.kind !== "search" && parsed.kind !== "folder" && parsed.kind !== "hard_reference") || !Number.isSafeInteger(parsed.offset) || !Number.isSafeInteger(parsed.page_size) || !Number.isSafeInteger(parsed.expires_at)) throw new Error("INVALID_PAGING_CURSOR");
     if (parsed.expires_at < Math.floor(Date.now() / 1000)) throw new Error("PAGING_CURSOR_EXPIRED");
     return parsed;
   }

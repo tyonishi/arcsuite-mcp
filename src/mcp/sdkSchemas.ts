@@ -45,6 +45,15 @@ export const toolInputSchemas = {
     include_path: z.boolean().optional(),
     cursor: pagingCursor
   }).strict(),
+  arcsuite_list_hard_references: z.object({
+    document_id: documentId,
+    limit,
+    cursor: pagingCursor
+  }).strict().superRefine((value, context) => {
+    if (value.cursor !== undefined && value.limit !== undefined) {
+      context.addIssue({ code: "custom", message: "limit cannot be combined with cursor", path: ["limit"] });
+    }
+  }),
   arcsuite_list_document_revisions: z.object({ document_id: documentId, limit }).strict(),
   arcsuite_get_document_content_info: z.object({
     document_id: documentId,

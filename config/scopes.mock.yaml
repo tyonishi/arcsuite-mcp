@@ -12,6 +12,9 @@ scopes:
       root_object_id: null
       resolve_references: true
 
+    relationships:
+      hard_references: true
+
     content_labels:
       preview:
         ns: "rep"

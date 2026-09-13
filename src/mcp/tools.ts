@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { TokenProfile, AppConfig } from "../config.ts";
 import type { ArcSuiteAdapterClient } from "../arcsuite/soapAdapterClient.ts";
-import type { AdapterContentRequest, AdapterContentResult, AdapterRepositoryObject, NormalizedDocument, PhysicalContentLabel } from "../arcsuite/types.ts";
+import type { AdapterContentRequest, AdapterContentResult, AdapterGetManyResult, AdapterRepositoryObject, NormalizedDocument, PhysicalContentLabel } from "../arcsuite/types.ts";
+import { ArcSuiteAdapterError } from "../arcsuite/errors.ts";
 import { AdapterSessionManager } from "../arcsuite/sessionManager.ts";
 import { DEFAULT_ATTRS } from "../arcsuite/constants.ts";
 import { ScopeRegistry, type SemanticScope } from "../semantic/scopeRegistry.ts";
@@ -35,6 +36,11 @@ type ContentMembershipProof = {
   objectId: string;
   revisionNumber?: number;
   present: boolean;
+};
+
+type AuthorizedHardReference = {
+  id: string;
+  publicResult: Record<string, unknown>;
 };
 
 export class ToolRegistry {
@@ -249,6 +255,66 @@ export class ToolRegistry {
           };
           break;
         }
+        case "arcsuite_list_hard_references": {
+          const parsed = parseHardReferencesArgs(args, this.config);
+          const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
+          scopeId = scopeMatch.id;
+          const scope = scopeMatch.scope;
+          await this.authorizeHardReferenceTarget(profile, scope, parsed.documentId, soapOperations);
+          objectIds = [parsed.documentId];
+          if (!scope.relationships?.hard_references) {
+            throw new McpToolError("ARCSUITE_FORBIDDEN", "relationship_not_allowed", false);
+          }
+
+          let page;
+          let initiallyAuthorizedResults: Map<string, Record<string, unknown>> | undefined;
+          if (parsed.cursor !== undefined) {
+            page = this.paging.next(parsed.cursor, {
+              clientProfileId: profile.clientProfileId,
+              scopeId: scopeMatch.id,
+              kind: "hard_reference",
+              targetDocumentId: parsed.documentId
+            });
+          } else {
+            this.recordSoapOperation(soapOperations, "listRepositoryObjectHardReferences");
+            const candidates = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.hardReferences({
+              clientProfileId: profile.clientProfileId,
+              id: parsed.documentId,
+              maxResults: this.config.hardReferenceMaxCandidates
+            }));
+            const candidateIds = validateHardReferenceCandidates(candidates, this.config.hardReferenceMaxCandidates);
+            const sameCabinetIds = candidateIds.filter((id) => isObjectIdWithinCabinet(scope, id));
+            const authorized = await this.loadAuthorizedHardReferenceObjects(profile, scope, sameCabinetIds, soapOperations);
+            initiallyAuthorizedResults = new Map(authorized.map((item) => [item.id, item.publicResult]));
+            page = this.paging.create({
+              clientProfileId: profile.clientProfileId,
+              scopeId: scopeMatch.id,
+              kind: "hard_reference",
+              ids: authorized.map((item) => item.id),
+              pageSize: parsed.limit,
+              context: { includePath: false, targetDocumentId: parsed.documentId }
+            });
+          }
+
+          const results = initiallyAuthorizedResults
+            ? page.ids.map((id) => {
+                const result = initiallyAuthorizedResults?.get(id);
+                if (!result) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_snapshot_identity", false);
+                return result;
+              })
+            : (await this.loadAuthorizedHardReferenceObjects(profile, scope, page.ids, soapOperations)).map((item) => item.publicResult);
+          resultCount = results.length;
+          data = {
+            document_id: parsed.documentId,
+            relationship: "hard_reference_incoming",
+            count: results.length,
+            limit: page.pageSize,
+            truncated: Boolean(page.nextCursor),
+            next_cursor: page.nextCursor,
+            results
+          };
+          break;
+        }
         case "arcsuite_list_document_revisions": {
           const parsed = parseRevisionsArgs(args, this.config);
           const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
@@ -433,6 +499,112 @@ export class ToolRegistry {
     this.assertRepositoryObjectInScope(scope, obj);
     this.assertAllowedObjectType(scope, obj);
     this.assertRootScope(obj, scope);
+  }
+
+  private async authorizeHardReferenceTarget(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    targetId: string,
+    operations: string[]
+  ): Promise<void> {
+    this.recordSoapOperation(operations, "getRepositoryObject");
+    this.recordSoapOperation(operations, "getRepositoryObjectPath");
+    const target = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+      clientProfileId: profile.clientProfileId,
+      id: targetId,
+      resolveRef: false,
+      includePath: true,
+      attrIds: scope.default_attr_ids,
+      options: []
+    }));
+    this.assertRepositoryObjectInScope(scope, target);
+    this.assertObjectIdInScope(scope, target.id, targetId);
+    this.assertAllowedObjectType(scope, target);
+    this.assertRootScope(target, scope);
+  }
+
+  private async loadAuthorizedHardReferenceObjects(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    ids: string[],
+    operations: string[]
+  ): Promise<AuthorizedHardReference[]> {
+    if (!ids.length) return [];
+    const authorized: AuthorizedHardReference[] = [];
+    for (const id of ids) this.assertObjectIdInScope(scope, id);
+    for (let offset = 0; offset < ids.length; offset += this.config.batchMaxIds) {
+      const chunk = ids.slice(offset, offset + this.config.batchMaxIds);
+      const objects = await this.getHardReferenceBatch(profile, scope, chunk, operations);
+      for (const item of objects) {
+        const authorizedCandidate = await this.authorizeHardReferenceCandidate(profile, scope, item, operations);
+        if (authorizedCandidate) authorized.push(authorizedCandidate);
+      }
+    }
+    return authorized;
+  }
+
+  private async getHardReferenceBatch(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    ids: string[],
+    operations: string[]
+  ): Promise<AdapterRepositoryObject[]> {
+    this.recordSoapOperation(operations, "getRepositoryObjects");
+    const root = scope.arcsuite.root_object_id;
+    const options = root ? ["getRepositoryObjects.searchMode", `getRepositoryObjects.searchMode.searchRegion=${root}`] : [];
+    const batch = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.getMany({
+      clientProfileId: profile.clientProfileId,
+      ids,
+      resolveRef: false,
+      attrIds: scope.default_attr_ids,
+      options
+    }));
+    return validateHardReferenceBatch(ids, batch);
+  }
+
+  private async authorizeHardReferenceCandidate(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    candidate: AdapterRepositoryObject,
+    operations: string[]
+  ): Promise<AuthorizedHardReference | undefined> {
+    if (!this.scopes.isAllowedObjectType(scope, candidate.objectClass)) return undefined;
+    this.recordSoapOperation(operations, "getRepositoryObject");
+    this.recordSoapOperation(operations, "getRepositoryObjectPath");
+    let pathObject: AdapterRepositoryObject;
+    try {
+      pathObject = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+        clientProfileId: profile.clientProfileId,
+        id: candidate.id,
+        resolveRef: false,
+        includePath: true,
+        attrIds: [DEFAULT_ATTRS.name],
+        options: []
+      }));
+    } catch (error) {
+      if (isInvisibleHardReference(error)) return undefined;
+      throw error;
+    }
+
+    if (!isRepositoryObject(pathObject) || pathObject.id !== candidate.id) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_identity", false);
+    }
+    if (pathObject.objectClass !== candidate.objectClass) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_class", false);
+    }
+    if (!this.scopes.isAllowedObjectType(scope, pathObject.objectClass)) return undefined;
+    if (!isPathWithinCabinet(scope, pathObject.pathObjects)) return undefined;
+    const root = scope.arcsuite.root_object_id;
+    if (root && pathObject.id !== root && !pathObject.pathObjects?.some((part) => part.id === root)) return undefined;
+
+    const combined: AdapterRepositoryObject = {
+      ...candidate,
+      attributes: { ...candidate.attributes, ...pathObject.attributes },
+      pathObjects: pathObject.pathObjects,
+      fullPath: pathObject.fullPath
+    };
+    const normalized = normalizeDocument(combined, scope.semantic_attributes, this.scopes.contentLabelAliases(scope));
+    return { id: candidate.id, publicResult: hardReferencePublicResult(normalized) };
   }
 
   private async proveContentLabelMembership(
@@ -749,6 +921,18 @@ function parseListFolderArgs(args: Record<string, unknown>, config: AppConfig) {
   };
 }
 
+function parseHardReferencesArgs(args: Record<string, unknown>, config: AppConfig) {
+  assertExactKeys(args, ["document_id", "limit", "cursor"], "Hard Reference arguments");
+  const documentId = repId(args.document_id, "document_id");
+  const cursor = optionalString(args.cursor, "cursor", 4096);
+  if (cursor !== undefined && args.limit !== undefined) throw new TypeError("limit cannot be combined with cursor");
+  if (cursor !== undefined && !cursor.length) throw new TypeError("cursor must not be empty");
+  const limit = cursor !== undefined || args.limit === undefined
+    ? config.searchDefaultLimit
+    : intValue(args.limit, "limit", 1, config.searchMaxLimit);
+  return { documentId, cursor, limit };
+}
+
 function parseRevisionsArgs(args: Record<string, unknown>, config: AppConfig) {
   assertExactKeys(args, ["document_id", "limit"], "revision arguments");
   return { documentId: repId(args.document_id, "document_id"), limit: args.limit === undefined ? 20 : intValue(args.limit, "limit", 1, config.searchMaxLimit) };
@@ -782,6 +966,102 @@ function repId(value: unknown, label: string): string {
   const id = stringValue(value, label, 5, 2048);
   if (!id.startsWith("rep:")) throw new TypeError(`${label} must start with rep:`);
   return id;
+}
+
+function validateHardReferenceCandidates(value: unknown, maxResults: number): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray((value as { ids?: unknown }).ids)) {
+    throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_candidate_shape", false);
+  }
+  const ids = (value as { ids: unknown[] }).ids;
+  if (ids.length > maxResults) throw new McpToolError("ARCSUITE_LIMIT_EXCEEDED", "hard_reference_candidate_limit", false);
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (!isRepositoryObjectId(id) || seen.has(id)) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_candidate_identity", false);
+    }
+    seen.add(id);
+  }
+  return [...ids] as string[];
+}
+
+function validateHardReferenceBatch(ids: string[], batch: AdapterGetManyResult): AdapterRepositoryObject[] {
+  if (!batch || !Array.isArray(batch.objects) || !Array.isArray(batch.failures)) {
+    throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_batch_shape", false);
+  }
+  const requestedIndexes = new Map(ids.map((id, index) => [id, index]));
+  if (requestedIndexes.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_batch_request", false);
+  const objects = new Map<string, AdapterRepositoryObject>();
+  const covered = new Set<number>();
+  for (const object of batch.objects) {
+    if (!isRepositoryObject(object)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_batch_object", false);
+    const index = requestedIndexes.get(object.id);
+    if (index === undefined || covered.has(index)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_batch_identity", false);
+    objects.set(object.id, object);
+    covered.add(index);
+  }
+  for (const failure of batch.failures) {
+    if (!failure || !Number.isSafeInteger(failure.index) || failure.index < 0 || failure.index >= ids.length || typeof failure.code !== "string" || !failure.code) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_batch_failure", false);
+    }
+    if (covered.has(failure.index)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_batch_identity", false);
+    covered.add(failure.index);
+    if (failure.code !== "ARCSUITE_NOT_AVAILABLE" && failure.code !== "ARCSUITE_FORBIDDEN") {
+      const stableCodes = new Set([
+        "ARCSUITE_INVALID_ARGUMENT", "ARCSUITE_SESSION_EXPIRED", "ARCSUITE_LIMIT_EXCEEDED",
+        "ARCSUITE_CONFLICT", "ARCSUITE_TIMEOUT", "ARCSUITE_UPSTREAM_ERROR"
+      ]);
+      const code = stableCodes.has(failure.code) ? failure.code : "ARCSUITE_UPSTREAM_ERROR";
+      throw new McpToolError(code, "hard_reference_hydration_failed", false);
+    }
+  }
+  if (covered.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_batch_coverage", false);
+  return ids.flatMap((id) => {
+    const object = objects.get(id);
+    return object ? [object] : [];
+  });
+}
+
+function isRepositoryObject(value: unknown): value is AdapterRepositoryObject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const object = value as Partial<AdapterRepositoryObject>;
+  return isRepositoryObjectId(object.id) && typeof object.objectClass === "string" && Boolean(object.objectClass) &&
+    Boolean(object.attributes) && typeof object.attributes === "object" && !Array.isArray(object.attributes);
+}
+
+function isRepositoryObjectId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 5 && value.length <= 2048 && /^rep:[^\s\u0000-\u001f\u007f]+$/.test(value);
+}
+
+function isObjectIdWithinCabinet(scope: SemanticScope, id: string): boolean {
+  return id === scope.arcsuite.cabinet_id || id.startsWith(`${scope.arcsuite.cabinet_id}:`);
+}
+
+function isPathWithinCabinet(scope: SemanticScope, pathObjects: AdapterRepositoryObject["pathObjects"]): boolean {
+  if (pathObjects === undefined) return true;
+  if (!Array.isArray(pathObjects)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_shape", false);
+  for (const part of pathObjects) {
+    if (!part || !isRepositoryObjectId(part.id)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_identity", false);
+    if (!isObjectIdWithinCabinet(scope, part.id)) return false;
+  }
+  return true;
+}
+
+function isInvisibleHardReference(error: unknown): boolean {
+  return error instanceof ArcSuiteAdapterError && (error.code === "ARCSUITE_NOT_AVAILABLE" || error.code === "ARCSUITE_FORBIDDEN");
+}
+
+function hardReferencePublicResult(document: NormalizedDocument): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    relationship: "hard_reference_incoming",
+    object_class: document.object_class
+  };
+  if (document.name !== undefined) result.name = document.name;
+  if (document.path !== undefined) result.path = [...document.path];
+  if (document.modified_at !== undefined) result.modified_at = document.modified_at;
+  if (document.status !== undefined) result.status = document.status;
+  const semanticAttributes = Object.fromEntries(Object.entries(document.semantic_attributes ?? {}).filter(([, value]) => value !== null));
+  if (Object.keys(semanticAttributes).length) result.semantic_attributes = semanticAttributes;
+  return result;
 }
 
 function tokenizeQuery(query: string): string[] {
@@ -853,6 +1133,11 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
       name: "arcsuite_read_document",
       description: "Read a configured semantic content label through the ArcSuite adapter, reuse a private bounded snapshot when available, and return bounded text with a signed cursor. Binary/base64 content is never returned.",
       inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, revision_number: { type: "integer", minimum: 1 }, content_label: contentLabel, start_page: { type: "integer", minimum: 1 }, end_page: { type: "integer", minimum: 1 }, cursor: { type: "string", maxLength: 4096 }, max_chars: { type: "integer", minimum: 1000, maximum: config.readMaxChars, default: config.readDefaultMaxChars } } }
+    },
+    {
+      name: "arcsuite_list_hard_references",
+      description: "List one page of incoming Hard Reference relationships for a target document in its authorized semantic scope. Continue with document_id and cursor; physical relationship object IDs are not returned.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, limit, cursor: { type: "string", maxLength: 4096 } } }
     }
   ];
 }
