@@ -20,12 +20,13 @@ configuration.
 
 - unit tests cover cursors, session retry, schema/operation invariants,
   extractors, XML safety, and content bounds;
-- integration tests cover MCP initialization/discovery, eight tool calls,
-  synthetic search/read behavior, authentication, Origin checks, raw-field
+- integration tests cover MCP initialization/discovery and nine semantic tool
+  calls, synthetic search/read behavior, authentication, Origin checks, raw-field
   rejection, object-class/cabinet/root response-boundary checks, and excluded
   tool reachability;
 - the Java self-test covers JSON, RSA-OAEP encrypted credential construction,
-  MTOM parsing, and XML entity rejection.
+  MTOM parsing, XML entity rejection, and synthetic Hard Reference SOAP shapes
+  and identity proof.
 
 Tests must use synthetic IDs, names, hostnames, and content. A test that needs
 licensed ArcSuite behavior belongs in an environment-dependent qualification

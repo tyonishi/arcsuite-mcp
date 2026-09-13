@@ -5,9 +5,10 @@ server-side scope registry and are filtered by the authenticated client
 profile. Physical cabinet IDs, Attribute IDs, SOAP operations, endpoints,
 credentials, and Session IDs are not tool inputs.
 
-v1.2 adds typed semantic predicates and explicitly configured full-text modes to
-the v1.1 discovery, paging, batch metadata, extraction reuse, and UI deep-link
-features. These features do not add new mutation authority.
+v1.2 adds typed semantic predicates, explicitly configured full-text modes,
+content-label aliases, and opt-in incoming Hard Reference discovery to the v1.1
+discovery, paging, batch metadata, extraction reuse, and UI deep-link features.
+These features do not add new mutation authority.
 
 | Tool | Required input | Result |
 | --- | --- | --- |
@@ -16,6 +17,7 @@ features. These features do not add new mutation authority.
 | `arcsuite_get_document` | `document_id` | Metadata, status, revisions, content labels, optional path and optional configured `open_url` |
 | `arcsuite_get_documents` | `scope`, `document_ids` | Bounded batch metadata with explicit per-input failures |
 | `arcsuite_list_folder` | `scope`; optional proven `folder_id`, or `scope` + `cursor` | Bounded child document/folder page and optional continuation cursor |
+| `arcsuite_list_hard_references` | `document_id`; optional `limit`, or `document_id` + `cursor` | One page of incoming Hard Reference relationship metadata without physical relationship IDs |
 | `arcsuite_list_document_revisions` | `document_id` | Revision metadata |
 | `arcsuite_get_document_content_info` | `document_id`; optional semantic `content_label` | File name/type/size/extractor support for one configured label; may warm a private short-lived extracted-content snapshot; never binary |
 | `arcsuite_read_document` | `document_id`; optional semantic `content_label` | Bounded extracted text, cache indicator, and optional signed content cursor |
@@ -30,7 +32,7 @@ the authenticated profile:
 {
   "version": "1.2",
   "read_only": true,
-  "allowed_tools": ["arcsuite_search_documents"],
+  "allowed_tools": ["arcsuite_search_documents", "arcsuite_list_hard_references"],
   "scopes": [
     {
       "id": "example_documents",
@@ -47,7 +49,8 @@ the authenticated profile:
       ],
       "full_text_modes": ["none"],
       "ui_deep_link": false,
-      "content_labels": ["system:primary", "preview"]
+      "content_labels": ["system:primary", "preview"],
+      "relationships": ["hard_reference_incoming"]
     }
   ]
 }
@@ -55,6 +58,39 @@ the authenticated profile:
 
 The response deliberately omits cabinet IDs, roots, service DNs, and physical
 Attribute IDs.
+
+## Incoming Hard Reference relationships
+
+Hard Reference discovery is opt-in per scope. An operator can enable it with
+the version 1 scope configuration below; omission means disabled:
+
+```yaml
+relationships:
+  hard_references: true
+```
+
+Capability discovery exposes only the semantic relationship name
+`hard_reference_incoming`. The tool accepts a target `document_id`, an optional
+bounded `limit`, or a continuation `cursor`. It resolves the target scope from
+the target ID, authorizes the target first, and does not accept a caller-chosen
+scope, relationship type, traversal depth, or path option. A cursor requires
+the same target ID and cannot be combined with `limit`.
+
+The result reports the requested target ID and one-hop incoming relationships.
+Entries may contain a safe name, path labels, object class, status, modified
+time, and configured semantic attributes. They omit the Hard Reference object's
+ID, raw reference identity, edition data, physical path IDs, raw attributes,
+and deep links. Cross-cabinet, outside-root, and disallowed-class candidates
+are silently filtered before paging, so they do not affect the public count or
+truncation indicator. Candidate collection defaults to 200 (or the lower
+snapshot capacity) and is capped at 1,000. If ArcSuite returns more
+candidates than that bound, the whole call fails with
+`ARCSUITE_LIMIT_EXCEEDED`; no partial result is returned.
+
+Hard Reference metadata and path reads preserve the reference object's own
+identity with reference resolution disabled. Each continuation is bound to the
+client profile, semantic scope, result kind, and target document. If the scope
+does not enable this relationship, the tool fails closed.
 
 ## Search and result paging
 

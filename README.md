@@ -23,20 +23,24 @@ endorsed by FUJIFILM Business Innovation. See [NOTICE.md](NOTICE.md).
 - v1.2 S2 Content Labels: operator-configured semantic content-label aliases,
   metadata membership proof, label-isolated extraction caches, and
   label-bound read cursors;
+- v1.2 S3 Hard References: opt-in, single-hop incoming relationship discovery,
+  candidate authorization before paging, and semantic results without physical
+  relationship IDs;
 - current MCP Streamable HTTP through the official TypeScript SDK, with a
   stateless legacy compatibility path for older 2025-era clients;
 - server-side scope mapping, token profiles, rate limits, audit metadata, and
   mechanical read-only operation checks.
 
-The current v1.0/v1.1-compatible surface exposes eight generic tools:
+The v1.0 through v1.2 surface has nine generic tools; each profile sees only
+the tools it allows:
 
 `arcsuite_describe_capabilities`, `arcsuite_search_documents`,
 `arcsuite_get_document`, `arcsuite_get_documents`, `arcsuite_list_folder`,
-`arcsuite_list_document_revisions`, `arcsuite_get_document_content_info`, and
-`arcsuite_read_document`.
+`arcsuite_list_document_revisions`, `arcsuite_get_document_content_info`,
+`arcsuite_read_document`, and `arcsuite_list_hard_references`.
 
 See [docs/tools.md](docs/tools.md) for typed predicates, full-text modes,
-paging, batch-read, cache, and deep-link behavior.
+relationship reads, paging, batch-read, cache, and deep-link behavior.
 
 ## Architecture
 

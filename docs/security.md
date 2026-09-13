@@ -15,6 +15,11 @@
   returned by search, list, get, and revision operations. Returned object IDs
   and path IDs are checked against the selected cabinet, and configured root
   membership is revalidated before results are exposed.
+- Incoming Hard Reference candidates are bounded before hydration, and only
+  cabinet/root/type-authorized IDs enter a paging snapshot. Hard Reference
+  reads keep reference resolution disabled; physical relationship IDs, raw
+  reference identity, and edition data are excluded from MCP output and audit
+  metadata.
 - The TypeScript and Java layers enforce a read-only SOAP operation allowlist.
 - ArcSuite challenge/password credentials use the server public key with
   explicitly parameterized RSA-OAEP (SHA-256 with SHA-256 MGF1); the resulting
