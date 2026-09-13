@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 
 public final class SelfTest {
@@ -13,6 +14,8 @@ public final class SelfTest {
         jsonRoundTrip();
         cryptoRoundTrip();
         mtomDecode();
+        soapRequestShapes();
+        responseIdParsing();
         xmlXxeBlocked();
         boundedStreams();
         System.out.println("Java adapter self-test: PASS");
@@ -32,8 +35,7 @@ public final class SelfTest {
         byte[] modulus = unsigned(pub.getModulus().toByteArray());
         byte[] exponent = unsigned(pub.getPublicExponent().toByteArray());
         String encrypted = Crypto.encryptCredential("challenge", "password", Base64.getEncoder().encodeToString(modulus), Base64.getEncoder().encodeToString(exponent));
-        var cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-        cipher.init(Cipher.DECRYPT_MODE, pair.getPrivate());
+        var cipher = Crypto.credentialCipher(Cipher.DECRYPT_MODE, pair.getPrivate());
         String plain = new String(cipher.doFinal(Base64.getDecoder().decode(encrypted)), StandardCharsets.UTF_8);
         if (!"challengepassword".equals(plain)) throw new AssertionError(plain);
     }
@@ -44,6 +46,42 @@ public final class SelfTest {
                 "--"+boundary+"\r\nContent-Type: application/octet-stream\r\nContent-ID: <bin>\r\n\r\nABC123\r\n--"+boundary+"--\r\n";
         MtomMessage m=MtomParser.parse("multipart/related; boundary=\""+boundary+"\"",body.getBytes(StandardCharsets.ISO_8859_1));
         if(!"ABC123".equals(new String(m.attachments().get("bin"),StandardCharsets.ISO_8859_1))) throw new AssertionError();
+    }
+
+    static void soapRequestShapes() {
+        Map<String,Object> incoming = Map.of(
+                "ids", List.of("rep:example:one", "rep:example:two"),
+                "resolveRef", true,
+                "attrIds", List.of(Map.of("ns", "rep", "name", "system:name")),
+                "options", List.of("referenceId")
+        );
+        Map<String,Object> request = AdapterService.prepareGetManyRequest(incoming);
+        if (!Boolean.FALSE.equals(request.get("resolveRef"))) throw new AssertionError("batch request must preserve requested object identity");
+        String body = ArcSuiteSoapClient.getRepositoryObjectsBody(request);
+        String expected = "<t:ids><t:id>rep:example:one</t:id><t:id>rep:example:two</t:id></t:ids>"
+                + "<t:resolveRef>false</t:resolveRef>"
+                + "<t:attrIds><t:attributeId ns=\"rep\" name=\"system:name\"/></t:attrIds>"
+                + "<t:options>referenceId</t:options>";
+        if (!expected.equals(body)) throw new AssertionError("Unexpected getRepositoryObjects body: " + body);
+        if (body.contains("<t:string>")) throw new AssertionError("Ids wire type must use <id>, not <string>");
+
+        try {
+            ArcSuiteSoapClient.getRepositoryObjectsBody(Map.of("ids", List.of()));
+            throw new AssertionError("empty ids must be rejected");
+        } catch (IllegalArgumentException expectedFailure) {}
+    }
+
+    static void responseIdParsing() {
+        String searchXml = "<root xmlns=\"urn:test\"><searchRepositoryObjectIdsReturn><result><ids><id>rep:example:one</id><id>rep:example:two</id></ids></result></searchRepositoryObjectIdsReturn></root>";
+        String listXml = "<root xmlns=\"urn:test\"><listRepositoryObjectIdsReturn><result><ids><id>rep:example:three</id><id>rep:example:four</id></ids></result></listRepositoryObjectIdsReturn></root>";
+        var searchResult = XmlUtil.firstDesc(XmlUtil.parse(searchXml).getDocumentElement(), "result");
+        var listResult = XmlUtil.firstDesc(XmlUtil.parse(listXml).getDocumentElement(), "result");
+        if (!List.of("rep:example:one", "rep:example:two").equals(ArcSuiteSoapClient.parseStringArray(searchResult))) {
+            throw new AssertionError("Unexpected search ID response parsing");
+        }
+        if (!List.of("rep:example:three", "rep:example:four").equals(ArcSuiteSoapClient.parseStringArray(listResult))) {
+            throw new AssertionError("Unexpected list ID response parsing");
+        }
     }
 
     static void xmlXxeBlocked() {

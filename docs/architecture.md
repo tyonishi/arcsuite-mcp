@@ -24,7 +24,7 @@ authentication and does not derive credentials from tool arguments.
 
 ### Semantic layer
 
-`src/mcp/tools.ts` exposes six generic tools. It translates semantic scope and
+`src/mcp/tools.ts` exposes eight generic tools. It translates semantic scope and
 filter names into adapter requests, proves that object IDs belong to an
 allowed configured scope, and shapes results without returning the raw
 physical attribute map.
@@ -42,7 +42,8 @@ deletes the file on every read/discard path.
 ### Java adapter
 
 `adapter-java/` owns SOAP request construction, the ArcSuite Session header,
-RSA encrypted login, session refresh, MTOM parsing, and response materializing.
+RSA-OAEP encrypted login, session refresh, MTOM parsing, and response
+materializing.
 It exposes internal HTTP routes only to the TypeScript gateway. The Java
 client checks its read-only SOAP allowlist before dispatch.
 

@@ -28,7 +28,10 @@ for (const root of [join(process.cwd(), "src"), join(process.cwd(), "adapter-jav
     }
   }
 }
-if (V1_SOAP_OPERATION_ALLOWLIST.size !== 21) throw new Error(`Unexpected v1 SOAP allowlist size: ${V1_SOAP_OPERATION_ALLOWLIST.size}`);
+if (V1_SOAP_OPERATION_ALLOWLIST.size !== 23) throw new Error(`Unexpected v1.1 SOAP allowlist size: ${V1_SOAP_OPERATION_ALLOWLIST.size}`);
+for (const operation of ["listRepositoryObjectIds", "searchRepositoryObjectIds", "getRepositoryObjects"]) {
+  if (!V1_SOAP_OPERATION_ALLOWLIST.has(operation)) throw new Error(`Required v1.1 read operation missing: ${operation}`);
+}
 
 const javaSoapSourcePath = join(process.cwd(), "adapter-java", "src", "main", "java", "biz", "capricornus", "arcsuite", "mcp", "adapter", "ArcSuiteSoapClient.java");
 if (existsSync(javaSoapSourcePath)) {
@@ -46,20 +49,25 @@ if (existsSync(javaSoapSourcePath)) {
 
 const toolSource = readFileSync(join(process.cwd(), "src", "mcp", "tools.ts"), "utf8");
 const requiredTools = [
+  "arcsuite_describe_capabilities",
   "arcsuite_search_documents",
   "arcsuite_get_document",
+  "arcsuite_get_documents",
   "arcsuite_list_folder",
   "arcsuite_list_document_revisions",
   "arcsuite_get_document_content_info",
   "arcsuite_read_document"
 ];
 for (const tool of requiredTools) {
-  if (!toolSource.includes(`name: "${tool}"`)) throw new Error(`Required v1 tool missing: ${tool}`);
+  if (!toolSource.includes(`name: "${tool}"`)) throw new Error(`Required v1.1 tool missing: ${tool}`);
 }
 if (/name:\s*["']arcsuite_find_/i.test(toolSource)) throw new Error("Organization-specific find tool leaked into core tool registry");
 if (!/structuredContent\s*:\s*data/.test(toolSource)) throw new Error("Tool results are not structurally bounded at the semantic registry");
 for (const guard of ["assertRepositoryObjectsInScope", "assertRepositoryObjectInScope", "assertObjectIdInScope", "verifyReturnedRootScope"]) {
   if (!toolSource.includes(guard)) throw new Error(`Scope response guard is missing: ${guard}`);
+}
+for (const v11Boundary of ["PagingSnapshotStore", "getRepositoryObjects.searchMode", "infoCachedOrLoad", "readCachedOrLoad"]) {
+  if (!toolSource.includes(v11Boundary)) throw new Error(`v1.1 read UX boundary missing: ${v11Boundary}`);
 }
 for (const containerfile of [join(process.cwd(), "Containerfile"), join(process.cwd(), "adapter-java", "Containerfile")]) {
   const containerSource = readFileSync(containerfile, "utf8");
@@ -74,24 +82,13 @@ for (const pattern of ["*.wsdl", "*.xsd", "*.jar", "*.msg", "*.docx", "*.pptx", 
   if (!adapterDockerignore.has(pattern)) throw new Error(`Java adapter build context does not exclude ${pattern}`);
 }
 const podmanScriptPath = join(process.cwd(), "podman", "podman-run.example.sh");
-if (process.platform !== "win32" && (statSync(podmanScriptPath).mode & 0o111) === 0) {
-  throw new Error("Podman example script must be executable");
-}
+if (process.platform !== "win32" && (statSync(podmanScriptPath).mode & 0o111) === 0) throw new Error("Podman example script must be executable");
 const podmanScript = readFileSync(podmanScriptPath, "utf8");
-if (podmanScript.includes("config/tokens.json")) {
-  throw new Error("Podman example must not require or mount ignored config/tokens.json; use the mcp_tokens secret");
-}
-if (!podmanScript.includes("--secret mcp_tokens,type=mount,target=/run/secrets/mcp_tokens")) {
-  throw new Error("Podman example must mount the mcp_tokens secret");
-}
-if (!podmanScript.includes("-v arcsuite-mcp-logs:/var/log/arcsuite-mcp:rw") ||
-    !podmanScript.includes("MCP_AUDIT_LOG_PATH=/var/log/arcsuite-mcp/audit.jsonl")) {
-  throw new Error("Podman audit volume must align with the non-root Containerfile log directory");
-}
+if (podmanScript.includes("config/tokens.json")) throw new Error("Podman example must not require or mount ignored config/tokens.json; use the mcp_tokens secret");
+if (!podmanScript.includes("--secret mcp_tokens,type=mount,target=/run/secrets/mcp_tokens")) throw new Error("Podman example must mount the mcp_tokens secret");
+if (!podmanScript.includes("-v arcsuite-mcp-logs:/var/log/arcsuite-mcp:rw") || !podmanScript.includes("MCP_AUDIT_LOG_PATH=/var/log/arcsuite-mcp/audit.jsonl")) throw new Error("Podman audit volume must align with the non-root Containerfile log directory");
 const rootContainerfile = readFileSync(join(process.cwd(), "Containerfile"), "utf8");
-if (!rootContainerfile.includes("/var/log/arcsuite-mcp")) {
-  throw new Error("Root Containerfile must provision the audit log directory");
-}
+if (!rootContainerfile.includes("/var/log/arcsuite-mcp")) throw new Error("Root Containerfile must provision the audit log directory");
 const workflowsDir = join(process.cwd(), ".github", "workflows");
 if (existsSync(workflowsDir)) {
   for (const file of walkAll(workflowsDir)) {

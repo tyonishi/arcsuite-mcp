@@ -2,28 +2,36 @@
 
 ArcSuite MCP Server is a generic, read-only semantic MCP gateway for a
 licensed FUJIFILM ArcSuite Web Service Interface. It lets MCP-compatible AI
-clients search configured document scopes, inspect metadata, list folders and
-revisions, and read bounded text from document content.
+clients discover configured document scopes, search and page through results,
+inspect metadata, list folders and revisions, batch-read document metadata,
+and read bounded text from document content.
 
 This is an independent open-source project. It is not affiliated with or
 endorsed by FUJIFILM Business Innovation. See [NOTICE.md](NOTICE.md).
 
 ## What it provides
 
-- R1 Core Read: document search, semantic attribute filters, metadata, paths,
-  folder listing, and revision listing;
-- R2 Content Read: SOAP/MTOM retrieval through a Java adapter, safe text
+- v1.0 R1 Core Read: document search, semantic attribute filters, metadata,
+  paths, folder listing, and revision listing;
+- v1.0 R2 Content Read: SOAP/MTOM retrieval through a Java adapter, safe text
   extraction, size/character bounds, and signed cursors;
+- v1.1 Read UX & Efficiency: profile-aware capability discovery, stable bounded
+  search/folder paging, batch metadata reads, short-lived extracted-content
+  reuse, and optional trusted ArcSuite UI deep links;
 - current MCP Streamable HTTP through the official TypeScript SDK, with a
   stateless legacy compatibility path for older 2025-era clients;
 - server-side scope mapping, token profiles, rate limits, audit metadata, and
   mechanical read-only operation checks.
 
-The core surface exposes six generic tools:
+The v1.1 surface exposes eight generic tools:
 
-`arcsuite_search_documents`, `arcsuite_get_document`,
-`arcsuite_list_folder`, `arcsuite_list_document_revisions`,
-`arcsuite_get_document_content_info`, and `arcsuite_read_document`.
+`arcsuite_describe_capabilities`, `arcsuite_search_documents`,
+`arcsuite_get_document`, `arcsuite_get_documents`, `arcsuite_list_folder`,
+`arcsuite_list_document_revisions`, `arcsuite_get_document_content_info`, and
+`arcsuite_read_document`.
+
+See [docs/tools.md](docs/tools.md) for paging, batch-read, cache, and deep-link
+behavior.
 
 ## Architecture
 
@@ -32,8 +40,11 @@ flowchart TD
     Client["MCP client"] --> MCP["MCP Streamable HTTP"]
     MCP --> Semantic["Semantic tool registry"]
     Semantic --> Scope["Scope and policy registry"]
+    Semantic --> Paging["Bounded ID snapshot cache"]
     Semantic --> Bridge["Bounded content bridge"]
+    Bridge --> Cache["Short-lived extracted-text cache"]
     Scope --> Adapter["Java ArcSuite adapter"]
+    Paging --> Adapter
     Bridge --> Adapter
     Adapter --> ArcSuite["Licensed ArcSuite service"]
 ```
@@ -97,6 +108,9 @@ scopes:
       cabinet_id: "rep:YOUR_SERVICE:YOUR_CABINET"
       root_object_id: null
       resolve_references: true
+    # Optional convenience; the host/template remain server-side.
+    # ui:
+    #   document_url_template: "https://arcsuite.example.invalid/open?id={document_id}"
     allowed_object_types: [document, folder, reference]
     default_attr_ids:
       - {ns: "rep", name: "system:name"}
@@ -111,6 +125,10 @@ The endpoint and credentials are environment or secret-file configuration,
 never MCP tool arguments. Token profiles are hashes of bearer tokens; use
 `npm run hash-token -- 'a-local-token'` for local setup and keep the resulting
 token configuration out of version control.
+
+v1.1 paging/content caches are process-local and bounded by configuration.
+They do not expand ArcSuite authority, are isolated by client profile/scope,
+and never write extracted document text to the audit log.
 
 See [docs/configuration.md](docs/configuration.md) for all important bounds
 and [config/tokens.example.json](config/tokens.example.json) for a synthetic
@@ -145,7 +163,8 @@ and PPTX extraction where the corresponding local runtime is available.
 XML DTD/external entities are rejected. OOXML archive paths, file counts,
 decompression, member sizes, and extracted characters are bounded. Macros and
 embedded objects are not executed. DocuWorks/XDW is intentionally unsupported
-in v1 and fails safely. No normal MCP tool returns binary or base64 content.
+in v1.x and fails safely unless a future optional provider is explicitly
+configured. No normal MCP tool returns binary or base64 content.
 
 ## Security philosophy and non-goals
 
@@ -154,7 +173,11 @@ semantic scope checks, the SOAP operation allowlist, adapter dispatch, and
 tests. Administrator mode, privilege assertion, privileged-print retrieval,
 ACL mutation, hard delete, workflow termination, delegated workflow execution,
 arbitrary SOAP operations, and arbitrary endpoint/cabinet/schema input are not
-v1 capabilities.
+v1.x capabilities.
+
+The v1.1 ID-only paging operations and multi-object metadata read are themselves
+read-only and remain behind the same semantic scope checks. Paging/content
+caches are performance features, not authorities.
 
 Future governed mutations, if ever added, require explicit human approval and
 workflow-controlled execution. Business mutation retry remains zero.

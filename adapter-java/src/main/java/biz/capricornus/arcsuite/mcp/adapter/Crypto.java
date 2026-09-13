@@ -1,15 +1,30 @@
 package biz.capricornus.arcsuite.mcp.adapter;
 
 import javax.crypto.Cipher;
+import javax.crypto.spec.OAEPParameterSpec;
+import javax.crypto.spec.PSource;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.Key;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.spec.RSAPublicKeySpec;
+import java.security.spec.MGF1ParameterSpec;
 import java.util.Base64;
 
 final class Crypto {
+    private static final String CREDENTIAL_TRANSFORMATION = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding";
+    private static final OAEPParameterSpec CREDENTIAL_OAEP = new OAEPParameterSpec(
+            "SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
+
     private Crypto() {}
+
+    static Cipher credentialCipher(int mode, Key key) throws GeneralSecurityException {
+        Cipher cipher = Cipher.getInstance(CREDENTIAL_TRANSFORMATION);
+        cipher.init(mode, key, CREDENTIAL_OAEP);
+        return cipher;
+    }
 
     static String encryptCredential(String challenge, String password, String modulusB64, String exponentB64) {
         try {
@@ -18,8 +33,7 @@ final class Crypto {
             BigInteger modulus = new BigInteger(1, modulusBytes);
             BigInteger exponent = new BigInteger(1, exponentBytes);
             PublicKey key = KeyFactory.getInstance("RSA").generatePublic(new RSAPublicKeySpec(modulus, exponent));
-            Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-            cipher.init(Cipher.ENCRYPT_MODE, key);
+            Cipher cipher = credentialCipher(Cipher.ENCRYPT_MODE, key);
             byte[] plain = (challenge + password).getBytes(StandardCharsets.UTF_8);
             return Base64.getEncoder().encodeToString(cipher.doFinal(plain));
         } catch (Exception e) {

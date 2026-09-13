@@ -9,7 +9,15 @@ export const CONFIG_LIMITS = Object.freeze({
   maxExtractedChars: 1_000_000,
   maxReadChars: 50_000,
   maxSearchLimit: 50,
+  maxBatchIds: 100,
   maxCursorTtlSeconds: 86_400,
+  maxPagingSnapshotIds: 5_000,
+  maxPagingSnapshots: 1_000,
+  maxPagingSnapshotsPerClient: 100,
+  maxPagingTotalIds: 100_000,
+  maxContentCacheEntries: 1_000,
+  maxContentCacheEntriesPerClient: 100,
+  maxContentCacheBytes: 256 * 1024 * 1024,
   maxRequestsPerMinute: 100_000,
   maxBurst: 1_000
 });
@@ -34,6 +42,7 @@ export type AppConfig = {
   tokenProfiles: TokenProfile[];
   searchDefaultLimit: number;
   searchMaxLimit: number;
+  batchMaxIds: number;
   readDefaultMaxChars: number;
   readMaxChars: number;
   maxRequestBytes: number;
@@ -43,6 +52,15 @@ export type AppConfig = {
   auditLogPath: string;
   cursorSecret: Buffer;
   cursorTtlSeconds: number;
+  pagingTtlSeconds: number;
+  pagingSnapshotMaxIds: number;
+  pagingSnapshotMaxSnapshots: number;
+  pagingSnapshotMaxSnapshotsPerClient: number;
+  pagingSnapshotMaxTotalIds: number;
+  contentCacheTtlSeconds: number;
+  contentCacheMaxEntries: number;
+  contentCacheMaxEntriesPerClient: number;
+  contentCacheMaxBytes: number;
   validateOnStartup: boolean;
 };
 
@@ -65,8 +83,10 @@ function loadTokenProfiles(env: NodeJS.ProcessEnv): TokenProfile[] {
         clientProfileId: "dev-profile",
         allowedScopes: ["example_documents"],
         allowedTools: [
+          "arcsuite_describe_capabilities",
           "arcsuite_search_documents",
           "arcsuite_get_document",
+          "arcsuite_get_documents",
           "arcsuite_list_folder",
           "arcsuite_list_document_revisions",
           "arcsuite_get_document_content_info",
@@ -110,7 +130,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const mode = (env.ARCSUITE_ADAPTER_MODE ?? "http") as "http" | "mock";
   if (mode !== "http" && mode !== "mock") throw new Error("ARCSUITE_ADAPTER_MODE must be http or mock");
   let cursorSecret: Buffer;
-  const cursorSecretText = readSecretFile(env.MCP_CURSOR_HMAC_SECRET_FILE) ?? env.MCP_CURSOR_HMAC_SECRET;
+  const cursorSecretFile = readSecretFile(env.MCP_CURSOR_HMAC_SECRET_FILE);
+  const cursorSecretText = production ? cursorSecretFile : cursorSecretFile ?? env.MCP_CURSOR_HMAC_SECRET;
   if (cursorSecretText) cursorSecret = Buffer.from(cursorSecretText, "utf8");
   else if (production) throw new Error("MCP_CURSOR_HMAC_SECRET_FILE is required in production");
   else cursorSecret = randomBytes(32);
@@ -122,6 +143,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const searchDefaultLimit = positiveInteger(env.MCP_SEARCH_DEFAULT_LIMIT ?? "20", "MCP_SEARCH_DEFAULT_LIMIT", CONFIG_LIMITS.maxSearchLimit);
   const searchMaxLimit = positiveInteger(env.MCP_SEARCH_MAX_LIMIT ?? "50", "MCP_SEARCH_MAX_LIMIT", CONFIG_LIMITS.maxSearchLimit);
   if (searchDefaultLimit > searchMaxLimit) throw new Error("MCP_SEARCH_DEFAULT_LIMIT cannot exceed MCP_SEARCH_MAX_LIMIT");
+  const batchMaxIds = positiveInteger(env.MCP_BATCH_MAX_IDS ?? "50", "MCP_BATCH_MAX_IDS", CONFIG_LIMITS.maxBatchIds);
   const readDefaultMaxChars = positiveInteger(env.MCP_READ_DEFAULT_MAX_CHARS ?? "20000", "MCP_READ_DEFAULT_MAX_CHARS", CONFIG_LIMITS.maxReadChars);
   const readMaxChars = positiveInteger(env.MCP_READ_MAX_CHARS ?? "50000", "MCP_READ_MAX_CHARS", CONFIG_LIMITS.maxReadChars);
   if (readDefaultMaxChars > readMaxChars) throw new Error("MCP_READ_DEFAULT_MAX_CHARS cannot exceed MCP_READ_MAX_CHARS");
@@ -129,6 +151,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const maxContentBytes = positiveInteger(env.MCP_MAX_CONTENT_BYTES ?? "52428800", "MCP_MAX_CONTENT_BYTES", CONFIG_LIMITS.maxContentBytes);
   const maxExtractedChars = positiveInteger(env.MCP_MAX_EXTRACTED_CHARS ?? "200000", "MCP_MAX_EXTRACTED_CHARS", CONFIG_LIMITS.maxExtractedChars);
   const cursorTtlSeconds = positiveInteger(env.MCP_CURSOR_TTL_SECONDS ?? "600", "MCP_CURSOR_TTL_SECONDS", CONFIG_LIMITS.maxCursorTtlSeconds);
+  const pagingTtlSeconds = positiveInteger(env.MCP_PAGING_TTL_SECONDS ?? "600", "MCP_PAGING_TTL_SECONDS", CONFIG_LIMITS.maxCursorTtlSeconds);
+  const pagingSnapshotMaxIds = positiveInteger(env.MCP_PAGING_SNAPSHOT_MAX_IDS ?? "1000", "MCP_PAGING_SNAPSHOT_MAX_IDS", CONFIG_LIMITS.maxPagingSnapshotIds);
+  const pagingSnapshotMaxSnapshots = positiveInteger(env.MCP_PAGING_MAX_SNAPSHOTS ?? "100", "MCP_PAGING_MAX_SNAPSHOTS", CONFIG_LIMITS.maxPagingSnapshots);
+  const pagingSnapshotMaxSnapshotsPerClient = positiveInteger(env.MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT ?? "10", "MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT", CONFIG_LIMITS.maxPagingSnapshotsPerClient);
+  const pagingSnapshotMaxTotalIds = positiveInteger(env.MCP_PAGING_MAX_TOTAL_IDS ?? "10000", "MCP_PAGING_MAX_TOTAL_IDS", CONFIG_LIMITS.maxPagingTotalIds);
+  if (pagingSnapshotMaxSnapshotsPerClient > pagingSnapshotMaxSnapshots) throw new Error("MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT cannot exceed MCP_PAGING_MAX_SNAPSHOTS");
+  if (pagingSnapshotMaxIds > pagingSnapshotMaxTotalIds) throw new Error("MCP_PAGING_SNAPSHOT_MAX_IDS cannot exceed MCP_PAGING_MAX_TOTAL_IDS");
+  if (searchMaxLimit > pagingSnapshotMaxIds) throw new Error("MCP_SEARCH_MAX_LIMIT cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS");
+  const contentCacheTtlSeconds = positiveInteger(env.MCP_CONTENT_CACHE_TTL_SECONDS ?? "600", "MCP_CONTENT_CACHE_TTL_SECONDS", CONFIG_LIMITS.maxCursorTtlSeconds);
+  const contentCacheMaxEntries = positiveInteger(env.MCP_CONTENT_CACHE_MAX_ENTRIES ?? "64", "MCP_CONTENT_CACHE_MAX_ENTRIES", CONFIG_LIMITS.maxContentCacheEntries);
+  const contentCacheMaxEntriesPerClient = positiveInteger(env.MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT ?? "16", "MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT", CONFIG_LIMITS.maxContentCacheEntriesPerClient);
+  if (contentCacheMaxEntriesPerClient > contentCacheMaxEntries) throw new Error("MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT cannot exceed MCP_CONTENT_CACHE_MAX_ENTRIES");
+  const contentCacheMaxBytes = positiveInteger(env.MCP_CONTENT_CACHE_MAX_BYTES ?? "16777216", "MCP_CONTENT_CACHE_MAX_BYTES", CONFIG_LIMITS.maxContentCacheBytes);
   const allowedHostnames = csv(env.MCP_ALLOWED_HOSTNAMES ?? "localhost,127.0.0.1");
   const allowedOriginHostnames = csv(env.MCP_ALLOWED_ORIGIN_HOSTNAMES ?? "localhost,127.0.0.1");
   const adapterBaseUrl = normalizeAdapterBaseUrl(env.ARCSUITE_ADAPTER_BASE_URL ?? "http://127.0.0.1:18080");
@@ -146,6 +181,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     tokenProfiles: loadTokenProfiles(env),
     searchDefaultLimit,
     searchMaxLimit,
+    batchMaxIds,
     readDefaultMaxChars,
     readMaxChars,
     maxRequestBytes,
@@ -155,6 +191,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     auditLogPath: resolve(env.MCP_AUDIT_LOG_PATH ?? "/tmp/arcsuite-mcp-audit.jsonl"),
     cursorSecret,
     cursorTtlSeconds,
+    pagingTtlSeconds,
+    pagingSnapshotMaxIds,
+    pagingSnapshotMaxSnapshots,
+    pagingSnapshotMaxSnapshotsPerClient,
+    pagingSnapshotMaxTotalIds,
+    contentCacheTtlSeconds,
+    contentCacheMaxEntries,
+    contentCacheMaxEntriesPerClient,
+    contentCacheMaxBytes,
     validateOnStartup: (env.MCP_VALIDATE_ON_STARTUP ?? "true").toLowerCase() !== "false"
   };
 }

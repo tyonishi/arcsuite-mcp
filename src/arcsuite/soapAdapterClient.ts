@@ -3,12 +3,16 @@ import { join } from "node:path";
 import type {
   AdapterContentRequest,
   AdapterContentResult,
+  AdapterGetManyRequest,
+  AdapterGetManyResult,
   AdapterGetRequest,
+  AdapterListIdsRequest,
   AdapterListRequest,
   AdapterRepositoryObject,
   AdapterRevisionsRequest,
   AdapterSchemaValidationRequest,
   AdapterSchemaValidationResult,
+  AdapterSearchIdsRequest,
   AdapterSearchRequest
 } from "./types.ts";
 import { ArcSuiteAdapterError } from "./errors.ts";
@@ -23,8 +27,11 @@ export interface ArcSuiteAdapterClient {
   logout(clientProfileId: string): Promise<void>;
   validateSchema(request: AdapterSchemaValidationRequest): Promise<AdapterSchemaValidationResult>;
   search(request: AdapterSearchRequest): Promise<AdapterRepositoryObject[]>;
+  searchIds(request: AdapterSearchIdsRequest): Promise<string[]>;
   list(request: AdapterListRequest): Promise<AdapterRepositoryObject[]>;
+  listIds(request: AdapterListIdsRequest): Promise<string[]>;
   get(request: AdapterGetRequest): Promise<AdapterRepositoryObject>;
+  getMany(request: AdapterGetManyRequest): Promise<AdapterGetManyResult>;
   revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]>;
   content(request: AdapterContentRequest): Promise<AdapterContentResult>;
 }
@@ -49,8 +56,11 @@ export class HttpArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   logout(clientProfileId: string) { return this.request("POST", "/internal/session/logout", { clientProfileId }).then(() => undefined); }
   validateSchema(request: AdapterSchemaValidationRequest) { return this.request("POST", "/internal/schema/validate", request) as Promise<AdapterSchemaValidationResult>; }
   search(request: AdapterSearchRequest) { return this.request("POST", "/internal/repository/search", request) as Promise<AdapterRepositoryObject[]>; }
+  searchIds(request: AdapterSearchIdsRequest) { return this.request("POST", "/internal/repository/search-ids", request) as Promise<string[]>; }
   list(request: AdapterListRequest) { return this.request("POST", "/internal/repository/list", request) as Promise<AdapterRepositoryObject[]>; }
+  listIds(request: AdapterListIdsRequest) { return this.request("POST", "/internal/repository/list-ids", request) as Promise<string[]>; }
   get(request: AdapterGetRequest) { return this.request("POST", "/internal/repository/get", request) as Promise<AdapterRepositoryObject>; }
+  getMany(request: AdapterGetManyRequest) { return this.request("POST", "/internal/repository/get-many", request) as Promise<AdapterGetManyResult>; }
   revisions(request: AdapterRevisionsRequest) { return this.request("POST", "/internal/repository/revisions", request) as Promise<AdapterRepositoryObject[]>; }
   content(request: AdapterContentRequest) { return this.request("POST", "/internal/repository/content", request) as Promise<AdapterContentResult>; }
 
@@ -154,35 +164,19 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   }
 
   async search(request: AdapterSearchRequest): Promise<AdapterRepositoryObject[]> {
-    let docs = [...this.docs];
-    for (const condition of request.attributeConditions) {
-      const key = `${condition.attrId.ns}:${condition.attrId.name}`;
-      docs = docs.filter((doc) => {
-        const v: any = doc.attributes[key];
-        const text = v?.value ?? v?.name ?? "";
-        const target = condition.value.value;
-        if (condition.operator === "EQUAL") return text === target;
-        if (condition.operator === "LIKE") {
-          const regex = new RegExp(`^${escapeRegex(target).replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
-          return regex.test(String(text));
-        }
-        if (condition.operator === "GREATER_EQUAL") return String(text) >= target;
-        if (condition.operator === "LESS_EQUAL") return String(text) <= target;
-        return false;
-      });
-    }
-    if (request.text?.words.length) {
-      const words = request.text.words.map((w) => w.toLowerCase());
-      docs = docs.filter((doc) => {
-        const hay = JSON.stringify(doc.attributes).toLowerCase();
-        return request.text?.operator === "OR" ? words.some((w) => hay.includes(w)) : words.every((w) => hay.includes(w));
-      });
-    }
-    return docs.slice(0, request.limit);
+    return this.searchBase(request).slice(0, request.limit);
+  }
+
+  async searchIds(request: AdapterSearchIdsRequest): Promise<string[]> {
+    return this.searchBase(request).map((doc) => doc.id).slice(0, request.limit);
   }
 
   async list(request: AdapterListRequest): Promise<AdapterRepositoryObject[]> {
-    return this.docs.filter((d) => d.id.startsWith("rep:mock:EXAMPLE_CABINET:")).slice(0, request.limit);
+    return this.listBase(request.locationId).slice(0, request.limit);
+  }
+
+  async listIds(request: AdapterListIdsRequest): Promise<string[]> {
+    return this.listBase(request.locationId).map((doc) => doc.id).slice(0, request.limit);
   }
 
   async get(request: AdapterGetRequest): Promise<AdapterRepositoryObject> {
@@ -194,6 +188,22 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
     }
     if (!request.includePath) delete copy.pathObjects;
     return copy;
+  }
+
+  async getMany(request: AdapterGetManyRequest): Promise<AdapterGetManyResult> {
+    const objects: AdapterRepositoryObject[] = [];
+    const failures: AdapterGetManyResult["failures"] = [];
+    request.ids.forEach((id, index) => {
+      const doc = this.docs.find((item) => item.id === id);
+      if (!doc) {
+        failures.push({ index, code: "ARCSUITE_NOT_AVAILABLE" });
+      } else {
+        const copy = structuredClone(doc);
+        delete copy.pathObjects;
+        objects.push(copy);
+      }
+    });
+    return { objects, failures };
   }
 
   async revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]> {
@@ -214,8 +224,53 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
     writeFileSync(path, text, "utf8");
     return { id: request.id, revisionNumber: request.revisionNumber, label: request.contentLabel.name, fileName: "mock-document.txt", contentType: "text/plain", sizeBytes: Buffer.byteLength(text), filePath: path };
   }
+
+  private searchBase(request: AdapterSearchIdsRequest | AdapterSearchRequest): AdapterRepositoryObject[] {
+    let docs = [...this.docs];
+    for (const condition of request.attributeConditions) {
+      const key = `${condition.attrId.ns}:${condition.attrId.name}`;
+      docs = docs.filter((doc) => {
+        const v: any = doc.attributes[key];
+        const text = v?.value ?? v?.name ?? "";
+        const target = condition.value.value;
+        if (condition.operator === "EQUAL") return text === target;
+        if (condition.operator === "LIKE") {
+          const regex = new RegExp(wildcardToRegex(target), "i");
+          return regex.test(String(text));
+        }
+        if (condition.operator === "GREATER_EQUAL") return String(text) >= target;
+        if (condition.operator === "LESS_EQUAL") return String(text) <= target;
+        return false;
+      });
+    }
+    if (request.text?.words.length) {
+      const words = request.text.words.map((w) => w.toLowerCase());
+      docs = docs.filter((doc) => {
+        const hay = JSON.stringify(doc.attributes).toLowerCase();
+        return request.text?.operator === "OR" ? words.some((w) => hay.includes(w)) : words.every((w) => hay.includes(w));
+      });
+    }
+    return docs;
+  }
+
+  private listBase(_locationId: string): AdapterRepositoryObject[] {
+    return this.docs.filter((d) => d.id.startsWith("rep:mock:EXAMPLE_CABINET:"));
+  }
 }
 
 function escapeRegex(text: string): string {
-  return text.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function wildcardToRegex(target: string): string {
+  let pattern = "^";
+  let literalStart = 0;
+  for (let index = 0; index < target.length; index += 1) {
+    const wildcard = target[index];
+    if (wildcard !== "*" && wildcard !== "?") continue;
+    pattern += escapeRegex(target.slice(literalStart, index));
+    pattern += wildcard === "*" ? ".*" : ".";
+    literalStart = index + 1;
+  }
+  return `${pattern}${escapeRegex(target.slice(literalStart))}$`;
 }

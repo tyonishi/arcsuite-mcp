@@ -34,6 +34,38 @@ supported protocol era through the official SDK.
 | ArcSuite | Licensed environment and version must be qualified by the operator |
 | Dify | Integration example only; historical design target Dify 1.14.2 was not requalified in this sanitized tree |
 
+## ArcSuite v1.1 operation requirements
+
+v1.1 paging and batch metadata reads add three read-only ArcSuite operations to
+the v1.0 baseline:
+
+- `searchRepositoryObjectIds`
+- `listRepositoryObjectIds`
+- `getRepositoryObjects`
+
+The operator must verify that the live ArcSuite WSDL exposes these operations
+before qualifying v1.1 against a real server. The repository intentionally does
+not redistribute a vendor WSDL, and documentation or sample WSDLs from another
+ArcSuite installation are not runtime authority.
+
+The adapter serializes the `getRepositoryObjects` `ids` parameter as the ArcSuite
+`Ids` complex type (`<ids><id>...</id></ids>`). The Java adapter self-test
+locks this request shape so it cannot silently regress to a generic string-array
+wire representation.
+
+v1.1 batch metadata hydration deliberately sends `resolveRef=false` for
+`getRepositoryObjects`. Paging snapshots are keyed by the exact IDs returned by
+the ID-only operations, so reference resolution at this internal batch step
+would change object identity and make page/accounting checks ambiguous. Existing
+single-object and content paths continue to apply the configured reference
+resolution policy where their contracts allow it.
+
+The Java adapter encrypts the `getLoginInfo` challenge concatenated with the
+configured password using explicitly parameterized RSA-OAEP (SHA-256 with
+SHA-256 MGF1). This padding choice is part of the adapter's wire behavior and
+must be qualified against the operator's licensed ArcSuite version before
+deployment.
+
 ## Qualification limits
 
 Local tests use a mock adapter and synthetic content. They verify protocol
