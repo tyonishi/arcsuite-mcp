@@ -22,12 +22,27 @@ final class AdapterService {
     Object list(Map<String,Object> body){return sessions.read(profile(body),sid->soap.list(body,sid));}
     Object listIds(Map<String,Object> body){return sessions.read(profile(body),sid->soap.listIds(body,sid));}
     Object get(Map<String,Object> body){return sessions.read(profile(body),sid->soap.get(body,sid));}
+    Object hardReferences(Map<String,Object> body){
+        Map<String,Object> request=prepareHardReferenceRequest(body);
+        String p=String.valueOf(request.get("clientProfileId"));
+        return sessions.read(p,sid->soap.hardReferences(request,sid));
+    }
     Object getMany(Map<String,Object> body){
         String p=profile(body);
         Map<String,Object> request=prepareGetManyRequest(body);
         Map<String,Object> result=sessions.read(p,sid->soap.getMany(request,sid));
         validateGetManyAccounting(request,result);
         return result;
+    }
+
+    static Map<String,Object> prepareHardReferenceRequest(Map<String,Object> body){
+        if(!body.keySet().equals(Set.of("clientProfileId","id","maxResults")))throw new IllegalArgumentException("Unexpected Hard Reference request fields");
+        String p=profile(body);
+        Object rawId=body.get("id");
+        if(!(rawId instanceof String id))throw new IllegalArgumentException("id is required");
+        id=ArcSuiteSoapClient.requiredRepositoryObjectId(id,"id");
+        int maxResults=ArcSuiteSoapClient.hardReferenceMaxResults(body.get("maxResults"));
+        return Map.of("clientProfileId",p,"id",id,"maxResults",maxResults);
     }
     Object revisions(Map<String,Object> body){return sessions.read(profile(body),sid->soap.revisions(body,sid));}
     Object content(Map<String,Object> body){return sessions.read(profile(body),sid->soap.content(body,sid));}

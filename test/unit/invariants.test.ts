@@ -14,6 +14,15 @@ test("v1 SOAP allowlist contains no forbidden operation", () => {
   assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("getRepositoryObjectContentForPrint"), false);
   assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("deleteRepositoryObject"), false);
   assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("changeRepositoryObjectAcl"), false);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("listRepositoryObjectHardReferences"), true);
+  for (const operation of [
+    "putHardReference", "putHardReferenceWithClass", "putReference", "putReferenceWithClass",
+    "attachTimestamp", "attachTimestampWithOptions", "calculateCertificateEvidence",
+    "validateCertificate", "getCertificateEvidence"
+  ]) {
+    assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has(operation), false, operation);
+  }
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.size, 24);
 });
 
 test("signed cursor detects tampering", () => {

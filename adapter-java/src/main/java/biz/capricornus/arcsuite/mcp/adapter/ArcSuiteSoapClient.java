@@ -34,13 +34,14 @@ final class ArcSuiteSoapClient {
     static final String ENCRYPTED_PASSWORD_URI = BASE_NS + "#EncryptedPassword";
     private static final Set<String> SEARCH_BINARY_OPERATORS = Set.of("EQUAL", "LIKE", "GREATER_EQUAL", "LESS_EQUAL");
     private static final Set<String> SEARCH_TEXT_MODES = Set.of("NONE", "STEMMING", "THESAURUS");
+    static final int HARD_REFERENCE_MAX_CANDIDATES = 1000;
     static final Set<String> READ_ONLY_OPERATIONS = Set.of(
             "getVersionInfo", "getLoginInfo", "login", "logout", "getSessionInfo",
             "getAttributeSchema", "getAttributeSchemas", "getRepositoryObject",
             "getRepositoryObjects", "getRepositoryObjectByRevisionNumber",
             "getRepositoryObjectPath", "getRepositoryObjectPaths", "getRepositoryObjectContent",
             "getRepositoryObjectContentWithOptions", "listRepositoryObjects", "listRepositoryObjectIds",
-            "searchRepositoryObjects", "searchRepositoryObjectIds", "listRepositoryObjectRevisions", "listRepositoryServices",
+            "searchRepositoryObjects", "searchRepositoryObjectIds", "listRepositoryObjectRevisions", "listRepositoryObjectHardReferences", "listRepositoryServices",
             "getCabinetInformation", "getCabinetInformations", "getRepositoryObjectClassDefinitions"
     );
 
@@ -168,6 +169,39 @@ final class ArcSuiteSoapClient {
         out.put("objects",parseRepositoryObjects(ret));
         out.put("failures",parseFailures(ret));
         return out;
+    }
+
+    Map<String,Object> hardReferences(Map<String,Object> req, String sessionId) {
+        String targetId=requiredRepositoryObjectId(requiredString(req,"id"),"id");
+        int maxResults=hardReferenceMaxResults(req.get("maxResults"));
+        SoapResponse r=invoke("listRepositoryObjectHardReferences",hardReferencesBody(req),sessionId,true);
+        Element ret=findResponseValue(r.document(),"listRepositoryObjectHardReferencesReturn","result");
+        if(ret==null)throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference response wrapper was missing");
+        return Map.of("ids",parseHardReferenceIds(ret,targetId,maxResults));
+    }
+
+    static String hardReferencesBody(Map<String,Object> req) {
+        String targetId=requiredRepositoryObjectId(requiredString(req,"id"),"id");
+        hardReferenceMaxResults(req.get("maxResults"));
+        return el("id",targetId)+attrIds(List.of())+options(List.of("referenceId"));
+    }
+
+    static int hardReferenceMaxResults(Object raw) {
+        if(!(raw instanceof Number number))throw new IllegalArgumentException("maxResults is required");
+        double value=number.doubleValue();
+        if(!Double.isFinite(value)||value!=Math.rint(value)||value<1||value>HARD_REFERENCE_MAX_CANDIDATES) {
+            throw new IllegalArgumentException("maxResults is outside the repository safety bound");
+        }
+        return (int)value;
+    }
+
+    static String requiredRepositoryObjectId(String value,String label) {
+        if(!isRepositoryObjectId(value))throw new IllegalArgumentException(label+" must be a repository object ID");
+        return value;
+    }
+
+    private static boolean isRepositoryObjectId(String value) {
+        return value!=null&&value.length()>=5&&value.length()<=2048&&value.matches("rep:[^\\s\\p{Cntrl}]+");
     }
 
     static String getRepositoryObjectsBody(Map<String,Object> req) {
@@ -456,6 +490,42 @@ final class ArcSuiteSoapClient {
     }
 
     private static List<Map<String,Object>> parseRepositoryObjects(Element container){ List<Map<String,Object>> out=new ArrayList<>(); if(container==null)return out; List<Element> els=XmlUtil.descendants(container,"repositoryObject"); if(els.isEmpty()&&"repositoryObject".equals(container.getLocalName()))els=List.of(container); for(Element e:els)out.add(parseRepositoryObject(e)); return out; }
+
+    static List<String> parseHardReferenceIds(Element container,String targetId,int maxResults) {
+        if(container==null||!isRepositoryObjectId(targetId)||maxResults<1||maxResults>HARD_REFERENCE_MAX_CANDIDATES) {
+            throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference response shape was invalid");
+        }
+        List<Element> objects=XmlUtil.children(container,"repositoryObject");
+        for(Node node=container.getFirstChild();node!=null;node=node.getNextSibling()) {
+            if(node instanceof Element element&&!("repositoryObject".equals(element.getLocalName()))) {
+                throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference response shape was invalid");
+            }
+        }
+        if(objects.size()>maxResults)throw new AdapterException("ARCSUITE_LIMIT_EXCEEDED","Hard Reference result exceeds configured maximum");
+        List<String> ids=new ArrayList<>(objects.size());
+        Set<String> seen=new HashSet<>();
+        for(Element object:objects) {
+            List<Element> objectIdElements=XmlUtil.children(object,"id");
+            List<Element> referenceIds=XmlUtil.children(object,"referenceId");
+            if(objectIdElements.size()!=1||referenceIds.size()!=1) {
+                throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference response identity was incomplete");
+            }
+            String objectId=objectIdElements.get(0).getTextContent().trim();
+            if(!isRepositoryObjectId(objectId)||!seen.add(objectId)) {
+                throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference response identity was invalid");
+            }
+            List<Element> targetIds=XmlUtil.children(referenceIds.get(0),"id");
+            if(targetIds.size()!=1)throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference target identity was missing");
+            // ReferenceId.id identifies the target repository object. editionKey is separate metadata and stays internal.
+            String returnedTargetId=targetIds.get(0).getTextContent().trim();
+            if(!isRepositoryObjectId(returnedTargetId)||!targetId.equals(returnedTargetId)) {
+                throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference target identity did not match");
+            }
+            ids.add(objectId);
+        }
+        return List.copyOf(ids);
+    }
+
     static Map<String,Object> parseRepositoryObject(Element e){LinkedHashMap<String,Object> out=new LinkedHashMap<>();String id=value(e,"id");if(id==null&&"repositoryObject".equals(e.getLocalName()))id=XmlUtil.childText(e,"id");out.put("id",id==null?"":id);
         Element oc=XmlUtil.child(e,"objectClass");String ocName=oc==null?"":oc.getAttribute("name");out.put("objectClass",ocName==null||ocName.isBlank()?"unknown":ocName);
         LinkedHashMap<String,Object> attrs=new LinkedHashMap<>();Element aroot=XmlUtil.child(e,"attributes");if(aroot!=null){for(Element a:XmlUtil.children(aroot,"attribute")){String ns=a.getAttribute("ns"),name=a.getAttribute("name");Element av=XmlUtil.child(a,"attributeValue");if(av!=null)attrs.put(ns+":"+name,parseAttributeValue(av));}}out.put("attributes",attrs);return out;}

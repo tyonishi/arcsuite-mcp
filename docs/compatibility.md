@@ -105,3 +105,24 @@ requested revision before dispatching content. Reference resolution must prove
 the same effective object used by the content request. Real label existence,
 reference behavior, revision content, and MTOM behavior remain live-environment
 qualification responsibilities for the operator.
+
+## ArcSuite v1.2 S3 incoming Hard References
+
+S3 adds one bounded, single-hop incoming Hard Reference read. The operator must
+enable `relationships.hard_references` per scope. The gateway authorizes the
+target before lookup, proves candidate cabinet/root/object-type membership
+before snapshot creation, and hydrates Hard Reference objects with reference
+resolution disabled. The public result contains semantic metadata only; the
+physical relationship object ID, raw reference identity, edition data, and
+physical path IDs remain private.
+
+The candidate collection is bounded by `MCP_HARD_REFERENCE_MAX_CANDIDATES`
+(default 200 or the lower snapshot cap, repository maximum 1,000) and by
+`MCP_PAGING_SNAPSHOT_MAX_IDS`. Since the licensed operation has no result-limit
+parameter, an upstream candidate set beyond the configured bound fails closed
+with `ARCSUITE_LIMIT_EXCEEDED`. Synthetic tests qualify request/response
+parsing, identity proof, overflow, authorization, filtering, paging, and
+redaction. A live ArcSuite environment is still required to qualify the
+operator's configured service version and real repository behavior.
+S3 does not implement document-integrity validation; that remains the next
+approved v1.2 slice.

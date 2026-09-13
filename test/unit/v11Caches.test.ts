@@ -49,6 +49,47 @@ test("paging cursor tampering and duplicate ID snapshots fail closed", () => {
   }));
 });
 
+test("hard-reference paging snapshots bind continuation to the requested target", () => {
+  const store = new PagingSnapshotStore(secret, 600, 10, 10, 5, 100);
+  const first = store.create({
+    clientProfileId: "client-a",
+    scopeId: "scope_a",
+    kind: "hard_reference",
+    ids: ["rep:a:hardref-1", "rep:a:hardref-2"],
+    pageSize: 1,
+    context: { includePath: false, targetDocumentId: "rep:a:target-1" }
+  });
+  assert.equal(typeof first.nextCursor, "string");
+
+  assert.throws(() => store.next(first.nextCursor!, {
+    clientProfileId: "client-a",
+    scopeId: "scope_a",
+    kind: "hard_reference",
+    targetDocumentId: "rep:a:target-2"
+  }), /PAGING_CURSOR_TARGET_MISMATCH/);
+  assert.throws(() => store.next(first.nextCursor!, {
+    clientProfileId: "client-b",
+    scopeId: "scope_a",
+    kind: "hard_reference",
+    targetDocumentId: "rep:a:target-1"
+  }), /PAGING_CURSOR_SCOPE_MISMATCH/);
+  assert.throws(() => store.next(first.nextCursor!, {
+    clientProfileId: "client-a",
+    scopeId: "scope_b",
+    kind: "hard_reference",
+    targetDocumentId: "rep:a:target-1"
+  }), /PAGING_CURSOR_SCOPE_MISMATCH/);
+
+  const second = store.next(first.nextCursor!, {
+    clientProfileId: "client-a",
+    scopeId: "scope_a",
+    kind: "hard_reference",
+    targetDocumentId: "rep:a:target-1"
+  });
+  assert.deepEqual(second.ids, ["rep:a:hardref-2"]);
+  assert.equal(second.context.targetDocumentId, "rep:a:target-1");
+});
+
 test("content snapshots are isolated by client scope document revision and variant", () => {
   const cache = new ContentSnapshotCache(600, 10, 5, 1024 * 1024);
   const base = {

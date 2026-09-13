@@ -33,7 +33,8 @@ function profile() {
       "arcsuite_list_folder",
       "arcsuite_list_document_revisions",
       "arcsuite_get_document_content_info",
-      "arcsuite_read_document"
+      "arcsuite_read_document",
+      "arcsuite_list_hard_references"
     ],
     rateLimit: { requestsPerMinute: 120, burst: 30 }
   } as any;
@@ -47,10 +48,11 @@ const expectedTools = [
   "arcsuite_list_folder",
   "arcsuite_list_document_revisions",
   "arcsuite_get_document_content_info",
-  "arcsuite_read_document"
+  "arcsuite_read_document",
+  "arcsuite_list_hard_references"
 ];
 
-test("mock tool surface exposes the eight generic v1.1 read tools", async () => {
+test("mock tool surface exposes the v1.2 semantic read tools", async () => {
   const rt = await runtime();
   const names = rt.tools.list(profile()).map((tool) => tool.name);
   assert.deepEqual(names, expectedTools);
@@ -67,6 +69,7 @@ test("capability discovery exposes only semantic scope metadata", async () => {
   assert.equal(data.scopes[0].id, "example_documents");
   assert.ok(data.scopes[0].filters.some((filter: any) => filter.name === "document_number"));
   assert.deepEqual(data.scopes[0].full_text_modes, ["none", "stemming", "thesaurus"]);
+  assert.deepEqual(data.scopes[0].relationships, ["hard_reference_incoming"]);
   assert.deepEqual(data.scopes[0].filters.find((filter: any) => filter.name === "lifecycle").values, ["active", "retired"]);
   assert.equal(JSON.stringify(data).includes("EXAMPLE_CABINET"), false);
   assert.equal(JSON.stringify(data).includes("example_document_number"), false);

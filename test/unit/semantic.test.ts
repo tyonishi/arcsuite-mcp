@@ -192,6 +192,45 @@ test("scope registry validates additive content-label configuration and preserve
   assert.equal(readSchema.safeParse({ document_id: "rep:mock:LABELS:1", content_label: { ns: "rep", name: "user:PREVIEW" } }).success, false);
 });
 
+test("scope registry defaults incoming hard-reference capability off and validates its strict flag", () => {
+  const base = {
+    description: "Synthetic relationship scope",
+    enabled: true,
+    arcsuite: { cabinet_alias: "RELATIONSHIPS", cabinet_id: "rep:mock:RELATIONSHIPS", root_object_id: null, resolve_references: true },
+    allowed_object_types: ["document", "reference"],
+    default_attr_ids: [{ ns: "rep", name: "system:name" }],
+    semantic_attributes: {}
+  };
+
+  const disabled = new ScopeRegistry({ version: 1, scopes: { relationships: base } });
+  assert.deepEqual(disabled.describe(["relationships"])[0].relationships, []);
+
+  const enabled = new ScopeRegistry({
+    version: 1,
+    scopes: { relationships: { ...base, relationships: { hard_references: true } } }
+  });
+  assert.deepEqual(enabled.describe(["relationships"])[0].relationships, ["hard_reference_incoming"]);
+
+  assert.throws(() => new ScopeRegistry({
+    version: 1,
+    scopes: { relationships: { ...base, relationships: { hard_references: "true" } } }
+  } as any), /hard_references.*boolean/i);
+  assert.throws(() => new ScopeRegistry({
+    version: 1,
+    scopes: { relationships: { ...base, relationships: { hard_references: true, arbitrary: true } } }
+  } as any), /unknown.*relationship|relationship.*key/i);
+});
+
+test("hard-reference tool schema requires a target and rejects caller-controlled relationship parameters", () => {
+  const schema = toolInputSchemas.arcsuite_list_hard_references;
+  assert.equal(schema.safeParse({ document_id: "rep:mock:RELATIONSHIPS:1" }).success, true);
+  assert.equal(schema.safeParse({ document_id: "rep:mock:RELATIONSHIPS:1", cursor: "opaque" }).success, true);
+  assert.equal(schema.safeParse({ cursor: "opaque" }).success, false);
+  assert.equal(schema.safeParse({ document_id: "rep:mock:RELATIONSHIPS:1", depth: 2 }).success, false);
+  assert.equal(schema.safeParse({ document_id: "rep:mock:RELATIONSHIPS:1", relationship_type: "anything" }).success, false);
+  assert.equal(schema.safeParse({ document_id: "rep:mock:RELATIONSHIPS:1", limit: 1, cursor: "opaque" }).success, false);
+});
+
 test("scope registry rejects string enum literals outside adapter constraints", async () => {
   const base = {
     description: "Synthetic string enum scope",

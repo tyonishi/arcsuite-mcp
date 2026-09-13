@@ -9,6 +9,7 @@ export const CONFIG_LIMITS = Object.freeze({
   maxExtractedChars: 1_000_000,
   maxReadChars: 50_000,
   maxSearchLimit: 50,
+  maxHardReferenceCandidates: 1000,
   maxBatchIds: 100,
   maxCursorTtlSeconds: 86_400,
   maxPagingSnapshotIds: 5_000,
@@ -42,6 +43,7 @@ export type AppConfig = {
   tokenProfiles: TokenProfile[];
   searchDefaultLimit: number;
   searchMaxLimit: number;
+  hardReferenceMaxCandidates: number;
   batchMaxIds: number;
   readDefaultMaxChars: number;
   readMaxChars: number;
@@ -90,7 +92,8 @@ function loadTokenProfiles(env: NodeJS.ProcessEnv): TokenProfile[] {
           "arcsuite_list_folder",
           "arcsuite_list_document_revisions",
           "arcsuite_get_document_content_info",
-          "arcsuite_read_document"
+          "arcsuite_read_document",
+          "arcsuite_list_hard_references"
         ],
         rateLimit: { requestsPerMinute: 120, burst: 30 }
       }];
@@ -153,12 +156,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const cursorTtlSeconds = positiveInteger(env.MCP_CURSOR_TTL_SECONDS ?? "600", "MCP_CURSOR_TTL_SECONDS", CONFIG_LIMITS.maxCursorTtlSeconds);
   const pagingTtlSeconds = positiveInteger(env.MCP_PAGING_TTL_SECONDS ?? "600", "MCP_PAGING_TTL_SECONDS", CONFIG_LIMITS.maxCursorTtlSeconds);
   const pagingSnapshotMaxIds = positiveInteger(env.MCP_PAGING_SNAPSHOT_MAX_IDS ?? "1000", "MCP_PAGING_SNAPSHOT_MAX_IDS", CONFIG_LIMITS.maxPagingSnapshotIds);
+  const hardReferenceMaxCandidates = positiveInteger(
+    env.MCP_HARD_REFERENCE_MAX_CANDIDATES ?? String(Math.min(200, pagingSnapshotMaxIds)),
+    "MCP_HARD_REFERENCE_MAX_CANDIDATES",
+    CONFIG_LIMITS.maxHardReferenceCandidates
+  );
   const pagingSnapshotMaxSnapshots = positiveInteger(env.MCP_PAGING_MAX_SNAPSHOTS ?? "100", "MCP_PAGING_MAX_SNAPSHOTS", CONFIG_LIMITS.maxPagingSnapshots);
   const pagingSnapshotMaxSnapshotsPerClient = positiveInteger(env.MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT ?? "10", "MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT", CONFIG_LIMITS.maxPagingSnapshotsPerClient);
   const pagingSnapshotMaxTotalIds = positiveInteger(env.MCP_PAGING_MAX_TOTAL_IDS ?? "10000", "MCP_PAGING_MAX_TOTAL_IDS", CONFIG_LIMITS.maxPagingTotalIds);
   if (pagingSnapshotMaxSnapshotsPerClient > pagingSnapshotMaxSnapshots) throw new Error("MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT cannot exceed MCP_PAGING_MAX_SNAPSHOTS");
   if (pagingSnapshotMaxIds > pagingSnapshotMaxTotalIds) throw new Error("MCP_PAGING_SNAPSHOT_MAX_IDS cannot exceed MCP_PAGING_MAX_TOTAL_IDS");
   if (searchMaxLimit > pagingSnapshotMaxIds) throw new Error("MCP_SEARCH_MAX_LIMIT cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS");
+  if (hardReferenceMaxCandidates > pagingSnapshotMaxIds) throw new Error("MCP_HARD_REFERENCE_MAX_CANDIDATES cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS");
   const contentCacheTtlSeconds = positiveInteger(env.MCP_CONTENT_CACHE_TTL_SECONDS ?? "600", "MCP_CONTENT_CACHE_TTL_SECONDS", CONFIG_LIMITS.maxCursorTtlSeconds);
   const contentCacheMaxEntries = positiveInteger(env.MCP_CONTENT_CACHE_MAX_ENTRIES ?? "64", "MCP_CONTENT_CACHE_MAX_ENTRIES", CONFIG_LIMITS.maxContentCacheEntries);
   const contentCacheMaxEntriesPerClient = positiveInteger(env.MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT ?? "16", "MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT", CONFIG_LIMITS.maxContentCacheEntriesPerClient);
@@ -181,6 +190,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     tokenProfiles: loadTokenProfiles(env),
     searchDefaultLimit,
     searchMaxLimit,
+    hardReferenceMaxCandidates,
     batchMaxIds,
     readDefaultMaxChars,
     readMaxChars,

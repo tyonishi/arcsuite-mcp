@@ -37,6 +37,9 @@ export type SemanticScope = {
     resolve_references: boolean;
   };
   content_labels?: ContentLabelConfiguration;
+  relationships?: {
+    hard_references?: boolean;
+  };
   search?: {
     full_text_modes?: FullTextSearchMode[];
   };
@@ -65,6 +68,7 @@ export type PublicScopeDescription = {
   full_text_modes: FullTextSearchMode[];
   ui_deep_link: boolean;
   content_labels: string[];
+  relationships: string[];
 };
 
 export const SEMANTIC_OPERATOR_MATRIX: Record<SemanticType, readonly SemanticOperator[]> = {
@@ -105,6 +109,7 @@ export class ScopeRegistry {
         throw new Error(`Scope ${name} root_object_id is outside its cabinet`);
       }
       validateContentLabelConfiguration(scope.content_labels, name);
+      validateRelationshipConfiguration(scope.relationships, name);
       validateSearchConfiguration(scope.search, name);
       if (scope.ui !== undefined) {
         if (!scope.ui || typeof scope.ui !== "object" || Array.isArray(scope.ui)) throw new Error(`Scope ${name} ui must be an object`);
@@ -209,7 +214,8 @@ export class ScopeRegistry {
         })),
         full_text_modes: fullTextModes(scope),
         ui_deep_link: Boolean(scope.ui?.document_url_template),
-        content_labels: [...this.contentLabels(scope).keys()]
+        content_labels: [...this.contentLabels(scope).keys()],
+        relationships: scope.relationships?.hard_references ? ["hard_reference_incoming"] : []
       });
     }
     return out;
@@ -318,6 +324,19 @@ function validateSearchConfiguration(search: SemanticScope["search"], scopeId: s
     if (!FULL_TEXT_SEARCH_MODES.includes(mode)) throw new Error(`Unsupported full-text mode ${String(mode)} for scope ${scopeId}`);
   }
   if (!search.full_text_modes.includes("none")) throw new Error(`Scope ${scopeId} full_text_modes must include none`);
+}
+
+function validateRelationshipConfiguration(relationships: SemanticScope["relationships"], scopeId: string): void {
+  if (relationships === undefined) return;
+  if (!relationships || typeof relationships !== "object" || Array.isArray(relationships)) {
+    throw new Error(`Scope ${scopeId} relationships must be an object`);
+  }
+  for (const key of Object.keys(relationships)) {
+    if (key !== "hard_references") throw new Error(`Scope ${scopeId} has unknown relationship key ${key}`);
+  }
+  if (relationships.hard_references !== undefined && typeof relationships.hard_references !== "boolean") {
+    throw new Error(`Scope ${scopeId} relationships.hard_references must be a boolean`);
+  }
 }
 
 function fullTextModes(scope: SemanticScope): FullTextSearchMode[] {

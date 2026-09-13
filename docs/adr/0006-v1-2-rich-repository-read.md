@@ -25,14 +25,16 @@ while preserving ADR 0001's semantic read-only model.
 ### Included capabilities
 
 1. **Related-document traversal**
-   - Add a semantic capability such as `arcsuite_list_related_documents` for
-     allowlisted hard-reference relationships.
+   - S3 exposes only `arcsuite_list_hard_references` for incoming hard-reference
+     relationships; traversal is single-hop and has no caller-selected depth or
+     relationship type.
    - Relationship traversal MUST return only objects proven to be inside an
      allowed semantic scope.
    - Physical reference IDs and raw ArcSuite relationship structures remain
      internal implementation details.
-   - Traversal depth and result count MUST be bounded; recursive unbounded graph
-     walking is not allowed.
+   - A scope MUST explicitly enable Hard Reference discovery. Candidates MUST
+     be bounded and authorized before paging; recursive unbounded graph walking
+     is not allowed.
 
 2. **Document integrity validation**
    - Add a semantic read tool such as `arcsuite_validate_document_integrity`.
@@ -106,6 +108,8 @@ v1.2 SHALL NOT allow:
   audit metadata.
 - No cache or relationship traversal may cross client-profile or scope
   boundaries.
+- Incoming Hard Reference cursors are additionally bound to the target object,
+  and candidate overflow fails without a partial relationship result.
 
 ## Compatibility impact
 

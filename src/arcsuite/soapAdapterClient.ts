@@ -6,6 +6,8 @@ import type {
   AdapterGetManyRequest,
   AdapterGetManyResult,
   AdapterGetRequest,
+  AdapterHardReferencesRequest,
+  AdapterHardReferencesResult,
   AdapterListIdsRequest,
   AdapterListRequest,
   AdapterRepositoryObject,
@@ -33,6 +35,7 @@ export interface ArcSuiteAdapterClient {
   listIds(request: AdapterListIdsRequest): Promise<string[]>;
   get(request: AdapterGetRequest): Promise<AdapterRepositoryObject>;
   getMany(request: AdapterGetManyRequest): Promise<AdapterGetManyResult>;
+  hardReferences(request: AdapterHardReferencesRequest): Promise<AdapterHardReferencesResult>;
   revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]>;
   content(request: AdapterContentRequest): Promise<AdapterContentResult>;
 }
@@ -62,6 +65,7 @@ export class HttpArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   listIds(request: AdapterListIdsRequest) { return this.request("POST", "/internal/repository/list-ids", request) as Promise<string[]>; }
   get(request: AdapterGetRequest) { return this.request("POST", "/internal/repository/get", request) as Promise<AdapterRepositoryObject>; }
   getMany(request: AdapterGetManyRequest) { return this.request("POST", "/internal/repository/get-many", request) as Promise<AdapterGetManyResult>; }
+  hardReferences(request: AdapterHardReferencesRequest) { return this.request("POST", "/internal/repository/hard-references", request) as Promise<AdapterHardReferencesResult>; }
   revisions(request: AdapterRevisionsRequest) { return this.request("POST", "/internal/repository/revisions", request) as Promise<AdapterRepositoryObject[]>; }
   content(request: AdapterContentRequest) { return this.request("POST", "/internal/repository/content", request) as Promise<AdapterContentResult>; }
 
@@ -110,6 +114,7 @@ export class HttpArcSuiteAdapterClient implements ArcSuiteAdapterClient {
 
 export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   private readonly docs: AdapterRepositoryObject[];
+  private readonly hardReferenceObjects: AdapterRepositoryObject[];
   private readonly sharedDir: string;
 
   constructor(sharedDir: string) {
@@ -159,6 +164,13 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
         }
       }
     ];
+    this.hardReferenceObjects = [
+      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-001", "Example incoming reference 001", "folder-a", "reference"),
+      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-002", "Example incoming reference 002", "folder-a", "reference"),
+      mockHardReference("rep:mock:OTHER_CABINET:hardref-003", "Hidden cross-cabinet reference", undefined, "reference"),
+      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-outside-root", "Hidden outside-root reference", "folder-b", "reference"),
+      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-disallowed", "Hidden disallowed reference", "folder-a", "restricted-reference")
+    ];
   }
 
   async health() { return true; }
@@ -192,7 +204,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   }
 
   async get(request: AdapterGetRequest): Promise<AdapterRepositoryObject> {
-    const doc = this.docs.find((d) => d.id === request.id);
+    const doc = [...this.docs, ...this.hardReferenceObjects].find((d) => d.id === request.id);
     if (!doc) throw new ArcSuiteAdapterError("ARCSUITE_NOT_AVAILABLE", "Object not available");
     const copy = structuredClone(doc);
     if (request.revisionNumber !== undefined) {
@@ -206,7 +218,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
     const objects: AdapterRepositoryObject[] = [];
     const failures: AdapterGetManyResult["failures"] = [];
     request.ids.forEach((id, index) => {
-      const doc = this.docs.find((item) => item.id === id);
+      const doc = [...this.docs, ...this.hardReferenceObjects].find((item) => item.id === id);
       if (!doc) {
         failures.push({ index, code: "ARCSUITE_NOT_AVAILABLE" });
       } else {
@@ -216,6 +228,22 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
       }
     });
     return { objects, failures };
+  }
+
+  async hardReferences(request: AdapterHardReferencesRequest): Promise<AdapterHardReferencesResult> {
+    if (!Number.isSafeInteger(request.maxResults) || request.maxResults < 1 || request.maxResults > 1000) {
+      throw new ArcSuiteAdapterError("ARCSUITE_INVALID_ARGUMENT", "Invalid Hard Reference candidate bound");
+    }
+    const ids = request.id === "rep:mock:EXAMPLE_CABINET:1001"
+      ? [
+          "rep:mock:EXAMPLE_CABINET:hardref-001",
+          "rep:mock:EXAMPLE_CABINET:hardref-002",
+          "rep:mock:OTHER_CABINET:hardref-003",
+          "rep:mock:EXAMPLE_CABINET:hardref-disallowed"
+        ]
+      : [];
+    if (ids.length > request.maxResults) throw new ArcSuiteAdapterError("ARCSUITE_LIMIT_EXCEEDED", "Hard Reference candidates exceed configured bound");
+    return { ids };
   }
 
   async revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]> {
@@ -305,6 +333,27 @@ function mockSchema(attrId: { ns: string; name: string }) {
   if (attrId.name.includes("quality_score")) return { ...base, dataType: "DOUBLE_TYPE", minFloatingValue: 0, maxFloatingValue: 1 };
   if (attrId.name.includes("status")) return { ...base, dataType: "I18N_STRING_TYPE", enumerated: true, enumLabels: [{ ns: "rep", name: "ACTIVE", label: "有効" }, { ns: "rep", name: "RETIRED", label: "廃止" }] };
   return { ...base, dataType: "STRING_TYPE", minLength: 1, maxLength: 255 };
+}
+
+function mockHardReference(id: string, name: string, parentFolder: string | undefined, objectClass: string): AdapterRepositoryObject {
+  const cabinetId = id.startsWith("rep:mock:OTHER_CABINET:") ? "rep:mock:OTHER_CABINET" : "rep:mock:EXAMPLE_CABINET";
+  const pathObjects = parentFolder
+    ? [
+        { id: `${cabinetId}:${parentFolder}`, name: parentFolder === "folder-a" ? "Example folder" : "Outside folder", objectClass: "folder" },
+        { id: cabinetId, name: "Example cabinet", objectClass: "cabinet" }
+      ]
+    : [{ id: cabinetId, name: "Example cabinet", objectClass: "cabinet" }];
+  return {
+    id,
+    objectClass,
+    attributes: {
+      "rep:system:name": { type: "string", value: name },
+      "rep:system:modifiedon": { type: "datetime", value: "2026-09-05T03:00:00Z" },
+      "rep:system:status": { type: "i18n", ns: "rep", name: "ACTIVE", label: "有効" }
+    },
+    pathObjects,
+    fullPath: true
+  };
 }
 
 function compareValues(left: unknown, right: unknown): number {

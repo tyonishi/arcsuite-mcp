@@ -95,6 +95,15 @@ export type AdapterGetManyResult = {
   failures: AdapterBatchFailure[];
 };
 
+export type AdapterHardReferencesRequest = {
+  clientProfileId: string;
+  id: string;
+  maxResults: number;
+};
+
+/** Private Hard Reference object IDs; never return this shape through MCP. */
+export type AdapterHardReferencesResult = { ids: string[] };
+
 export type AdapterRevisionsRequest = {
   clientProfileId: string;
   id: string;

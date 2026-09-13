@@ -23,6 +23,7 @@ scope registry. Tool callers cannot override these values.
 | `MCP_ALLOWED_ORIGIN_HOSTNAMES` | `localhost,127.0.0.1` | Browser Origin allowlist |
 | `MCP_SEARCH_DEFAULT_LIMIT` | `20` | Default search/list page size |
 | `MCP_SEARCH_MAX_LIMIT` | `50` | Hard search/list page-size limit |
+| `MCP_HARD_REFERENCE_MAX_CANDIDATES` | `min(200, snapshot cap)` | Maximum incoming Hard Reference candidates collected before authorization and paging; hard maximum `1000` |
 | `MCP_BATCH_MAX_IDS` | `50` | Maximum IDs accepted by `arcsuite_get_documents` |
 | `MCP_MAX_REQUEST_BYTES` | `1048576` | Maximum JSON MCP request body |
 | `MCP_READ_DEFAULT_MAX_CHARS` | `20000` | Default extracted text chunk |
@@ -33,7 +34,7 @@ scope registry. Tool callers cannot override these values.
 | `MCP_AUDIT_LOG_PATH` | `/tmp/arcsuite-mcp-audit.jsonl` | Metadata-only audit log |
 | `MCP_CURSOR_TTL_SECONDS` | `600` | Signed content cursor validity period |
 | `MCP_PAGING_TTL_SECONDS` | `600` | Paging snapshot/cursor lifetime |
-| `MCP_PAGING_SNAPSHOT_MAX_IDS` | `1000` | Maximum IDs retained in one search/folder snapshot |
+| `MCP_PAGING_SNAPSHOT_MAX_IDS` | `1000` | Maximum IDs retained in one search, folder, or Hard Reference snapshot |
 | `MCP_PAGING_MAX_SNAPSHOTS` | `100` | Maximum in-memory paging snapshots |
 | `MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT` | `10` | Maximum paging snapshots for one client profile |
 | `MCP_PAGING_MAX_TOTAL_IDS` | `10000` | Global ID budget across paging snapshots |
@@ -67,7 +68,8 @@ supports the same file-first behavior.
 
 The current hard caps are 4 MiB for an MCP JSON request, 100 MiB for a
 materialized content file, 1,000,000 extracted characters, 50,000 characters
-per MCP read response, 50 search/list results per page, 100 batch IDs, 5,000
+per MCP read response, 50 search/list results per page, 1,000 Hard Reference
+candidates, 100 batch IDs, 5,000
 IDs in one paging snapshot, 1,000 paging snapshots, 100 paging snapshots per
 client, 100,000 total cached paging IDs, 256 MiB extracted-content cache,
 86,400 seconds for cursor/cache TTLs, 100,000 requests per minute, and a
@@ -89,7 +91,24 @@ environment values. v1.2 capability discovery exposes only safe semantic scope
 metadata: scope ID/description, allowed object classes, semantic filter names,
 types/operators, enum aliases, configured full-text modes, wildcard policy, and
 whether a deep link is enabled. It also exposes configured semantic content-label
-aliases; physical content-label mappings are omitted.
+aliases and enabled semantic relationships; physical content-label mappings
+are omitted.
+
+### Incoming Hard References
+
+Hard Reference discovery is opt-in for each scope. Existing version 1 scope
+files remain valid; an omitted setting is disabled. Unknown relationship keys
+and non-boolean values fail startup validation:
+
+```yaml
+relationships:
+  hard_references: true
+```
+
+This setting exposes only the `hard_reference_incoming` semantic capability.
+The token profile must also include `arcsuite_list_hard_references` in its
+`allowedTools` list. See [MCP tools](tools.md#incoming-hard-reference-relationships)
+for authorization, paging, and candidate-bound behavior.
 
 ### Content labels
 
@@ -190,8 +209,11 @@ later pages use the stored ID snapshot rather than re-running the search.
 Paging cursors are HMAC protected and bound to the client profile, semantic
 scope, result kind, snapshot, page size, offset, and expiry.
 
-`MCP_SEARCH_MAX_LIMIT` must not exceed `MCP_PAGING_SNAPSHOT_MAX_IDS`, so every
-accepted search or folder page size is valid for the snapshot store.
+`MCP_SEARCH_MAX_LIMIT` and `MCP_HARD_REFERENCE_MAX_CANDIDATES` must not exceed
+`MCP_PAGING_SNAPSHOT_MAX_IDS`, so accepted page sizes and authorized candidate
+snapshots fit the configured store. Hard Reference candidate collection also
+has a repository hard maximum of 1,000. The MCP caller cannot change this
+candidate limit; overflow fails the whole request without a partial result.
 
 A paging snapshot contains IDs and small navigation context only, never
 extracted document text or credentials. `snapshot_limited=true` means the
@@ -221,14 +243,13 @@ allowed scope names, allowed tool names, and a rate limit. Keep token JSON
 outside version control. A profile is not an ArcSuite user identity; user-aware
 ArcSuite reads are a future roadmap item.
 
-v1.1 introduces two additional generic read tools that operators can add to an
-allowed tool list:
+Earlier v1.1 profiles remain valid and simply do not see additive tools until
+the operator permits them. The v1.2 Hard Reference tool is:
 
-- `arcsuite_describe_capabilities`
-- `arcsuite_get_documents`
+- `arcsuite_list_hard_references`
 
-Existing v1.0 profiles remain valid and simply do not see these tools until the
-operator permits them.
+Both the profile's `allowedTools` and the target scope's
+`relationships.hard_references: true` setting are required.
 
 ## Secret handling
 

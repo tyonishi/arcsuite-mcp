@@ -36,8 +36,14 @@
 - Implemented the v1.2 S2 Content Labels slice: additive per-scope semantic
   content-label aliases, exact document/revision membership proof, returned
   label identity checks, namespace-safe extracted-content caches, and signed
-  cursors bound to semantic labels. S2 adds no SOAP operation; later v1.2
-  slices remain incomplete.
+  cursors bound to semantic labels. S2 adds no SOAP operation; S4 integrity
+  validation remains a separate v1.2 slice.
+- Implemented v1.2 S3 Hard References: per-scope opt-in incoming relationship
+  discovery, bounded candidate collection, cabinet/root/object-type filtering
+  before target-bound paging, resolveRef=false hydration, and public semantic
+  results that omit private relationship IDs and reference identity data.
+- Added one read-only ArcSuite operation for incoming Hard Reference discovery;
+  TypeScript and Java operation allowlists remain in parity.
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and
   `listRepositoryObjectIds` operations to the mechanically checked allowlist;
   mutation/admin/ACL/delete/privileged-print exclusions remain unchanged.

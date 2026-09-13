@@ -45,6 +45,19 @@ export const toolInputSchemas = {
     include_path: z.boolean().optional(),
     cursor: pagingCursor
   }).strict(),
+  // Keep limit/cursor mutual exclusion in the JSON Schema exposed by tools/list.
+  arcsuite_list_hard_references: z.union([
+    z.object({
+      document_id: documentId,
+      limit,
+      cursor: z.never().optional()
+    }).strict(),
+    z.object({
+      document_id: documentId,
+      limit: z.never().optional(),
+      cursor: pagingCursor
+    }).strict()
+  ]),
   arcsuite_list_document_revisions: z.object({ document_id: documentId, limit }).strict(),
   arcsuite_get_document_content_info: z.object({
     document_id: documentId,

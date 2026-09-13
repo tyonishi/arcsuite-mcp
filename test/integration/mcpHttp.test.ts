@@ -73,6 +73,7 @@ const expectedNames = [
   "arcsuite_get_documents",
   "arcsuite_list_document_revisions",
   "arcsuite_list_folder",
+  "arcsuite_list_hard_references",
   "arcsuite_read_document",
   "arcsuite_search_documents"
 ];
@@ -105,6 +106,13 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.deepEqual(search.inputSchema.properties.text_search_mode.enum, ["none", "stemming", "thesaurus"]);
   assert.match(JSON.stringify(search.inputSchema.properties.filters), /operator/);
   assert.match(search.description, /document_number/);
+  const hardReferences = tools.find((tool: { name: string }) => tool.name === "arcsuite_list_hard_references");
+  const hardReferenceBranches = hardReferences.inputSchema.anyOf;
+  assert.equal(hardReferenceBranches.length, 2);
+  assert.ok(hardReferenceBranches.every((branch: any) => branch.required.includes("document_id")));
+  assert.ok(hardReferenceBranches.every((branch: any) => branch.additionalProperties === false));
+  assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.cursor?.not && !branch.properties.limit?.not));
+  assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.limit?.not && !branch.properties.cursor?.not));
 
   const capabilities = await rpc(base, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "arcsuite_describe_capabilities", arguments: {} } });
   assert.equal(capabilities.status, 200);
@@ -118,6 +126,12 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   const typedCall = await rpc(base, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "arcsuite_search_documents", arguments: { scope: "example_documents", query: "DOC", text_search_mode: "thesaurus", filters: { page_count: { operator: "gte", value: 10 } } } } });
   assert.equal(typedCall.status, 200);
   assert.equal(typedCall.json.result.structuredContent.count, 1);
+
+  const relationships = await rpc(base, { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "arcsuite_list_hard_references", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001" } } });
+  assert.equal(relationships.status, 200);
+  assert.equal(relationships.json.result.structuredContent.relationship, "hard_reference_incoming");
+  assert.equal(relationships.json.result.structuredContent.count, 2);
+  assert.equal(JSON.stringify(relationships.json.result.structuredContent).includes("hardref-001"), false);
 });
 
 test("MCP rejects unknown bearer token", async (t) => {

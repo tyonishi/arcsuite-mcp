@@ -28,9 +28,9 @@ for (const root of [join(process.cwd(), "src"), join(process.cwd(), "adapter-jav
     }
   }
 }
-if (V1_SOAP_OPERATION_ALLOWLIST.size !== 23) throw new Error(`Unexpected v1.1 SOAP allowlist size: ${V1_SOAP_OPERATION_ALLOWLIST.size}`);
-for (const operation of ["listRepositoryObjectIds", "searchRepositoryObjectIds", "getRepositoryObjects"]) {
-  if (!V1_SOAP_OPERATION_ALLOWLIST.has(operation)) throw new Error(`Required v1.1 read operation missing: ${operation}`);
+if (V1_SOAP_OPERATION_ALLOWLIST.size !== 24) throw new Error(`Unexpected v1.2 S3 SOAP allowlist size: ${V1_SOAP_OPERATION_ALLOWLIST.size}`);
+for (const operation of ["listRepositoryObjectIds", "searchRepositoryObjectIds", "getRepositoryObjects", "listRepositoryObjectHardReferences"]) {
+  if (!V1_SOAP_OPERATION_ALLOWLIST.has(operation)) throw new Error(`Required SOAP read operation missing: ${operation}`);
 }
 
 const javaSoapSourcePath = join(process.cwd(), "adapter-java", "src", "main", "java", "biz", "capricornus", "arcsuite", "mcp", "adapter", "ArcSuiteSoapClient.java");
@@ -56,10 +56,11 @@ const requiredTools = [
   "arcsuite_list_folder",
   "arcsuite_list_document_revisions",
   "arcsuite_get_document_content_info",
-  "arcsuite_read_document"
+  "arcsuite_read_document",
+  "arcsuite_list_hard_references"
 ];
 for (const tool of requiredTools) {
-  if (!toolSource.includes(`name: "${tool}"`)) throw new Error(`Required v1.1 tool missing: ${tool}`);
+  if (!toolSource.includes(`name: "${tool}"`)) throw new Error(`Required semantic tool missing: ${tool}`);
 }
 if (/name:\s*["']arcsuite_find_/i.test(toolSource)) throw new Error("Organization-specific find tool leaked into core tool registry");
 if (!/structuredContent\s*:\s*data/.test(toolSource)) throw new Error("Tool results are not structurally bounded at the semantic registry");

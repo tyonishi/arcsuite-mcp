@@ -13,6 +13,10 @@ scopes:
       root_object_id: null
       resolve_references: true
 
+    # Incoming Hard Reference discovery is disabled unless an operator opts in.
+    # relationships:
+    #   hard_references: false
+
     # Optional read-only content labels. Aliases are caller-visible; the
     # physical ns/name mapping is trusted operator configuration and is never
     # returned through MCP discovery or tool results.

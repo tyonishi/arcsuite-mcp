@@ -15,6 +15,7 @@ export const V1_SOAP_OPERATION_ALLOWLIST = new Set([
   "getRepositoryObjectContentWithOptions",
   "listRepositoryObjects",
   "listRepositoryObjectIds",
+  "listRepositoryObjectHardReferences",
   "searchRepositoryObjects",
   "searchRepositoryObjectIds",
   "listRepositoryObjectRevisions",
@@ -35,7 +36,16 @@ export const FORBIDDEN_SOAP_OPERATIONS = new Set([
   "terminateProcess",
   "terminateProcesses",
   "executeDelegatedAction",
-  "executeDelegatedActionByName"
+  "executeDelegatedActionByName",
+  "putHardReference",
+  "putHardReferenceWithClass",
+  "putReference",
+  "putReferenceWithClass",
+  "attachTimestamp",
+  "attachTimestampWithOptions",
+  "calculateCertificateEvidence",
+  "validateCertificate",
+  "getCertificateEvidence"
 ]);
 
 export function assertOperationAllowlistSafe(): void {
