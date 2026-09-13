@@ -53,8 +53,10 @@ Implemented scope:
 - operator-allowlisted additional content labels.
 
 S1 Typed Search Foundation, S2 Content Labels, S3 Hard References, and S4
-Document Integrity are implemented and synthetically qualified. Live ArcSuite
-qualification remains environment-dependent. v1.2 does not include
+Document Integrity are implemented and covered by synthetic contract tests.
+The F1–F7 closure remediation has passed the complete local validation suite;
+an independent final cross-cutting re-audit and live ArcSuite qualification
+remain pending. v1.2 does not include
 `calculateCertificateEvidence`, timestamp attachment, evidence mutation,
 repository mutation, RMS, Collaboration, or Workflow operations.
 

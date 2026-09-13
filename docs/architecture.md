@@ -19,8 +19,10 @@ flowchart TD
 
 `src/server.ts` wires configuration, scopes, sessions, content limits, audit,
 and the tool registry. `src/mcp/protocol.ts` uses the official MCP TypeScript
-SDK and Node adapter for Streamable HTTP. It validates Host and Origin before
-authentication and does not derive credentials from tool arguments.
+SDK and Node adapter for Streamable HTTP. Registered tool schemas use the
+effective configured page, batch, and read limits. The protocol validates
+Host and Origin before authentication and does not derive credentials from
+tool arguments.
 
 ### Semantic layer
 
@@ -55,7 +57,9 @@ deletes the file on every read/discard path.
 `adapter-java/` owns SOAP request construction, the ArcSuite Session header,
 RSA-OAEP encrypted login, session refresh, MTOM parsing, and response
 materializing.
-It exposes internal HTTP routes only to the TypeScript gateway. The Java
+It exposes internal HTTP routes only to the TypeScript gateway. Its
+`SessionManager` owns the single read refresh/retry (at most two business SOAP
+attempts); the TypeScript gateway does not replay adapter requests. The Java
 client checks its read-only SOAP allowlist before dispatch.
 
 ## Request flow
@@ -68,7 +72,8 @@ client checks its read-only SOAP allowlist before dispatch.
 5. For a content cache miss, the selected document or exact revision is
    fetched with the content-label-list attribute and scope/root/object-type
    proof; only an exact namespace/name membership match may continue.
-6. The session manager invokes only bounded read operations.
+6. The Java session manager invokes only bounded read operations and refreshes
+   an expired session at most once.
 7. The adapter performs ArcSuite-specific SOAP/MTOM work internally and
    verifies the returned content label identity.
 8. The gateway returns semantic JSON and bounded text, never credentials,

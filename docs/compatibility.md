@@ -144,3 +144,10 @@ and cannot promote validation status. Synthetic contracts and MCP policy are
 tested locally; live validation, component availability, unsigned objects,
 evidence behavior, and XAdES/PAdES variants still require qualification in the
 operator's licensed ArcSuite environment.
+
+## v1.2 cross-cutting remediation status
+
+The F1–F7 closure remediation is implemented and covered by the complete local
+validation suite. This records implementation evidence only: an independent
+final cross-cutting re-audit remains pending, as does live ArcSuite
+qualification by an operator.

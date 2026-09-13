@@ -47,9 +47,13 @@
   response accounting, conservative status normalization, and evidence
   availability summaries with raw exception and certificate attributes
   discarded at the Java adapter boundary.
-- Completed the v1.2 Rich Repository Read implementation and synthetic
-  contract qualification. Live ArcSuite behavior remains an operator
-  qualification responsibility; see `docs/compatibility.md`.
+- Added v1.2 closure remediation for F1–F7: effective-object content identity,
+  exact JSON integer handling, semantic enum reverse mapping, strict SOAP ID
+  response parsing, one Java-owned read retry, output-budget OOXML extraction,
+  and MCP schemas generated from effective configured limits. Synthetic
+  cross-boundary regression tests and the complete local validation suite
+  pass; independent final cross-cutting re-audit and live ArcSuite
+  qualification remain pending.
 - Added one read-only ArcSuite operation for incoming Hard Reference discovery;
   TypeScript and Java operation allowlists remain in parity.
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and

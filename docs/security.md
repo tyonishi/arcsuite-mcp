@@ -66,8 +66,10 @@ semantic policy. The Java adapter is a separate private service with its own
 internal bearer token. ArcSuite is an external enterprise service whose
 permissions and schema are environment-specific.
 
-The gateway's read retry is limited to one session refresh. A future mutation
-must not reuse this retry behavior: business mutation retry is zero.
+The Java adapter's `SessionManager` owns the read retry and permits one session
+refresh, for at most two business SOAP attempts. The TypeScript gateway sends
+each adapter read once and does not replay it. A future mutation must not use
+this retry behavior: business mutation retry is zero.
 
 ## Operator responsibilities
 

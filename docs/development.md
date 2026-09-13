@@ -18,15 +18,18 @@ configuration.
 
 ## Test design
 
+- `npm test` runs the TypeScript unit/integration suite and synthetic Python
+  OOXML extraction regressions;
 - unit tests cover cursors, session retry, schema/operation invariants,
   extractors, XML safety, and content bounds;
-- integration tests cover MCP initialization/discovery and nine semantic tool
-  calls, synthetic search/read behavior, authentication, Origin checks, raw-field
-  rejection, object-class/cabinet/root response-boundary checks, and excluded
-  tool reachability;
-- the Java self-test covers JSON, RSA-OAEP encrypted credential construction,
-  MTOM parsing, XML entity rejection, and synthetic Hard Reference SOAP shapes
-  and identity proof.
+- integration tests cover MCP initialization/discovery, actual `tools/list`
+  limits under non-default configuration, synthetic search/read behavior,
+  authentication, Origin checks, raw-field rejection, scope-boundary checks,
+  and excluded tool reachability;
+- the Java self-test covers JSON integer preservation, RSA-OAEP encrypted
+  credential construction, bounded session retry, strict SOAP ID arrays,
+  effective object/path identity, MTOM parsing, XML entity rejection, and
+  synthetic Hard Reference SOAP shapes.
 
 Tests must use synthetic IDs, names, hostnames, and content. A test that needs
 licensed ArcSuite behavior belongs in an environment-dependent qualification

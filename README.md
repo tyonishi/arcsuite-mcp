@@ -44,8 +44,10 @@ the tools it allows:
 
 See [docs/tools.md](docs/tools.md) for integrity validation, typed predicates,
 full-text modes, relationship reads, paging, batch-read, cache, and deep-link
-behavior. v1.2 implementation and synthetic contract qualification are
-complete; live ArcSuite qualification remains operator-dependent.
+behavior. S1–S4 implementation is present and covered by synthetic tests. The
+F1–F7 closure remediation has passed the complete local validation suite;
+independent final cross-cutting re-audit and live ArcSuite qualification remain
+pending.
 
 ## Architecture
 

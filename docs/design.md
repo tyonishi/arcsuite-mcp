@@ -56,6 +56,9 @@ cursors.
 Extractors do not execute macros or embedded objects. XML DTD/external entity
 input is rejected. OOXML archive traversal, decompression, member size, and
 output limits are enforced by the Python helper and its Node process wrapper.
+DOCX/PPTX parts share one incremental output budget. XLSX cells are emitted
+directly into that budget; repeated shared strings are sliced before output
+materialization, and cell/row/sheet traversal stops when the budget is full.
 
 ## Extensibility
 

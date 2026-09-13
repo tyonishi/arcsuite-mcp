@@ -24,6 +24,12 @@ authority.
 | `arcsuite_get_document_content_info` | `document_id`; optional semantic `content_label` | File name/type/size/extractor support for one configured label; may warm a private short-lived extracted-content snapshot; never binary |
 | `arcsuite_read_document` | `document_id`; optional semantic `content_label` | Bounded extracted text, cache indicator, and optional signed content cursor |
 
+The registered `tools/list` schemas reflect the effective configuration for
+batch size (`MCP_BATCH_MAX_IDS`), page size (`MCP_SEARCH_MAX_LIMIT`), and read
+characters (`MCP_READ_MAX_CHARS`). Runtime validation enforces those same
+values. The repository hard caps remain in force even when an operator sets a
+larger environment value.
+
 ## Capability discovery
 
 Use `arcsuite_describe_capabilities` when a client does not expose rich MCP

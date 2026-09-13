@@ -78,6 +78,12 @@ for deployment resource limits. The Java adapter also caps internal JSON
 requests at 2,000,000 bytes and the gateway caps a materialized adapter JSON
 response at 8 MiB.
 
+The authenticated MCP `tools/list` schemas expose the effective configured
+limits for batch IDs, search/list/revision/Hard Reference page sizes, and read
+characters. A request above one of those deployment limits is rejected by the
+registered schema before tool dispatch; the runtime parsers enforce the same
+limits as defense in depth.
+
 ## Scope registry
 
 Use `config/scopes.example.yaml` as a template. A scope must have a stable
