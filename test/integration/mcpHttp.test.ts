@@ -102,6 +102,8 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.deepEqual(tools.map((tool: { name: string }) => tool.name).sort(), expectedNames);
   const search = tools.find((tool: { name: string }) => tool.name === "arcsuite_search_documents");
   assert.deepEqual(search.inputSchema.properties.scope.enum, ["example_documents"]);
+  assert.deepEqual(search.inputSchema.properties.text_search_mode.enum, ["none", "stemming", "thesaurus"]);
+  assert.match(JSON.stringify(search.inputSchema.properties.filters), /operator/);
   assert.match(search.description, /document_number/);
 
   const capabilities = await rpc(base, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "arcsuite_describe_capabilities", arguments: {} } });
@@ -112,6 +114,10 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.equal(call.status, 200);
   assert.equal(call.json.result.structuredContent.count, 1);
   assert.equal(call.json.result.structuredContent.results[0].semantic_attributes.document_number, "DOC-000001");
+
+  const typedCall = await rpc(base, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "arcsuite_search_documents", arguments: { scope: "example_documents", query: "DOC", text_search_mode: "thesaurus", filters: { page_count: { operator: "gte", value: 10 } } } } });
+  assert.equal(typedCall.status, 200);
+  assert.equal(typedCall.json.result.structuredContent.count, 1);
 });
 
 test("MCP rejects unknown bearer token", async (t) => {

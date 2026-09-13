@@ -123,6 +123,10 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
           "rep:system:name": { type: "string", value: "DOC-000001_example.pdf" },
           "rep:user:example_document_number": { type: "string", value: "DOC-000001" },
           "rep:system:modifiedon": { type: "datetime", value: "2026-09-01T03:00:00Z" },
+          "rep:user:page_count": { type: "long", value: 10 },
+          "rep:user:approved": { type: "boolean", value: true },
+          "rep:user:quality_score": { type: "double", value: 0.95 },
+          "rep:user:published_on": { type: "date", value: "2026-09-01" },
           "rep:system:currentrevisionnumber": { type: "int", value: 3 },
           "rep:system:revisionnumber": { type: "int", value: 3 },
           "rep:system:status": { type: "i18n", ns: "rep", name: "ACTIVE", label: "有効" },
@@ -141,6 +145,10 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
           "rep:system:name": { type: "string", value: "DOC-000002_example.txt" },
           "rep:user:example_document_number": { type: "string", value: "DOC-000002" },
           "rep:system:modifiedon": { type: "datetime", value: "2026-08-15T03:00:00Z" },
+          "rep:user:page_count": { type: "long", value: 4 },
+          "rep:user:approved": { type: "boolean", value: false },
+          "rep:user:quality_score": { type: "double", value: 0.75 },
+          "rep:user:published_on": { type: "date", value: "2026-08-15" },
           "rep:system:currentrevisionnumber": { type: "int", value: 1 },
           "rep:system:revisionnumber": { type: "int", value: 1 },
           "rep:system:contentlabellist": { type: "i18n[]", values: [{ ns: "rep", name: "system:primary" }] }
@@ -158,7 +166,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
       ok: request.cabinetId.startsWith("rep:"),
       version: await this.version(),
       cabinet: { id: request.cabinetId, label: "Example cabinet", hasRecycleBin: true },
-      attributes: request.attributes.map(({ attrId }) => ({ ...attrId, dataType: attrId.name.includes("modified") ? "DATE_TIME_TYPE" : "STRING_TYPE", searchable: true, sortable: true, modifiable: false })),
+      attributes: request.attributes.map(({ attrId }) => mockSchema(attrId)),
       errors: []
     };
   }
@@ -232,14 +240,15 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
       docs = docs.filter((doc) => {
         const v: any = doc.attributes[key];
         const text = v?.value ?? v?.name ?? "";
-        const target = condition.value.value;
-        if (condition.operator === "EQUAL") return text === target;
+        const target = "value" in condition.value ? condition.value.value : `${condition.value.ns}:${condition.value.name}`;
+        if (condition.operator === "EQUAL") return text === target || `${v?.ns ?? ""}:${v?.name ?? ""}` === target;
         if (condition.operator === "LIKE") {
+          if (typeof target !== "string") return false;
           const regex = new RegExp(wildcardToRegex(target), "i");
           return regex.test(String(text));
         }
-        if (condition.operator === "GREATER_EQUAL") return String(text) >= target;
-        if (condition.operator === "LESS_EQUAL") return String(text) <= target;
+        if (condition.operator === "GREATER_EQUAL") return compareValues(text, target) >= 0;
+        if (condition.operator === "LESS_EQUAL") return compareValues(text, target) <= 0;
         return false;
       });
     }
@@ -256,6 +265,25 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   private listBase(_locationId: string): AdapterRepositoryObject[] {
     return this.docs.filter((d) => d.id.startsWith("rep:mock:EXAMPLE_CABINET:"));
   }
+}
+
+function mockSchema(attrId: { ns: string; name: string }) {
+  const base = { ...attrId, searchable: true, sortable: true, modifiable: false, multiValued: false, required: false, minInclusive: true, maxInclusive: true };
+  if (attrId.name.includes("modified")) return { ...base, dataType: "DATE_TIME_TYPE" };
+  if (attrId.name.includes("published_on")) return { ...base, dataType: "DATE_TYPE" };
+  if (attrId.name.includes("page_count")) return { ...base, dataType: "LONG_TYPE", minIntegralValue: "0", maxIntegralValue: "9223372036854775807" };
+  if (attrId.name.includes("approved")) return { ...base, dataType: "BOOLEAN_TYPE" };
+  if (attrId.name.includes("quality_score")) return { ...base, dataType: "DOUBLE_TYPE", minFloatingValue: 0, maxFloatingValue: 1 };
+  if (attrId.name.includes("status")) return { ...base, dataType: "I18N_STRING_TYPE", enumerated: true, enumLabels: [{ ns: "rep", name: "ACTIVE", label: "有効" }, { ns: "rep", name: "RETIRED", label: "廃止" }] };
+  return { ...base, dataType: "STRING_TYPE", minLength: 1, maxLength: 255 };
+}
+
+function compareValues(left: unknown, right: unknown): number {
+  if (typeof left === "number" && typeof right === "number") return left - right;
+  if (typeof left === "boolean" && typeof right === "boolean") return Number(left) - Number(right);
+  const leftText = String(left);
+  const rightText = String(right);
+  return leftText === rightText ? 0 : leftText < rightText ? -1 : 1;
 }
 
 function escapeRegex(text: string): string {

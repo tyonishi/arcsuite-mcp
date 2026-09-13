@@ -11,7 +11,7 @@ function getAttributeById(obj: AdapterRepositoryObject, ns: string, name: string
 
 function asString(value: AttributeValue | undefined): string | undefined {
   if (!value) return undefined;
-  if (value.type === "string" || value.type === "datetime" || value.type === "id") return value.value;
+  if (value.type === "string" || value.type === "date" || value.type === "datetime" || value.type === "id") return value.value;
   if (value.type === "i18n") return value.label ?? value.name;
   if (value.type === "rmsObject") return value.label ?? value.dn;
   if (value.type === "int" || value.type === "long" || value.type === "double" || value.type === "boolean") return String(value.value);
@@ -28,7 +28,7 @@ function asInt(value: AttributeValue | undefined): number | undefined {
 
 function asPublicValue(value: AttributeValue | undefined): string | number | boolean | null {
   if (!value) return null;
-  if (value.type === "string" || value.type === "datetime" || value.type === "id") return value.value;
+  if (value.type === "string" || value.type === "date" || value.type === "datetime" || value.type === "id") return value.value;
   if (value.type === "int" || value.type === "long" || value.type === "double" || value.type === "boolean") return value.value;
   if (value.type === "i18n") return value.label ?? value.name;
   if (value.type === "rmsObject") return value.label ?? value.dn ?? null;

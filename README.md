@@ -18,20 +18,22 @@ endorsed by FUJIFILM Business Innovation. See [NOTICE.md](NOTICE.md).
 - v1.1 Read UX & Efficiency: profile-aware capability discovery, stable bounded
   search/folder paging, batch metadata reads, short-lived extracted-content
   reuse, and optional trusted ArcSuite UI deep links;
+- v1.2 S1 Typed Search Foundation: schema-validated typed semantic predicates,
+  enum aliases, and scope-configured full-text modes;
 - current MCP Streamable HTTP through the official TypeScript SDK, with a
   stateless legacy compatibility path for older 2025-era clients;
 - server-side scope mapping, token profiles, rate limits, audit metadata, and
   mechanical read-only operation checks.
 
-The v1.1 surface exposes eight generic tools:
+The current v1.0/v1.1-compatible surface exposes eight generic tools:
 
 `arcsuite_describe_capabilities`, `arcsuite_search_documents`,
 `arcsuite_get_document`, `arcsuite_get_documents`, `arcsuite_list_folder`,
 `arcsuite_list_document_revisions`, `arcsuite_get_document_content_info`, and
 `arcsuite_read_document`.
 
-See [docs/tools.md](docs/tools.md) for paging, batch-read, cache, and deep-link
-behavior.
+See [docs/tools.md](docs/tools.md) for typed predicates, full-text modes,
+paging, batch-read, cache, and deep-link behavior.
 
 ## Architecture
 
@@ -114,6 +116,8 @@ scopes:
     allowed_object_types: [document, folder, reference]
     default_attr_ids:
       - {ns: "rep", name: "system:name"}
+    search:
+      full_text_modes: [none]
     semantic_attributes:
       document_number:
         attr_id: {ns: "rep", name: "user:YOUR_DOCUMENT_NUMBER_ATTRIBUTE"}
@@ -129,6 +133,12 @@ token configuration out of version control.
 v1.1 paging/content caches are process-local and bounded by configuration.
 They do not expand ArcSuite authority, are isolated by client profile/scope,
 and never write extracted document text to the audit log.
+
+v1.2 typed filter values are validated against the configured ArcSuite schema.
+Explicit predicates use only the small semantic operator matrix documented in
+[docs/tools.md](docs/tools.md); enum aliases hide physical values. `none` is the
+default full-text mode, while `stemming` and `thesaurus` require explicit
+scope configuration.
 
 See [docs/configuration.md](docs/configuration.md) for all important bounds
 and [config/tokens.example.json](config/tokens.example.json) for a synthetic

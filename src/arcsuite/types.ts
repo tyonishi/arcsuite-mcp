@@ -6,6 +6,7 @@ export type AttributeValue =
   | { type: "long"; value: number }
   | { type: "double"; value: number }
   | { type: "boolean"; value: boolean }
+  | { type: "date"; value: string }
   | { type: "datetime"; value: string }
   | { type: "i18n"; ns: string; name: string; label?: string }
   | { type: "i18n[]"; values: Array<{ ns: string; name: string; label?: string }> }
@@ -24,7 +25,15 @@ export type AdapterRepositoryObject = {
 export type AdapterSearchCondition = {
   attrId: AttributeId;
   operator: "EQUAL" | "LIKE" | "GREATER_EQUAL" | "LESS_EQUAL";
-  value: { type: "string" | "datetime"; value: string };
+  value:
+    | { type: "string"; value: string }
+    | { type: "int"; value: number }
+    | { type: "long"; value: number }
+    | { type: "double"; value: number }
+    | { type: "boolean"; value: boolean }
+    | { type: "date"; value: string }
+    | { type: "datetime"; value: string }
+    | { type: "i18n"; ns: string; name: string };
 };
 
 export type AdapterSearchRequest = {
@@ -34,7 +43,7 @@ export type AdapterSearchRequest = {
   mode: "AND" | "OR";
   searchRegionIds: string[];
   depth: number;
-  textSearchMode: "NONE" | "STEMMING";
+  textSearchMode: "NONE" | "STEMMING" | "THESAURUS";
   order: Array<{ attrId: AttributeId; descending: boolean }>;
   limit: number;
   attrIds: AttributeId[];
@@ -114,9 +123,25 @@ export type AttributeSchemaInfo = {
   ns: string;
   name: string;
   dataType?: string;
+  nativeDataType?: string;
+  multiValued?: boolean;
+  required?: boolean;
+  enumerated?: boolean;
   searchable?: boolean;
   sortable?: boolean;
   modifiable?: boolean;
+  minLength?: number;
+  maxLength?: number;
+  minCount?: number;
+  maxCount?: number;
+  minIntegralValue?: number | string;
+  maxIntegralValue?: number | string;
+  minFloatingValue?: number;
+  maxFloatingValue?: number;
+  minInclusive?: boolean;
+  maxInclusive?: boolean;
+  pattern?: string;
+  enumLabels?: Array<{ ns?: string; name: string; label?: string }>;
 };
 
 export type AdapterSchemaValidationRequest = {

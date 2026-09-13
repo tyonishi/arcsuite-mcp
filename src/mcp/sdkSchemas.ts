@@ -5,6 +5,12 @@ const scope = z.string().min(1).max(64).regex(/^[a-z][a-z0-9_]*$/);
 const limit = z.number().int().min(1).max(50).optional();
 const contentLabel = z.literal("system:primary").optional();
 const pagingCursor = z.string().min(1).max(4096).optional();
+const semanticFilterOperator = z.enum(["eq", "like", "gte", "lte"]);
+const semanticFilterScalar = z.union([z.string().min(1).max(255), z.number().finite(), z.boolean()]);
+const semanticFilterValue = z.union([
+  semanticFilterScalar,
+  z.object({ operator: semanticFilterOperator, value: semanticFilterScalar }).strict()
+]);
 
 export const toolInputSchemas = {
   arcsuite_describe_capabilities: z.object({}).strict(),
@@ -12,10 +18,11 @@ export const toolInputSchemas = {
     scope,
     query: z.string().min(1).max(200).optional(),
     query_mode: z.enum(["and", "or"]).optional(),
-    filters: z.record(z.string(), z.string().min(1).max(255)).optional(),
+    filters: z.record(z.string(), semanticFilterValue).optional(),
     limit,
     include_path: z.boolean().optional(),
-    cursor: pagingCursor
+    cursor: pagingCursor,
+    text_search_mode: z.enum(["none", "stemming", "thesaurus"]).optional()
   }).strict(),
   arcsuite_get_document: z.object({
     document_id: documentId,

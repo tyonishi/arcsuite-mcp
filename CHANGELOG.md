@@ -28,6 +28,11 @@
   capability discovery, bounded ID-snapshot paging for search/folder results,
   bounded batch metadata reads, short-lived extracted-content snapshot reuse,
   content-info/read reuse, and optional trusted ArcSuite UI deep links.
+- Implemented the v1.2 S1 Typed Search Foundation: schema-validated string,
+  integer, number, boolean, date, datetime, and enum predicates; safe enum
+  alias mapping; expanded AttributeSchema metadata; and explicitly configured
+  `none`/`stemming`/`thesaurus` full-text modes. This slice adds no SOAP
+  operations and preserves the v1.0/v1.1 read-only boundary.
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and
   `listRepositoryObjectIds` operations to the mechanically checked allowlist;
   mutation/admin/ACL/delete/privileged-print exclusions remain unchanged.
