@@ -3,11 +3,15 @@ import { join } from "node:path";
 import type {
   AdapterContentRequest,
   AdapterContentResult,
+  AdapterCertificateEvidenceRequest,
+  AdapterCertificateEvidenceResult,
   AdapterGetManyRequest,
   AdapterGetManyResult,
   AdapterGetRequest,
   AdapterHardReferencesRequest,
   AdapterHardReferencesResult,
+  AdapterIntegrityValidationRequest,
+  AdapterIntegrityValidationResult,
   AdapterListIdsRequest,
   AdapterListRequest,
   AdapterRepositoryObject,
@@ -36,6 +40,8 @@ export interface ArcSuiteAdapterClient {
   get(request: AdapterGetRequest): Promise<AdapterRepositoryObject>;
   getMany(request: AdapterGetManyRequest): Promise<AdapterGetManyResult>;
   hardReferences(request: AdapterHardReferencesRequest): Promise<AdapterHardReferencesResult>;
+  validateIntegrity(request: AdapterIntegrityValidationRequest): Promise<AdapterIntegrityValidationResult>;
+  certificateEvidence(request: AdapterCertificateEvidenceRequest): Promise<AdapterCertificateEvidenceResult>;
   revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]>;
   content(request: AdapterContentRequest): Promise<AdapterContentResult>;
 }
@@ -66,6 +72,8 @@ export class HttpArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   get(request: AdapterGetRequest) { return this.request("POST", "/internal/repository/get", request) as Promise<AdapterRepositoryObject>; }
   getMany(request: AdapterGetManyRequest) { return this.request("POST", "/internal/repository/get-many", request) as Promise<AdapterGetManyResult>; }
   hardReferences(request: AdapterHardReferencesRequest) { return this.request("POST", "/internal/repository/hard-references", request) as Promise<AdapterHardReferencesResult>; }
+  validateIntegrity(request: AdapterIntegrityValidationRequest) { return this.request("POST", "/internal/repository/validate-integrity", request) as Promise<AdapterIntegrityValidationResult>; }
+  certificateEvidence(request: AdapterCertificateEvidenceRequest) { return this.request("POST", "/internal/repository/certificate-evidence", request) as Promise<AdapterCertificateEvidenceResult>; }
   revisions(request: AdapterRevisionsRequest) { return this.request("POST", "/internal/repository/revisions", request) as Promise<AdapterRepositoryObject[]>; }
   content(request: AdapterContentRequest) { return this.request("POST", "/internal/repository/content", request) as Promise<AdapterContentResult>; }
 
@@ -244,6 +252,31 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
       : [];
     if (ids.length > request.maxResults) throw new ArcSuiteAdapterError("ARCSUITE_LIMIT_EXCEEDED", "Hard Reference candidates exceed configured bound");
     return { ids };
+  }
+
+  async validateIntegrity(request: AdapterIntegrityValidationRequest): Promise<AdapterIntegrityValidationResult> {
+    if (request.id === "rep:mock:EXAMPLE_CABINET:1001") {
+      return {
+        certificates: [
+          { certId: 101, result: true, exceptionPresent: false },
+          { certId: 102, result: true, exceptionPresent: false }
+        ],
+        failure: null
+      };
+    }
+    if (request.id === "rep:mock:EXAMPLE_CABINET:1002") {
+      return {
+        certificates: [{ certId: 201, result: false, exceptionPresent: false }],
+        failure: null
+      };
+    }
+    throw new ArcSuiteAdapterError("ARCSUITE_NOT_AVAILABLE", "Integrity validation not available");
+  }
+
+  async certificateEvidence(request: AdapterCertificateEvidenceRequest): Promise<AdapterCertificateEvidenceResult> {
+    if (request.id === "rep:mock:EXAMPLE_CABINET:1001") return { certIds: [101] };
+    if (request.id === "rep:mock:EXAMPLE_CABINET:1002") return { certIds: [201] };
+    throw new ArcSuiteAdapterError("ARCSUITE_NOT_AVAILABLE", "Certificate evidence not available");
   }
 
   async revisions(request: AdapterRevisionsRequest): Promise<AdapterRepositoryObject[]> {

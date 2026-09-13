@@ -22,6 +22,7 @@ public final class SelfTest {
         mtomDecode();
         soapRequestShapes();
         hardReferenceContractShapes();
+        documentIntegrityContractShapes();
         contentLabelWireShapes();
         typedAttributeValueShapes();
         attributeSchemaMetadataParsing();
@@ -87,6 +88,224 @@ public final class SelfTest {
         hardReferenceIdentityFailures();
         hardReferenceOverflowFailsClosed();
         hardReferenceServiceBounds();
+    }
+
+    static void documentIntegrityContractShapes() throws Exception {
+        integrityRequestBuilders();
+        integritySoapRequestWrappers();
+        integrityValidationResponseParsing();
+        evidenceResponseParsingAndSanitization();
+        integrityOperationAndServiceBounds();
+    }
+
+    static void integrityRequestBuilders() {
+        String id = "rep:example:document-001";
+        String validateBody = ArcSuiteSoapClient.validateCertificateBody(id);
+        if (!"<t:ids><t:id>rep:example:document-001</t:id></t:ids>".equals(validateBody)) {
+            throw new AssertionError("validateCertificate must encode one target as ids/id: " + validateBody);
+        }
+        String escapedBody = ArcSuiteSoapClient.validateCertificateBody("rep:example:doc&<001>");
+        if (!"<t:ids><t:id>rep:example:doc&amp;&lt;001&gt;</t:id></t:ids>".equals(escapedBody)) {
+            throw new AssertionError("validateCertificate ID was not XML escaped: " + escapedBody);
+        }
+        String evidenceBody = ArcSuiteSoapClient.certificateEvidenceBody(id);
+        if (!"<t:id>rep:example:document-001</t:id>".equals(evidenceBody)) {
+            throw new AssertionError("getCertificateEvidence must encode the target as one id: " + evidenceBody);
+        }
+
+        Map<String, Object> validationRequest = AdapterService.prepareIntegrityRequest(Map.of(
+                "clientProfileId", "synthetic-client", "id", id));
+        if (!validationRequest.equals(Map.of("clientProfileId", "synthetic-client", "id", id))) {
+            throw new AssertionError("Unexpected private integrity request: " + validationRequest);
+        }
+        Map<String, Object> evidenceRequest = AdapterService.prepareEvidenceRequest(Map.of(
+                "clientProfileId", "synthetic-client", "id", id));
+        if (!evidenceRequest.equals(Map.of("clientProfileId", "synthetic-client", "id", id))) {
+            throw new AssertionError("Unexpected private evidence request: " + evidenceRequest);
+        }
+        expectIllegalArgument(() -> AdapterService.prepareIntegrityRequest(Map.of(
+                "clientProfileId", "synthetic-client", "id", id, "ids", List.of(id))));
+        expectIllegalArgument(() -> AdapterService.prepareEvidenceRequest(Map.of(
+                "clientProfileId", "synthetic-client", "id", id, "certAttribute", "private")));
+    }
+
+    static void integritySoapRequestWrappers() throws Exception {
+        String targetId = "rep:example:document-001";
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var requests = new StringBuilder();
+        server.createContext("/", exchange -> {
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            requests.append(request).append("\n---REQUEST---\n");
+            String response;
+            if (request.contains("<t:validateCertificate>")) {
+                response = "<t:validateCertificateResponse><t:validateCertificateReturn>"
+                        + "<t:results><t:results><t:certValidElements/></t:results></t:results><t:failures/>"
+                        + "</t:validateCertificateReturn></t:validateCertificateResponse>";
+            } else if (request.contains("<t:getCertificateEvidence>")) {
+                response = "<t:getCertificateEvidenceResponse><t:getCertificateEvidenceReturn/>"
+                        + "</t:getCertificateEvidenceResponse>";
+            } else {
+                response = "<t:unexpectedResponse/>";
+            }
+            byte[] body = ("<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\""
+                    + ArcSuiteSoapClient.TYPES_NS + "\" xmlns:xsi=\"" + ArcSuiteSoapClient.XSI_NS + "\"><soap:Body>"
+                    + response + "</soap:Body></soap:Envelope>").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/xml; charset=utf-8");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var config = new AdapterConfig(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/", "synthetic-user", "synthetic-password",
+                    "synthetic-internal-token", 18080, "127.0.0.1", Duration.ofSeconds(2), Duration.ofSeconds(2),
+                    1500, 1700, 4, "ja", "4.0.0.0", Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024);
+            var client = new ArcSuiteSoapClient(config);
+            Map<String, Object> validation = client.validateIntegrity(Map.of("id", targetId), "synthetic-session");
+            if (!List.of().equals(validation.get("certificates")) || validation.get("failure") != null) {
+                throw new AssertionError("Empty validation elements were not preserved: " + validation);
+            }
+            Map<String, Object> evidence = client.certificateEvidence(Map.of("id", targetId), "synthetic-session");
+            if (!List.of().equals(evidence.get("certIds"))) throw new AssertionError("Empty evidence response was not preserved: " + evidence);
+
+            String captured = requests.toString();
+            String validateWrapper = "<t:validateCertificate><t:ids><t:id>rep:example:document-001</t:id></t:ids></t:validateCertificate>";
+            String evidenceWrapper = "<t:getCertificateEvidence><t:id>rep:example:document-001</t:id></t:getCertificateEvidence>";
+            if (!captured.contains(validateWrapper)) throw new AssertionError("Unexpected validation SOAP wrapper: " + captured);
+            if (!captured.contains(evidenceWrapper)) throw new AssertionError("Unexpected evidence SOAP wrapper: " + captured);
+            if (captured.contains("<t:calculateCertificateEvidence>") || captured.contains("<t:attachTimestamp")) {
+                throw new AssertionError("Integrity reads dispatched a prohibited evidence/timestamp operation");
+            }
+            if (!captured.contains("administratorMode=\"false\"")) throw new AssertionError("Administrator mode was not disabled");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    static void integrityValidationResponseParsing() {
+        String success = validationResponse(
+                "<t:results><t:certValidElements>"
+                        + "<t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:result>true</t:result><t:signer>synthetic signer</t:signer></t:results>"
+                        + "<t:results xsi:type=\"t:PAdESValidateResult\"><t:certId>18</t:certId><t:result>false</t:result>"
+                        + "<t:exception><t:code>ARCSUITE_WS-08305101</t:code><t:message>synthetic private exception</t:message></t:exception>"
+                        + "<t:timestampDate>2026-09-13T00:00:00Z</t:timestampDate></t:results>"
+                        + "</t:certValidElements></t:results>",
+                "");
+        Map<String, Object> parsed = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(success));
+        Object rawCertificates = parsed.get("certificates");
+        if (!(rawCertificates instanceof List<?> certificates) || certificates.size() != 2) {
+            throw new AssertionError("Expected two validation elements: " + parsed);
+        }
+        Map<?, ?> first = (Map<?, ?>) certificates.get(0);
+        Map<?, ?> second = (Map<?, ?>) certificates.get(1);
+        if (!Integer.valueOf(17).equals(first.get("certId")) || !Boolean.TRUE.equals(first.get("result"))
+                || !Boolean.FALSE.equals(first.get("exceptionPresent"))) throw new AssertionError("Unexpected first certificate result: " + first);
+        if (!Integer.valueOf(18).equals(second.get("certId")) || !Boolean.FALSE.equals(second.get("result"))
+                || !Boolean.TRUE.equals(second.get("exceptionPresent"))) throw new AssertionError("Unexpected second certificate result: " + second);
+        String sanitized = Json.stringify(parsed);
+        if (sanitized.contains("synthetic private exception") || sanitized.contains("ARCSUITE_WS-08305101")
+                || sanitized.contains("synthetic signer") || sanitized.contains("timestampDate")) {
+            throw new AssertionError("Raw exception or provider-specific validation detail crossed the adapter boundary: " + sanitized);
+        }
+
+        Map<String, Object> noElements = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(
+                validationResponse("<t:results><t:certValidElements/></t:results>", "")));
+        if (!List.of().equals(noElements.get("certificates")) || noElements.get("failure") != null) {
+            throw new AssertionError("Zero validation elements must remain a successful structured result: " + noElements);
+        }
+
+        Map<String, Object> perIdFailure = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(validationResponse(
+                "", "<t:failure><t:index>0</t:index><t:exception><t:message>synthetic private failure</t:message></t:exception></t:failure>")));
+        if (!List.of().equals(perIdFailure.get("certificates")) || !"per_id".equals(perIdFailure.get("failure"))) {
+            throw new AssertionError("Failure at the single requested input index must be classified internally: " + perIdFailure);
+        }
+        if (Json.stringify(perIdFailure).contains("synthetic private failure")) throw new AssertionError("Failure details were exposed");
+
+        assertIntegrityResponseFailure(validationResponse("", ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements/></t:results><t:results><t:certValidElements/></t:results>", ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse("<t:results><t:certValidElements/></t:results>",
+                "<t:failure><t:index>0</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse("", "<t:failure><t:index>1</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse("", "<t:failure><t:index>bad</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse("", "<t:failure><t:index>0</t:index></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results><t:result>true</t:result><t:certId>17</t:certId></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure("<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS
+                + "\"><soap:Body><unexpectedResponse/></soap:Body></soap:Envelope>", "ARCSUITE_UPSTREAM_ERROR");
+
+        StringBuilder tooMany = new StringBuilder("<t:results><t:certValidElements>");
+        for (int i = 0; i < 65; i++) tooMany.append("<t:results><t:certId>").append(i + 1)
+                .append("</t:certId><t:result>true</t:result></t:results>");
+        tooMany.append("</t:certValidElements></t:results>");
+        assertIntegrityResponseFailure(validationResponse(tooMany.toString(), ""), "ARCSUITE_LIMIT_EXCEEDED");
+    }
+
+    static void evidenceResponseParsingAndSanitization() {
+        String xml = "<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\""
+                + ArcSuiteSoapClient.TYPES_NS + "\"><soap:Body><t:getCertificateEvidenceResponse>"
+                + "<t:getCertificateEvidenceReturn>"
+                + "<t:certEvidence><t:certId>17</t:certId><t:certAttributes><t:certAttribute>"
+                + "<t:attribute ns=\"secret\" name=\"certificate-material\"><t:value>synthetic private certAttribute</t:value></t:attribute>"
+                + "</t:certAttribute></t:certAttributes></t:certEvidence>"
+                + "<t:certEvidence><t:certId>18</t:certId><t:certAttributes/></t:certEvidence>"
+                + "</t:getCertificateEvidenceReturn></t:getCertificateEvidenceResponse></soap:Body></soap:Envelope>";
+        Map<String, Object> parsed = ArcSuiteSoapClient.parseCertificateEvidence(XmlUtil.parse(xml));
+        if (!List.of(17, 18).equals(parsed.get("certIds"))) throw new AssertionError("Evidence IDs were not parsed in order: " + parsed);
+        String sanitized = Json.stringify(parsed);
+        if (sanitized.contains("certAttribute") || sanitized.contains("certificate-material") || sanitized.contains("synthetic private")) {
+            throw new AssertionError("certAttribute crossed the adapter JSON boundary: " + sanitized);
+        }
+
+        Map<String, Object> empty = ArcSuiteSoapClient.parseCertificateEvidence(XmlUtil.parse(
+                "<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\"" + ArcSuiteSoapClient.TYPES_NS
+                        + "\"><soap:Body><t:getCertificateEvidenceResponse><t:getCertificateEvidenceReturn/></t:getCertificateEvidenceResponse></soap:Body></soap:Envelope>"));
+        if (!List.of().equals(empty.get("certIds"))) throw new AssertionError("Empty evidence must be preserved: " + empty);
+
+        assertEvidenceResponseFailure(evidenceResponse("<t:certEvidence><t:certId>17</t:certId></t:certEvidence>"), "ARCSUITE_UPSTREAM_ERROR");
+        assertEvidenceResponseFailure(evidenceResponse("<t:certEvidence><t:certId>bad</t:certId><t:certAttributes/></t:certEvidence>"), "ARCSUITE_UPSTREAM_ERROR");
+        assertEvidenceResponseFailure(evidenceResponse("<t:certEvidence><t:certId>17</t:certId><t:certAttributes/></t:certEvidence>"
+                + "<t:certEvidence><t:certId>17</t:certId><t:certAttributes/></t:certEvidence>"), "ARCSUITE_UPSTREAM_ERROR");
+
+        StringBuilder overflow = new StringBuilder();
+        for (int i = 0; i < 65; i++) overflow.append("<t:certEvidence><t:certId>").append(i + 1).append("</t:certId><t:certAttributes/></t:certEvidence>");
+        assertEvidenceResponseFailure(evidenceResponse(overflow.toString()), "ARCSUITE_LIMIT_EXCEEDED");
+    }
+
+    static void integrityOperationAndServiceBounds() {
+        if (!ArcSuiteSoapClient.READ_ONLY_OPERATIONS.contains("validateCertificate")
+                || !ArcSuiteSoapClient.READ_ONLY_OPERATIONS.contains("getCertificateEvidence")) {
+            throw new AssertionError("Both verified integrity reads must be allowlisted");
+        }
+        for (String forbidden : List.of("calculateCertificateEvidence", "attachTimestamp", "attachTimestampWithOptions")) {
+            if (ArcSuiteSoapClient.READ_ONLY_OPERATIONS.contains(forbidden)) throw new AssertionError("Prohibited operation allowlisted: " + forbidden);
+        }
+        if (ArcSuiteSoapClient.READ_ONLY_OPERATIONS.size() != 26) {
+            throw new AssertionError("Expected 26 TypeScript/Java read-only operations, got " + ArcSuiteSoapClient.READ_ONLY_OPERATIONS.size());
+        }
+    }
+
+    private static String validationResponse(String resultEntries, String failureEntries) {
+        return "<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\"" + ArcSuiteSoapClient.TYPES_NS
+                + "\" xmlns:xsi=\"" + ArcSuiteSoapClient.XSI_NS + "\"><soap:Body><t:validateCertificateResponse>"
+                + "<t:validateCertificateReturn><t:results>" + resultEntries + "</t:results><t:failures>" + failureEntries
+                + "</t:failures></t:validateCertificateReturn></t:validateCertificateResponse></soap:Body></soap:Envelope>";
+    }
+
+    private static String evidenceResponse(String evidenceEntries) {
+        return "<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\"" + ArcSuiteSoapClient.TYPES_NS
+                + "\"><soap:Body><t:getCertificateEvidenceResponse><t:getCertificateEvidenceReturn>" + evidenceEntries
+                + "</t:getCertificateEvidenceReturn></t:getCertificateEvidenceResponse></soap:Body></soap:Envelope>";
+    }
+
+    private static void assertIntegrityResponseFailure(String xml, String expectedCode) {
+        expectAdapterFailure(() -> ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(xml)), expectedCode);
+    }
+
+    private static void assertEvidenceResponseFailure(String xml, String expectedCode) {
+        expectAdapterFailure(() -> ArcSuiteSoapClient.parseCertificateEvidence(XmlUtil.parse(xml)), expectedCode);
     }
 
     static void hardReferenceRequestAndSoapEnvelopeShape() throws Exception {

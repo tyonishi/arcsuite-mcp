@@ -104,6 +104,30 @@ export type AdapterHardReferencesRequest = {
 /** Private Hard Reference object IDs; never return this shape through MCP. */
 export type AdapterHardReferencesResult = { ids: string[] };
 
+export type AdapterIntegrityValidationRequest = {
+  clientProfileId: string;
+  id: string;
+};
+
+export type AdapterIntegrityCertificateResult = {
+  certId: number;
+  result: boolean;
+  exceptionPresent: boolean;
+};
+
+export type AdapterIntegrityValidationResult = {
+  certificates: AdapterIntegrityCertificateResult[];
+  failure: "per_id" | null;
+};
+
+export type AdapterCertificateEvidenceRequest = {
+  clientProfileId: string;
+  id: string;
+};
+
+/** Private evidence certificate IDs only; certAttributes never cross the adapter boundary. */
+export type AdapterCertificateEvidenceResult = { certIds: number[] };
+
 export type AdapterRevisionsRequest = {
   clientProfileId: string;
   id: string;

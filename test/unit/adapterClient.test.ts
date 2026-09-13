@@ -84,3 +84,35 @@ test("hard-reference adapter method uses the narrow internal route and contract"
     await close(server);
   }
 });
+
+test("integrity adapter methods use only their narrow fixed routes", async () => {
+  const requests: Array<{ path: string; body: unknown }> = [];
+  const server = createServer((req, res) => {
+    let requestBody = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => { requestBody += chunk; });
+    req.on("end", () => {
+      requests.push({ path: req.url ?? "", body: JSON.parse(requestBody) });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/internal/repository/validate-integrity"
+        ? { certificates: [{ certId: 17, result: true, exceptionPresent: false }], failure: null }
+        : { certIds: [17] }));
+    });
+  });
+  const port = await listen(server);
+  try {
+    const client = new HttpArcSuiteAdapterClient(`http://127.0.0.1:${port}`, "synthetic-internal-token");
+    const request = { clientProfileId: "synthetic-client", id: "rep:example:EXAMPLE_CABINET:doc-001" };
+    assert.deepEqual(await client.validateIntegrity(request), {
+      certificates: [{ certId: 17, result: true, exceptionPresent: false }],
+      failure: null
+    });
+    assert.deepEqual(await client.certificateEvidence(request), { certIds: [17] });
+    assert.deepEqual(requests, [
+      { path: "/internal/repository/validate-integrity", body: request },
+      { path: "/internal/repository/certificate-evidence", body: request }
+    ]);
+  } finally {
+    await close(server);
+  }
+});

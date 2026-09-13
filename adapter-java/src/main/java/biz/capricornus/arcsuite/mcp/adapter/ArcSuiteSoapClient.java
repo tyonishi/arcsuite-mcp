@@ -35,6 +35,8 @@ final class ArcSuiteSoapClient {
     private static final Set<String> SEARCH_BINARY_OPERATORS = Set.of("EQUAL", "LIKE", "GREATER_EQUAL", "LESS_EQUAL");
     private static final Set<String> SEARCH_TEXT_MODES = Set.of("NONE", "STEMMING", "THESAURUS");
     static final int HARD_REFERENCE_MAX_CANDIDATES = 1000;
+    static final int MAX_INTEGRITY_CERTIFICATES = 64;
+    static final int MAX_CERTIFICATE_EVIDENCE_ENTRIES = 64;
     static final Set<String> READ_ONLY_OPERATIONS = Set.of(
             "getVersionInfo", "getLoginInfo", "login", "logout", "getSessionInfo",
             "getAttributeSchema", "getAttributeSchemas", "getRepositoryObject",
@@ -42,7 +44,8 @@ final class ArcSuiteSoapClient {
             "getRepositoryObjectPath", "getRepositoryObjectPaths", "getRepositoryObjectContent",
             "getRepositoryObjectContentWithOptions", "listRepositoryObjects", "listRepositoryObjectIds",
             "searchRepositoryObjects", "searchRepositoryObjectIds", "listRepositoryObjectRevisions", "listRepositoryObjectHardReferences", "listRepositoryServices",
-            "getCabinetInformation", "getCabinetInformations", "getRepositoryObjectClassDefinitions"
+            "getCabinetInformation", "getCabinetInformations", "getRepositoryObjectClassDefinitions",
+            "validateCertificate", "getCertificateEvidence"
     );
 
     private final AdapterConfig config;
@@ -178,6 +181,174 @@ final class ArcSuiteSoapClient {
         Element ret=findResponseValue(r.document(),"listRepositoryObjectHardReferencesReturn","result");
         if(ret==null)throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference response wrapper was missing");
         return Map.of("ids",parseHardReferenceIds(ret,targetId,maxResults));
+    }
+
+    Map<String,Object> validateIntegrity(Map<String,Object> req, String sessionId) {
+        String targetId = requiredRepositoryObjectId(requiredString(req, "id"), "id");
+        SoapResponse response = invoke("validateCertificate", validateCertificateBody(targetId), sessionId, true);
+        return parseIntegrityValidation(response.document());
+    }
+
+    Map<String,Object> certificateEvidence(Map<String,Object> req, String sessionId) {
+        String targetId = requiredRepositoryObjectId(requiredString(req, "id"), "id");
+        SoapResponse response = invoke("getCertificateEvidence", certificateEvidenceBody(targetId), sessionId, true);
+        return parseCertificateEvidence(response.document());
+    }
+
+    static String validateCertificateBody(String targetId) {
+        return idsElement(List.of(requiredRepositoryObjectId(targetId, "id")));
+    }
+
+    static String certificateEvidenceBody(String targetId) {
+        return el("id", requiredRepositoryObjectId(targetId, "id"));
+    }
+
+    static Map<String,Object> parseIntegrityValidation(Document document) {
+        Element response = requiredOperationReturn(document, "validateCertificateResponse", "validateCertificateReturn");
+        List<Element> containers = XmlUtil.children(response, "results");
+        List<Element> failuresContainers = XmlUtil.children(response, "failures");
+        if (containers.size() != 1 || failuresContainers.size() != 1) throw integrityShapeFailure();
+        List<Element> responseChildren = elementChildren(response);
+        if (responseChildren.size() != 2 || responseChildren.get(0) != containers.get(0)
+                || responseChildren.get(1) != failuresContainers.get(0)) throw integrityShapeFailure();
+
+        List<Element> resultEntries = boundedNamedChildren(containers.get(0), "results", 2, "ARCSUITE_UPSTREAM_ERROR");
+        List<Element> failureEntries = boundedNamedChildren(failuresContainers.get(0), "failure", 2, "ARCSUITE_UPSTREAM_ERROR");
+        if (resultEntries.size() > 1 || failureEntries.size() > 1) throw integrityShapeFailure();
+
+        boolean hasResult = resultEntries.size() == 1;
+        boolean hasFailure = failureEntries.size() == 1;
+        if (hasResult == hasFailure) throw integrityShapeFailure();
+
+        LinkedHashMap<String,Object> out = new LinkedHashMap<>();
+        if (hasFailure) {
+            Element failure = failureEntries.get(0);
+            Element indexElement = requiredSingleChild(failure, "index");
+            Element exception = requiredSingleChild(failure, "exception");
+            List<Element> failureChildren = elementChildren(failure);
+            if (failureChildren.size() != 2 || failureChildren.get(0) != indexElement || failureChildren.get(1) != exception) {
+                throw integrityShapeFailure();
+            }
+            int index = parseIntegrityInteger(indexElement.getTextContent());
+            if (index != 0) throw integrityShapeFailure();
+            out.put("certificates", List.of());
+            out.put("failure", "per_id");
+            return out;
+        }
+
+        out.put("certificates", parseIntegrityElements(resultEntries.get(0)));
+        out.put("failure", null);
+        return out;
+    }
+
+    static Map<String,Object> parseCertificateEvidence(Document document) {
+        Element response = requiredOperationReturn(document, "getCertificateEvidenceResponse", "getCertificateEvidenceReturn");
+        List<Integer> ids = new ArrayList<>();
+        Set<Integer> seen = new HashSet<>();
+        for (Element evidence : boundedNamedChildren(response, "certEvidence", MAX_CERTIFICATE_EVIDENCE_ENTRIES, "ARCSUITE_LIMIT_EXCEEDED")) {
+            Element certIdElement = requiredSingleChild(evidence, "certId");
+            Element attributesElement = requiredSingleChild(evidence, "certAttributes");
+            List<Element> evidenceChildren = elementChildren(evidence);
+            if (evidenceChildren.size() != 2 || evidenceChildren.get(0) != certIdElement
+                    || evidenceChildren.get(1) != attributesElement) throw integrityShapeFailure();
+            int certId = parseIntegrityInteger(certIdElement.getTextContent());
+            if (!seen.add(certId)) throw integrityShapeFailure();
+            ids.add(certId);
+        }
+        return Map.of("certIds", List.copyOf(ids));
+    }
+
+    private static List<Map<String,Object>> parseIntegrityElements(Element resultEntry) {
+        Element elementsContainer = requiredSingleChild(resultEntry, "certValidElements");
+        List<Element> recordChildren = elementChildren(resultEntry);
+        if (recordChildren.size() != 1 || recordChildren.get(0) != elementsContainer) throw integrityShapeFailure();
+
+        List<Element> validationElements = boundedNamedChildren(
+                elementsContainer, "results", MAX_INTEGRITY_CERTIFICATES, "ARCSUITE_LIMIT_EXCEEDED");
+        List<Map<String,Object>> certificates = new ArrayList<>(validationElements.size());
+        for (Element element : validationElements) {
+            Element certIdElement = requiredSingleChild(element, "certId");
+            Element resultElement = requiredSingleChild(element, "result");
+            Element exceptionElement = optionalSingleChild(element, "exception");
+            List<Element> elementFields = elementChildren(element);
+            if (elementFields.size() < 2 || elementFields.get(0) != certIdElement || elementFields.get(1) != resultElement
+                    || (exceptionElement != null && (elementFields.size() < 3 || elementFields.get(2) != exceptionElement))) {
+                throw integrityShapeFailure();
+            }
+            int certId = parseIntegrityInteger(certIdElement.getTextContent());
+            boolean result = parseBooleanLexical(resultElement.getTextContent().trim());
+            LinkedHashMap<String,Object> certificate = new LinkedHashMap<>();
+            certificate.put("certId", certId);
+            certificate.put("result", result);
+            certificate.put("exceptionPresent", exceptionElement != null);
+            certificates.add(certificate);
+        }
+        return List.copyOf(certificates);
+    }
+
+    private static Element requiredOperationReturn(Document document, String responseName, String returnName) {
+        if (document == null || document.getDocumentElement() == null
+                || !"Envelope".equals(document.getDocumentElement().getLocalName())) throw integrityShapeFailure();
+        Element body = requiredSingleChild(document.getDocumentElement(), "Body");
+        List<Element> bodyChildren = elementChildren(body);
+        if (bodyChildren.size() != 1 || !responseName.equals(bodyChildren.get(0).getLocalName())) throw integrityShapeFailure();
+        Element operationResponse = bodyChildren.get(0);
+        Element result = requiredSingleChild(operationResponse, returnName);
+        List<Element> responseChildren = elementChildren(operationResponse);
+        if (responseChildren.size() != 1 || responseChildren.get(0) != result) throw integrityShapeFailure();
+        return result;
+    }
+
+    private static Element requiredSingleChild(Element parent, String name) {
+        Element found = null;
+        for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if (!(node instanceof Element child) || !name.equals(child.getLocalName())) continue;
+            if (found != null) throw integrityShapeFailure();
+            found = child;
+        }
+        if (found == null) throw integrityShapeFailure();
+        return found;
+    }
+
+    private static Element optionalSingleChild(Element parent, String name) {
+        Element found = null;
+        for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if (!(node instanceof Element child) || !name.equals(child.getLocalName())) continue;
+            if (found != null) throw integrityShapeFailure();
+            found = child;
+        }
+        return found;
+    }
+
+    private static List<Element> elementChildren(Element parent) {
+        List<Element> children = new ArrayList<>();
+        for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if (node instanceof Element child) children.add(child);
+        }
+        return children;
+    }
+
+    private static List<Element> boundedNamedChildren(Element parent, String name, int max, String overflowCode) {
+        List<Element> children = new ArrayList<>(Math.min(max, 16));
+        for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if (!(node instanceof Element child)) continue;
+            if (!name.equals(child.getLocalName())) throw integrityShapeFailure();
+            if (children.size() == max) {
+                throw new AdapterException(overflowCode, overflowCode.equals("ARCSUITE_LIMIT_EXCEEDED")
+                        ? "Integrity result exceeds configured maximum" : "Integrity response accounting mismatch");
+            }
+            children.add(child);
+        }
+        return children;
+    }
+
+    private static int parseIntegrityInteger(String raw) {
+        try { return Integer.parseInt(raw.trim()); }
+        catch (Exception e) { throw integrityShapeFailure(); }
+    }
+
+    private static AdapterException integrityShapeFailure() {
+        return new AdapterException("ARCSUITE_UPSTREAM_ERROR", "Integrity response shape or accounting mismatch");
     }
 
     static String hardReferencesBody(Map<String,Object> req) {
