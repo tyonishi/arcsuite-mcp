@@ -3,7 +3,11 @@ import { z } from "zod";
 const documentId = z.string().min(5).max(2048).regex(/^rep:/);
 const scope = z.string().min(1).max(64).regex(/^[a-z][a-z0-9_]*$/);
 const limit = z.number().int().min(1).max(50).optional();
-const contentLabel = z.literal("system:primary").optional();
+// Keep this profile schema generic so malformed or scope-disallowed aliases
+// reach the tool registry's stable runtime error path. Physical `{ns,name}`
+// objects remain rejected here, while alias grammar and scope authorization
+// are enforced by the semantic registry.
+const contentLabel = z.string().min(1).max(256).optional();
 const pagingCursor = z.string().min(1).max(4096).optional();
 const semanticFilterOperator = z.enum(["eq", "like", "gte", "lte"]);
 const semanticFilterScalar = z.union([z.string().min(1).max(255), z.number().finite(), z.boolean()]);

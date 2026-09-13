@@ -89,3 +89,19 @@ Local tests use a mock adapter and synthetic content. They verify protocol
 shape, semantic policy, content bounds, and security invariants; they do not
 prove compatibility with a live ArcSuite server, every vendor version, a
 particular client UI, or a production network proxy.
+
+## ArcSuite v1.2 S2 content-label requirements
+
+S2 adds no SOAP operation. It uses the existing
+`getRepositoryObjectContentWithOptions` request with one configured physical
+`I18nString` in the `contentLabels` wrapper and server-controlled options only.
+The WSDL contract used by the adapter is document/literal: each request label
+is an `i18nString` with `ns` and `name` attributes, and the response
+`Content.label` is the same `I18nString` shape. The Java self-test locks this
+synthetic wire shape and exact returned-label comparison.
+
+The gateway verifies `rep:system:contentlabellist` on the current object or the
+requested revision before dispatching content. Reference resolution must prove
+the same effective object used by the content request. Real label existence,
+reference behavior, revision content, and MTOM behavior remain live-environment
+qualification responsibilities for the operator.

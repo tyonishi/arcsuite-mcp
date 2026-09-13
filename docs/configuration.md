@@ -88,7 +88,30 @@ configuration, but it must never be sent to MCP callers or committed with real
 environment values. v1.2 capability discovery exposes only safe semantic scope
 metadata: scope ID/description, allowed object classes, semantic filter names,
 types/operators, enum aliases, configured full-text modes, wildcard policy, and
-whether a deep link is enabled.
+whether a deep link is enabled. It also exposes configured semantic content-label
+aliases; physical content-label mappings are omitted.
+
+### Content labels
+
+`system:primary` is a reserved built-in alias and always maps internally to
+`{ns: "rep", name: "system:primary"}`. It cannot be overridden. Custom labels
+are optional and additive, and existing scope files without this block remain
+valid:
+
+```yaml
+content_labels:
+  preview:
+    ns: "rep"
+    name: "user:YOUR_PREVIEW_CONTENT_LABEL"
+```
+
+Aliases must match `[a-z][a-z0-9_]{0,63}`. The registry accepts at most 32
+custom labels per scope and bounds namespace/name lengths, whitespace, control
+characters, duplicate physical mappings, and reserved-alias redefinition.
+The server does not make a startup call to prove that each configured label
+exists. Document or revision membership is checked at runtime from the exact
+`rep:system:contentlabellist` metadata before a content cache miss dispatches
+`getRepositoryObjectContentWithOptions`.
 
 ### Typed semantic filters
 

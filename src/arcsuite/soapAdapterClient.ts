@@ -13,7 +13,8 @@ import type {
   AdapterSchemaValidationRequest,
   AdapterSchemaValidationResult,
   AdapterSearchIdsRequest,
-  AdapterSearchRequest
+  AdapterSearchRequest,
+  PhysicalContentLabel
 } from "./types.ts";
 import { ArcSuiteAdapterError } from "./errors.ts";
 import { readResponseText } from "../util/http.ts";
@@ -130,7 +131,10 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
           "rep:system:currentrevisionnumber": { type: "int", value: 3 },
           "rep:system:revisionnumber": { type: "int", value: 3 },
           "rep:system:status": { type: "i18n", ns: "rep", name: "ACTIVE", label: "有効" },
-          "rep:system:contentlabellist": { type: "i18n[]", values: [{ ns: "rep", name: "system:primary", label: "プライマリ" }] }
+          "rep:system:contentlabellist": { type: "i18n[]", values: [
+            { ns: "rep", name: "system:primary", label: "プライマリ" },
+            { ns: "rep", name: "user:EXAMPLE_PREVIEW", label: "プレビュー" }
+          ] }
         },
         pathObjects: [
           { id: "rep:mock:EXAMPLE_CABINET:folder-a", name: "Example folder", objectClass: "folder" },
@@ -226,11 +230,36 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   }
 
   async content(request: AdapterContentRequest): Promise<AdapterContentResult> {
-    await this.get({ clientProfileId: request.clientProfileId, id: request.id, resolveRef: true, includePath: false, attrIds: [], options: [] });
+    const document = await this.get({
+      clientProfileId: request.clientProfileId,
+      id: request.id,
+      revisionNumber: request.revisionNumber,
+      resolveRef: true,
+      includePath: false,
+      attrIds: [],
+      options: []
+    });
+    const labels = document.attributes["rep:system:contentlabellist"];
+    if (labels?.type !== "i18n[]" || !labels.values.some((label) => label.ns === request.contentLabel.ns && label.name === request.contentLabel.name)) {
+      throw new ArcSuiteAdapterError("ARCSUITE_NOT_AVAILABLE", "Content label not available");
+    }
+    const preview = request.contentLabel.ns === "rep" && request.contentLabel.name === "user:EXAMPLE_PREVIEW";
     const path = join(this.sharedDir, `${request.traceId}.txt`);
-    const text = `Synthetic ArcSuite document\nDocument ID: ${request.id}\nThis text is provided for local MCP testing.\n`;
+    const text = preview
+      ? `Synthetic ArcSuite preview content\nDocument ID: ${request.id}\nThis text is provided for local MCP testing.\n${"Preview-only line.\n".repeat(160)}`
+      : `Synthetic ArcSuite document\nDocument ID: ${request.id}\nThis text is provided for local MCP testing.\n`;
     writeFileSync(path, text, "utf8");
-    return { id: request.id, revisionNumber: request.revisionNumber, label: request.contentLabel.name, fileName: "mock-document.txt", contentType: "text/plain", sizeBytes: Buffer.byteLength(text), filePath: path };
+    const label: PhysicalContentLabel = { ns: request.contentLabel.ns, name: request.contentLabel.name };
+    return {
+      id: request.id,
+      effectiveId: document.id,
+      revisionNumber: request.revisionNumber,
+      label,
+      fileName: preview ? "mock-document-preview.txt" : "mock-document.txt",
+      contentType: "text/plain",
+      sizeBytes: Buffer.byteLength(text),
+      filePath: path
+    };
   }
 
   private searchBase(request: AdapterSearchIdsRequest | AdapterSearchRequest): AdapterRepositoryObject[] {

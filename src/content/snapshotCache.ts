@@ -1,9 +1,12 @@
+import type { PhysicalContentLabel } from "../arcsuite/types.ts";
+
 export type ContentCacheContext = {
   clientProfileId: string;
   scopeId: string;
   documentId: string;
   revisionNumber?: number;
   contentLabel: string;
+  physicalContentLabel: PhysicalContentLabel;
   variant?: string;
 };
 
@@ -118,7 +121,16 @@ export class ContentSnapshotCache {
 }
 
 function locatorKey(context: ContentCacheContext): string {
-  return [context.clientProfileId, context.scopeId, context.documentId, context.revisionNumber ?? "current", context.contentLabel, context.variant ?? "full"].join("\u001f");
+  return JSON.stringify([
+    context.clientProfileId,
+    context.scopeId,
+    context.documentId,
+    context.revisionNumber ?? "current",
+    context.contentLabel,
+    context.physicalContentLabel.ns,
+    context.physicalContentLabel.name,
+    context.variant ?? "full"
+  ]);
 }
 
 function publicSnapshot(entry: StoredSnapshot): ContentSnapshot {

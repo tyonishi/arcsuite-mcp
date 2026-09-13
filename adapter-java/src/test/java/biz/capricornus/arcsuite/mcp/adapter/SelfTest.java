@@ -2,6 +2,7 @@ package biz.capricornus.arcsuite.mcp.adapter;
 
 import javax.crypto.Cipher;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPublicKey;
@@ -16,6 +17,7 @@ public final class SelfTest {
         cryptoRoundTrip();
         mtomDecode();
         soapRequestShapes();
+        contentLabelWireShapes();
         typedAttributeValueShapes();
         attributeSchemaMetadataParsing();
         responseIdParsing();
@@ -72,6 +74,56 @@ public final class SelfTest {
             ArcSuiteSoapClient.getRepositoryObjectsBody(Map.of("ids", List.of()));
             throw new AssertionError("empty ids must be rejected");
         } catch (IllegalArgumentException expectedFailure) {}
+    }
+
+    static void contentLabelWireShapes() {
+        Map<String, Object> request = Map.of(
+                "id", "rep:example:document",
+                "contentLabel", Map.of("ns", "rep", "name", "user:EXAMPLE_PREVIEW"),
+                "options", List.of("resolveRef", "errorOnOfflineContent")
+        );
+        String body = ArcSuiteSoapClient.contentRequestBody(request, "rep:example:document");
+        String expected = "<t:id>rep:example:document</t:id>"
+                + "<t:contentLabels><t:i18nString ns=\"rep\" name=\"user:EXAMPLE_PREVIEW\"/></t:contentLabels>"
+                + "<t:options>resolveRef</t:options><t:options>errorOnOfflineContent</t:options>";
+        if (!expected.equals(body)) throw new AssertionError("Unexpected content-label request body: " + body);
+        if (body.contains("<t:label>") || body.contains("<t:string>")) throw new AssertionError("Unexpected content-label wire shape");
+        try {
+            ArcSuiteSoapClient.contentRequestBody(Map.of(
+                    "id", "rep:example:document",
+                    "contentLabel", Map.of("ns", "rep", "name", "user:EXAMPLE_PREVIEW"),
+                    "options", List.of("unexpected-option")
+            ), "rep:example:document");
+            throw new AssertionError("content options must be server-controlled");
+        } catch (IllegalArgumentException expectedFailure) {}
+
+        var content = XmlUtil.parse("<content xmlns=\"urn:synthetic\"><label ns=\"rep\" name=\"user:EXAMPLE_PREVIEW\"/></content>").getDocumentElement();
+        if (!Map.of("ns", "rep", "name", "user:EXAMPLE_PREVIEW").equals(ArcSuiteSoapClient.parseContentLabel(content))) {
+            throw new AssertionError("Content.label was not parsed as an exact I18nString");
+        }
+        try {
+            ArcSuiteSoapClient.assertContentLabelMatches(
+                    Map.of("ns", "rep", "name", "user:EXAMPLE_PREVIEW"),
+                    Map.of("ns", "other", "name", "user:EXAMPLE_PREVIEW"));
+            throw new AssertionError("namespace mismatch must fail closed");
+        } catch (AdapterException expectedFailure) {
+            if (!"ARCSUITE_UPSTREAM_ERROR".equals(expectedFailure.code)) throw expectedFailure;
+        }
+
+        String objectXml = "<repositoryObject xmlns=\"urn:synthetic\">"
+                + "<id>rep:example:document</id><objectClass name=\"document\"/>"
+                + "<attributes><attribute ns=\"rep\" name=\"system:contentlabellist\">"
+                + "<attributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"I18nStringValues\">"
+                + "<i18nStrings ns=\"rep\" name=\"system:primary\"/>"
+                + "<i18nStrings ns=\"rep\" name=\"user:EXAMPLE_PREVIEW\"/>"
+                + "</attributeValue></attribute></attributes></repositoryObject>";
+        Map<String, Object> parsed = ArcSuiteSoapClient.parseRepositoryObject(XmlUtil.parse(objectXml).getDocumentElement());
+        Object values = ((Map<?, ?>) parsed.get("attributes")).get("rep:system:contentlabellist");
+        if (!(values instanceof Map<?, ?> valueMap) || !"i18n[]".equals(valueMap.get("type"))
+                || !(valueMap.get("values") instanceof List<?> list) || list.size() != 2
+                || !Map.of("ns", "rep", "name", "user:EXAMPLE_PREVIEW").equals(list.get(1))) {
+            throw new AssertionError("content label list was not parsed with namespace and name");
+        }
     }
 
     static void typedAttributeValueShapes() {
@@ -220,10 +272,20 @@ public final class SelfTest {
         } catch (AdapterException expected) {
             if (!"ARCSUITE_LIMIT_EXCEEDED".equals(expected.code)) throw expected;
         }
+        CloseTrackingInputStream response = new CloseTrackingInputStream("response".getBytes(StandardCharsets.UTF_8));
+        if (!"response".equals(new String(ArcSuiteSoapClient.readAndClose(response, 64), StandardCharsets.UTF_8)) || !response.closed) {
+            throw new AssertionError("SOAP response stream was not closed after materialization");
+        }
     }
 
     static byte[] unsigned(byte[] b) {
         if (b.length > 1 && b[0] == 0) return java.util.Arrays.copyOfRange(b,1,b.length);
         return b;
+    }
+
+    static final class CloseTrackingInputStream extends ByteArrayInputStream {
+        boolean closed;
+        CloseTrackingInputStream(byte[] data) { super(data); }
+        @Override public void close() throws IOException { closed = true; super.close(); }
     }
 }

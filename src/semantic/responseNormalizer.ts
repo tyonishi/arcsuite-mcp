@@ -1,5 +1,6 @@
-import type { AdapterRepositoryObject, AttributeValue, NormalizedDocument } from "../arcsuite/types.ts";
+import type { AdapterRepositoryObject, AttributeValue, NormalizedDocument, PhysicalContentLabel } from "../arcsuite/types.ts";
 import type { SemanticAttributeConfig } from "./scopeRegistry.ts";
+import { physicalContentLabelKey } from "./contentLabels.ts";
 
 function getAttr(obj: AdapterRepositoryObject, name: string): AttributeValue | undefined {
   return obj.attributes[`rep:${name}`] ?? obj.attributes[name];
@@ -36,17 +37,28 @@ function asPublicValue(value: AttributeValue | undefined): string | number | boo
   return null;
 }
 
-function contentLabels(value: AttributeValue | undefined): string[] {
+function contentLabels(value: AttributeValue | undefined, aliases?: ReadonlyMap<string, string>): string[] {
   if (!value) return [];
-  if (value.type === "i18n[]") return value.values.map((v) => v.name);
-  if (value.type === "i18n") return [value.name];
+  if (value.type === "i18n[]") {
+    return value.values
+      .map((v) => aliases ? aliases.get(physicalContentLabelKey(v)) : v.name)
+      .filter((label): label is string => Boolean(label));
+  }
+  if (value.type === "i18n") {
+    const alias = aliases?.get(physicalContentLabelKey(value));
+    return [alias ?? (aliases ? "" : value.name)].filter(Boolean);
+  }
   const one = asString(value);
-  return one ? [one] : [];
+  return one && !aliases ? [one] : [];
 }
 
-export function normalizeDocument(obj: AdapterRepositoryObject, semanticAttributes: Record<string, SemanticAttributeConfig> = {}): NormalizedDocument {
+export function normalizeDocument(
+  obj: AdapterRepositoryObject,
+  semanticAttributes: Record<string, SemanticAttributeConfig> = {},
+  contentLabelAliases?: ReadonlyMap<string, string>
+): NormalizedDocument {
   const name = asString(getAttr(obj, "system:name"));
-  const labels = contentLabels(getAttr(obj, "system:contentlabellist"));
+  const labels = contentLabels(getAttr(obj, "system:contentlabellist"), contentLabelAliases);
   const rawPath = obj.pathObjects?.map((p) => p.name).filter((v): v is string => Boolean(v));
   const path = rawPath?.length ? [...rawPath].reverse() : undefined;
   return {
@@ -62,4 +74,20 @@ export function normalizeDocument(obj: AdapterRepositoryObject, semanticAttribut
     content_available: labels.length > 0,
     semantic_attributes: Object.fromEntries(Object.entries(semanticAttributes).map(([name, cfg]) => [name, asPublicValue(getAttributeById(obj, cfg.attr_id.ns, cfg.attr_id.name))]))
   };
+}
+
+export type ContentLabelMembership = "present" | "absent" | "unproven";
+
+/**
+ * Membership is intentionally read only from the exact configured attribute
+ * and requires both physical I18nString fields to match.
+ */
+export function contentLabelMembership(obj: AdapterRepositoryObject, expected: PhysicalContentLabel): ContentLabelMembership {
+  const value = obj.attributes["rep:system:contentlabellist"];
+  if (!value) return "unproven";
+  if (value.type !== "i18n[]" || !Array.isArray(value.values)) return "unproven";
+  for (const member of value.values) {
+    if (typeof member.ns !== "string" || typeof member.name !== "string") return "unproven";
+  }
+  return value.values.some((member) => member.ns === expected.ns && member.name === expected.name) ? "present" : "absent";
 }

@@ -11,6 +11,7 @@ import { OfficeOpenXmlExtractor } from "./extractors/officeOpenXml.ts";
 import { UnsupportedContentHandler } from "./extractors/unsupported.ts";
 import { CursorManager, type ReadCursorPayload } from "./cursor.ts";
 import { ContentSnapshotCache, type ContentCacheContext, type ContentSnapshot } from "./snapshotCache.ts";
+import { CONTENT_LABEL_PRIMARY_ALIAS } from "../semantic/contentLabels.ts";
 
 export type ContentInfo = {
   label: string;
@@ -29,12 +30,14 @@ export type ReadContentOptions = {
   startPage?: number;
   endPage?: number;
   cursor?: string;
+  contentLabel?: string;
   maxChars: number;
 };
 
 export type ReadContentResult = {
   document_id: string;
   revision_number?: number;
+  content_label: string;
   file_name: string;
   content_type: string;
   extractor: string;
@@ -68,10 +71,10 @@ export class ContentBridge {
     this.extractors = [new TextExtractor(), new CsvExtractor(), new JsonExtractor(), new XmlExtractor(), new PdfExtractor(), new OfficeOpenXmlExtractor(), new UnsupportedContentHandler()];
   }
 
-  info(content: AdapterContentResult): ContentInfo {
+  info(content: AdapterContentResult, contentLabel = CONTENT_LABEL_PRIMARY_ALIAS): ContentInfo {
     const extractor = this.selectExtractor(content.contentType, content.fileName);
     return {
-      label: content.label,
+      label: contentLabel,
       file_name: content.fileName,
       content_type: content.contentType,
       size_bytes: content.sizeBytes,
@@ -85,14 +88,14 @@ export class ContentBridge {
     const cached = this.cache?.get({ ...context, variant: "full" });
     if (cached) return infoFromSnapshot(cached.label, cached, true);
     const content = await load();
-    const basic = this.info(content);
+    const basic = this.info(content, context.contentLabel);
     if (!basic.extractable) {
       await this.discard(content);
       return basic;
     }
     const safePath = await this.assertSharedPath(content.filePath);
     try {
-      const snapshot = await this.extractSnapshot(content, undefined, undefined, safePath);
+      const snapshot = await this.extractSnapshot(content, undefined, undefined, safePath, context.contentLabel);
       const stored = this.cache?.put({ ...context, variant: "full" }, snapshot) ?? snapshot;
       // `cached` means this request was served from an existing private snapshot,
       // not merely that a snapshot is available after this request. Keeping this
@@ -113,10 +116,11 @@ export class ContentBridge {
 
   async read(content: AdapterContentResult, options: ReadContentOptions): Promise<ReadContentResult> {
     const cursorPayload = options.cursor ? this.cursors.parse(options.cursor) : undefined;
-    validateCursorIdentity(cursorPayload, options.documentId, options.revisionNumber);
+    const contentLabel = options.contentLabel ?? CONTENT_LABEL_PRIMARY_ALIAS;
+    validateCursorIdentity(cursorPayload, options.documentId, options.revisionNumber, undefined, undefined, contentLabel);
     const startPage = cursorPayload?.start_page ?? options.startPage;
     const endPage = cursorPayload?.end_page ?? options.endPage;
-    const snapshot = await this.extractSnapshot(content, startPage, endPage);
+    const snapshot = await this.extractSnapshot(content, startPage, endPage, undefined, contentLabel);
     return this.sliceSnapshot(snapshot, options, cursorPayload, undefined, false);
   }
 
@@ -126,7 +130,7 @@ export class ContentBridge {
     load: () => Promise<AdapterContentResult>
   ): Promise<ReadContentResult> {
     const cursorPayload = options.cursor ? this.cursors.parse(options.cursor) : undefined;
-    validateCursorIdentity(cursorPayload, options.documentId, options.revisionNumber, context.clientProfileId, context.scopeId);
+    validateCursorIdentity(cursorPayload, options.documentId, options.revisionNumber, context.clientProfileId, context.scopeId, context.contentLabel);
     const startPage = cursorPayload?.start_page ?? options.startPage;
     const endPage = cursorPayload?.end_page ?? options.endPage;
     const cacheContext = { ...context, variant: pageVariant(startPage, endPage) };
@@ -134,17 +138,29 @@ export class ContentBridge {
     const cacheHit = Boolean(snapshot);
     if (!snapshot) {
       const content = await load();
-      snapshot = await this.extractSnapshot(content, startPage, endPage);
+      snapshot = await this.extractSnapshot(content, startPage, endPage, undefined, context.contentLabel);
       this.cache?.put(cacheContext, snapshot);
     }
+    if (snapshot.label !== context.contentLabel) throw new Error("CONTENT_CACHE_LABEL_MISMATCH");
     return this.sliceSnapshot(snapshot, options, cursorPayload, context, cacheHit);
+  }
+
+  resolveCursorContentLabel(cursor: string): string {
+    const payload = this.cursors.parse(cursor);
+    return payload.content_label ?? CONTENT_LABEL_PRIMARY_ALIAS;
   }
 
   clearCache(): void {
     this.cache?.clear();
   }
 
-  private async extractSnapshot(content: AdapterContentResult, startPage?: number, endPage?: number, verifiedPath?: string): Promise<ContentSnapshot> {
+  private async extractSnapshot(
+    content: AdapterContentResult,
+    startPage?: number,
+    endPage?: number,
+    verifiedPath?: string,
+    contentLabel = CONTENT_LABEL_PRIMARY_ALIAS
+  ): Promise<ContentSnapshot> {
     const safePath = verifiedPath ?? await this.assertSharedPath(content.filePath);
     try {
       if (content.sizeBytes > this.maxContentBytes) throw new Error("CONTENT_SIZE_LIMIT");
@@ -167,7 +183,7 @@ export class ContentBridge {
       const hash = `sha256:${createHash("sha256").update(normalized, "utf8").digest("hex")}`;
       return {
         contentHash: hash,
-        label: content.label,
+        label: contentLabel,
         fileName: content.fileName,
         contentType: content.contentType,
         sizeBytes: content.sizeBytes,
@@ -202,6 +218,7 @@ export class ContentBridge {
       scope_id: context?.scopeId,
       document_id: options.documentId,
       revision_number: options.revisionNumber,
+      content_label: snapshot.label,
       content_hash: snapshot.contentHash,
       offset: end,
       extractor: snapshot.extractor,
@@ -211,6 +228,7 @@ export class ContentBridge {
     return {
       document_id: options.documentId,
       revision_number: options.revisionNumber,
+      content_label: snapshot.label,
       file_name: snapshot.fileName,
       content_type: snapshot.contentType,
       extractor: snapshot.extractor,
@@ -240,7 +258,8 @@ function validateCursorIdentity(
   documentId: string,
   revisionNumber?: number,
   clientProfileId?: string,
-  scopeId?: string
+  scopeId?: string,
+  contentLabel = CONTENT_LABEL_PRIMARY_ALIAS
 ): void {
   if (!cursor) return;
   if (cursor.document_id !== documentId || cursor.revision_number !== revisionNumber) throw new Error("CURSOR_DOCUMENT_MISMATCH");
@@ -249,6 +268,8 @@ function validateCursorIdentity(
   // intentionally invalidated rather than accepted across profiles/scopes.
   if (clientProfileId !== undefined && cursor.client_profile_id !== clientProfileId) throw new Error("CURSOR_PROFILE_MISMATCH");
   if (scopeId !== undefined && cursor.scope_id !== scopeId) throw new Error("CURSOR_SCOPE_MISMATCH");
+  const cursorLabel = cursor.content_label ?? CONTENT_LABEL_PRIMARY_ALIAS;
+  if (cursorLabel !== contentLabel) throw new Error("CURSOR_CONTENT_LABEL_MISMATCH");
 }
 
 function pageVariant(startPage?: number, endPage?: number): string {

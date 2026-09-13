@@ -20,6 +20,9 @@ endorsed by FUJIFILM Business Innovation. See [NOTICE.md](NOTICE.md).
   reuse, and optional trusted ArcSuite UI deep links;
 - v1.2 S1 Typed Search Foundation: schema-validated typed semantic predicates,
   enum aliases, and scope-configured full-text modes;
+- v1.2 S2 Content Labels: operator-configured semantic content-label aliases,
+  metadata membership proof, label-isolated extraction caches, and
+  label-bound read cursors;
 - current MCP Streamable HTTP through the official TypeScript SDK, with a
   stateless legacy compatibility path for older 2025-era clients;
 - server-side scope mapping, token profiles, rate limits, audit metadata, and
@@ -110,6 +113,12 @@ scopes:
       cabinet_id: "rep:YOUR_SERVICE:YOUR_CABINET"
       root_object_id: null
       resolve_references: true
+    # Optional labels are semantic aliases for callers. The physical mapping
+    # is operator configuration and is never returned through MCP.
+    # content_labels:
+    #   preview:
+    #     ns: "rep"
+    #     name: "user:YOUR_PREVIEW_CONTENT_LABEL"
     # Optional convenience; the host/template remain server-side.
     # ui:
     #   document_url_template: "https://arcsuite.example.invalid/open?id={document_id}"
@@ -132,13 +141,20 @@ token configuration out of version control.
 
 v1.1 paging/content caches are process-local and bounded by configuration.
 They do not expand ArcSuite authority, are isolated by client profile/scope,
-and never write extracted document text to the audit log.
+and never write extracted document text to the audit log. S2 content snapshots
+also include the semantic label and exact physical namespace/name in their
+private identity.
 
 v1.2 typed filter values are validated against the configured ArcSuite schema.
 Explicit predicates use only the small semantic operator matrix documented in
 [docs/tools.md](docs/tools.md); enum aliases hide physical values. `none` is the
 default full-text mode, while `stemming` and `thesaurus` require explicit
 scope configuration.
+
+S2 content reads accept semantic aliases such as `system:primary` (the default)
+and an operator-configured `preview`; callers cannot submit a physical
+namespace/name pair. The selected object or revision must advertise the exact
+namespace and name in `rep:system:contentlabellist` before content is fetched.
 
 See [docs/configuration.md](docs/configuration.md) for all important bounds
 and [config/tokens.example.json](config/tokens.example.json) for a synthetic

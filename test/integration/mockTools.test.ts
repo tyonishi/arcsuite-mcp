@@ -215,15 +215,15 @@ test("LIKE filters treat only wildcard characters as pattern syntax", async () =
   assert.equal(punctuation.count, 0);
 });
 
-test("content-info cache hits preserve the adapter-provided label", async () => {
+test("content-info cache hits preserve the semantic label", async () => {
   const rt = await runtime();
   const originalContent = (rt.adapter as any).content.bind(rt.adapter);
-  (rt.adapter as any).content = async (request: any) => ({ ...await originalContent(request), label: "adapter:canonical" });
+  (rt.adapter as any).content = async (request: any) => ({ ...await originalContent(request), label: { ns: "rep", name: "system:primary" } });
   const first: any = (await rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: "rep:mock:EXAMPLE_CABINET:1001" })).structuredContent;
   const second: any = (await rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: "rep:mock:EXAMPLE_CABINET:1001" })).structuredContent;
-  assert.equal(first.label, "adapter:canonical");
+  assert.equal(first.label, "system:primary");
   assert.equal(first.cached, false);
-  assert.equal(second.label, "adapter:canonical");
+  assert.equal(second.label, "system:primary");
   assert.equal(second.cached, true);
 });
 
@@ -303,7 +303,7 @@ test("content responses must preserve the requested object identity", async () =
   const rt = await runtime();
   (rt.adapter as any).content = async () => ({
     id: "rep:mock:EXAMPLE_CABINET:other-document",
-    label: "system:primary",
+    label: { ns: "rep", name: "system:primary" },
     fileName: "synthetic.txt",
     contentType: "text/plain",
     sizeBytes: 0,
