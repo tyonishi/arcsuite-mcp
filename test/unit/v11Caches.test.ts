@@ -105,7 +105,7 @@ test("content cache separates semantic labels and same-name labels in different 
   };
   const otherNamespace = {
     ...primary,
-    contentLabel: "other",
+    contentLabel: "preview",
     physicalContentLabel: { ns: "other", name: "user:SAME_NAME" }
   };
   cache.put(primary, snapshot("system:primary", "primary"));
