@@ -348,11 +348,27 @@ function validateSemanticSchema(cfg: SemanticAttributeConfig, schema: AttributeS
         return undefined;
       }
       if (dataType === "STRING_TYPE") {
-        for (const value of Object.values(cfg.values ?? {})) if (!("value" in value) || typeof value.value !== "string") return "enum_mapping_requires_string_value";
+        for (const value of Object.values(cfg.values ?? {})) {
+          if (!("value" in value) || typeof value.value !== "string") return "enum_mapping_requires_string_value";
+          const constraintError = validateStringEnumLiteral(value.value, cfg, schema);
+          if (constraintError) return constraintError;
+        }
         return undefined;
       }
       return `schema_type_mismatch:${dataType ?? "missing"}`;
   }
+}
+
+function validateStringEnumLiteral(value: string, cfg: SemanticAttributeConfig, schema: AttributeSchemaInfo): string | undefined {
+  if (cfg.max_length !== undefined && value.length > cfg.max_length) return "enum_value_exceeds_semantic_max_length";
+  if (schema.minLength !== undefined && value.length < schema.minLength) return "enum_value_shorter_than_schema_minimum";
+  if (schema.maxLength !== undefined && value.length > schema.maxLength) return "enum_value_exceeds_schema_maximum";
+  if (schema.pattern !== undefined) {
+    let pattern: RegExp;
+    try { pattern = new RegExp(schema.pattern); } catch { return "schema_pattern_invalid"; }
+    if (!pattern.test(value)) return "enum_value_does_not_match_schema_pattern";
+  }
+  return undefined;
 }
 
 function validateDocumentUrlTemplate(value: unknown, scopeId: string): asserts value is string {

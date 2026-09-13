@@ -104,6 +104,11 @@ public final class SelfTest {
             }
             if (!expected.get(entry.getKey()).equals(actual)) throw new AssertionError(entry.getKey() + ": " + actual);
         }
+        String extendedDateTime = ArcSuiteSoapClient.attributeValueBody(Map.of(
+                "type", "datetime", "value", "2026-01-02T03:04:05+23:00"));
+        if (!"<t:attributeValue xsi:type=\"t:DateTimeValue\"><t:dateTime>2026-01-02T03:04:05+23:00</t:dateTime></t:attributeValue>".equals(extendedDateTime)) {
+            throw new AssertionError("Unexpected extended datetime: " + extendedDateTime);
+        }
 
         String condition = ArcSuiteSoapClient.attributeConditions("attrCondition", List.of(Map.of(
                 "attrId", Map.of("ns", "rep", "name", "system:approved"),

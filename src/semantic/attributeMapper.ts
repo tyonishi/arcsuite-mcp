@@ -147,6 +147,7 @@ function enumCondition(
     return { attrId: cfg.attr_id, operator: "EQUAL", value: { type: "i18n", ns: mapping.ns, name: mapping.name } };
   }
   if (schema.dataType === "STRING_TYPE" && "value" in mapping && typeof mapping.value === "string") {
+    validateStringConstraints(name, mapping.value, cfg, schema, true);
     return { attrId: cfg.attr_id, operator: "EQUAL", value: { type: "string", value: mapping.value } };
   }
   throw new TypeError(`${name} enum mapping does not match the validated schema value type`);
@@ -189,8 +190,8 @@ function validateIntegralConstraints(name: string, value: number, schema?: Attri
   if (!schema) return;
   const min = compareIntegralBound(value, schema.minIntegralValue, name, "minimum");
   const max = compareIntegralBound(value, schema.maxIntegralValue, name, "maximum");
-  if (min !== undefined && min < 0) throw new TypeError(`${name} is below the schema minimum`);
-  if (max !== undefined && max > 0) throw new TypeError(`${name} is above the schema maximum`);
+  if (min !== undefined && (min < 0 || (min === 0 && schema.minInclusive === false))) throw new TypeError(`${name} is below the schema minimum`);
+  if (max !== undefined && (max > 0 || (max === 0 && schema.maxInclusive === false))) throw new TypeError(`${name} is above the schema maximum`);
 }
 
 function validateFloatingConstraints(name: string, value: number, schema?: AttributeSchemaInfo): void {

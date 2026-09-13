@@ -17,7 +17,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDate;
-import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 
@@ -476,7 +475,20 @@ final class ArcSuiteSoapClient {
     }
     private static String dateTimeLexical(Object raw){
         if(!(raw instanceof String value)||value.isBlank())throw new IllegalArgumentException("datetime value is required");
-        try{OffsetDateTime.parse(value);return value;}catch(DateTimeParseException e){throw new IllegalArgumentException("datetime value must be RFC3339",e);}
+        var match = java.util.regex.Pattern.compile(
+                "^(\\d{4}-\\d{2}-\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.\\d+)?(Z|[+-](\\d{2}):(\\d{2}))$"
+        ).matcher(value);
+        if(!match.matches()
+                || "-00:00".equals(match.group(5))
+                || Integer.parseInt(match.group(2)) > 23
+                || Integer.parseInt(match.group(3)) > 59
+                || Integer.parseInt(match.group(4)) > 59
+                || (match.group(6) != null
+                    && (Integer.parseInt(match.group(6)) > 23
+                        || Integer.parseInt(match.group(7)) > 59))) {
+            throw new IllegalArgumentException("datetime value must be RFC3339");
+        }
+        try{LocalDate.parse(match.group(1));return value;}catch(DateTimeParseException e){throw new IllegalArgumentException("datetime value must be RFC3339",e);}
     }
     private static boolean parseBooleanLexical(String raw){
         if("true".equals(raw)||"1".equals(raw))return true;

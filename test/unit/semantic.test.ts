@@ -46,6 +46,8 @@ test("typed predicates use the verified schema value representation", () => {
   assert.throws(() => mapFilter(scope, "page_count", 10), /validated schema metadata/);
   assert.throws(() => mapFilter(scope, "page_count", 10, { ...longSchema, dataType: "STRING_TYPE" }), /schema type/);
   assert.throws(() => mapFilter(scope, "page_count", Number.MIN_SAFE_INTEGER, { ...longSchema, maxIntegralValue: "-9007199254740992" }), /above the schema maximum/);
+  assert.throws(() => mapFilter(scope, "page_count", 0, { ...longSchema, minIntegralValue: "0", minInclusive: false }), /below the schema minimum/);
+  assert.throws(() => mapFilter(scope, "page_count", 0, { ...longSchema, maxIntegralValue: "0", maxInclusive: false }), /above the schema maximum/);
   const boolean = mapFilter(scope, "approved", true, { ns: "rep", name: "user:approved", dataType: "BOOLEAN_TYPE", searchable: true });
   assert.deepEqual(boolean.value, { type: "boolean", value: true });
   const date = mapFilter(scope, "published_on", { operator: "lte", value: "2026-09-01" }, { ns: "rep", name: "user:published_on", dataType: "DATE_TYPE", searchable: true });
@@ -127,6 +129,50 @@ test("scope registry validates typed operator and enum configuration", () => {
   const registry = new ScopeRegistry({ version: 1, scopes: { typed: { ...base, search: { full_text_modes: ["none", "thesaurus"] }, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { ns: "rep", name: "ACTIVE" } } } } } } as any });
   assert.deepEqual(registry.describe(["typed"])[0].full_text_modes, ["none", "thesaurus"]);
   assert.deepEqual(registry.describe(["typed"])[0].filters[0].values, ["active"]);
+});
+
+test("scope registry rejects string enum literals outside adapter constraints", async () => {
+  const base = {
+    description: "Synthetic string enum scope",
+    enabled: true,
+    arcsuite: { cabinet_alias: "STRING_ENUM", cabinet_id: "rep:mock:STRING_ENUM", root_object_id: null, resolve_references: true },
+    allowed_object_types: ["document"],
+    default_attr_ids: [{ ns: "rep", name: "system:name" }]
+  };
+  const cases = [
+    { values: { active: { value: "A" } }, schema: { minLength: 2 }, error: "enum_value_shorter_than_schema_minimum" },
+    { values: { active: { value: "ACTIVE" } }, schema: { maxLength: 5 }, error: "enum_value_exceeds_schema_maximum" },
+    { values: { active: { value: "ACTIVE" } }, schema: { pattern: "^Z$" }, error: "enum_value_does_not_match_schema_pattern" }
+  ] as const;
+  for (const item of cases) {
+    const registry = new ScopeRegistry({
+      version: 1,
+      scopes: {
+        string_enum: {
+          ...base,
+          semantic_attributes: {
+            lifecycle: { attr_id: { ns: "rep", name: "user:lifecycle" }, type: "enum", operators: ["eq"], values: item.values }
+          }
+        }
+      }
+    });
+    const adapter = {
+      validateSchema: async (request: { attributes: Array<{ attrId: { ns: string; name: string } }> }) => ({
+        ok: true,
+        version: {},
+        cabinet: {},
+        errors: [],
+        attributes: request.attributes.map(({ attrId }) => ({
+          ...attrId,
+          dataType: "STRING_TYPE",
+          searchable: true,
+          enumerated: attrId.name === "user:lifecycle",
+          ...(attrId.name === "user:lifecycle" ? item.schema : {})
+        }))
+      })
+    };
+    await assert.rejects(() => registry.validateAgainstAdapter(adapter as any, "profile"), new RegExp(`lifecycle:${item.error}`));
+  }
 });
 
 test("scope object-type allowlist rejects unexpected adapter classes", () => {
