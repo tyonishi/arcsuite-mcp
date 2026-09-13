@@ -755,7 +755,7 @@ export class ToolRegistry {
     scope: SemanticScope,
     content: {
       id: string;
-      effectiveId?: string;
+      effectiveId: string;
       revisionNumber?: number;
       label: PhysicalContentLabel;
     },
@@ -765,7 +765,10 @@ export class ToolRegistry {
     expectedRevision?: number
   ): void {
     this.assertObjectIdInScope(scope, content.id, requestedId);
-    const effectiveId = content.effectiveId ?? content.id;
+    if (typeof content.effectiveId !== "string" || !content.effectiveId) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_effective_identity_missing", false);
+    }
+    const effectiveId = content.effectiveId;
     this.assertObjectIdInScope(scope, effectiveId);
     if (effectiveId !== proof.objectId) throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
     if (expectedRevision !== undefined && content.revisionNumber !== undefined && content.revisionNumber !== expectedRevision) {
@@ -1113,7 +1116,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 
 function parseRevisionsArgs(args: Record<string, unknown>, config: AppConfig) {
   assertExactKeys(args, ["document_id", "limit"], "revision arguments");
-  return { documentId: repId(args.document_id, "document_id"), limit: args.limit === undefined ? 20 : intValue(args.limit, "limit", 1, config.searchMaxLimit) };
+  return { documentId: repId(args.document_id, "document_id"), limit: args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit) };
 }
 
 function parseContentInfoArgs(args: Record<string, unknown>) {

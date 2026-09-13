@@ -150,7 +150,7 @@ export type AdapterContentResult = {
   /** Exact physical label returned by ArcSuite; never exposed directly by MCP. */
   label: PhysicalContentLabel;
   /** Effective object identity after adapter-side reference/revision resolution. */
-  effectiveId?: string;
+  effectiveId: string;
   fileName: string;
   contentType: string;
   sizeBytes: number;

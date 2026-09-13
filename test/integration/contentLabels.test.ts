@@ -25,6 +25,38 @@ async function runtime(scopeFile = resolve("config/scopes.mock.yaml")) {
   return { rt, dir };
 }
 
+async function runtimeWithRoot() {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-root-"));
+  const scopeFile = join(dir, "scopes.yaml");
+  await writeFile(scopeFile, `version: 1
+scopes:
+  example_documents:
+    description: Synthetic rooted document scope
+    enabled: true
+    arcsuite:
+      cabinet_alias: EXAMPLE_CABINET
+      cabinet_id: "rep:mock:EXAMPLE_CABINET"
+      root_object_id: "rep:mock:EXAMPLE_CABINET:root-001"
+      resolve_references: true
+    allowed_object_types: [document]
+    default_attr_ids:
+      - {ns: rep, name: system:name}
+    semantic_attributes: {}
+`);
+  const rt = await buildRuntime({
+    ...process.env,
+    NODE_ENV: "test",
+    ARCSUITE_ADAPTER_MODE: "mock",
+    MCP_DEV_BEARER_TOKEN: "test-token",
+    MCP_SCOPES_FILE: scopeFile,
+    MCP_SHARED_TEMP_DIR: join(dir, "shared"),
+    MCP_AUDIT_LOG_PATH: join(dir, "audit.jsonl"),
+    MCP_CURSOR_HMAC_SECRET: "0123456789abcdef0123456789abcdef",
+    MCP_VALIDATE_ON_STARTUP: "true"
+  });
+  return { rt, dir };
+}
+
 function profile(allowedScopes = ["example_documents"], clientProfileId = "dev-profile") {
   return {
     clientProfileId,
@@ -193,6 +225,65 @@ test("membership is checked with namespace and exact revision metadata before co
     (error: any) => error?.stableCode === "ARCSUITE_NOT_AVAILABLE" && error?.category === "content_label_not_found"
   );
   assert.equal(contentCalls, 0);
+});
+
+test("resolved effective identity and its own root path authorize content", async () => {
+  const rootId = "rep:mock:EXAMPLE_CABINET:root-001";
+  const sourceId = DOCUMENT_A;
+  const cases = [
+    { label: "ordinary document inside root", effectiveId: sourceId, pathIds: [rootId], succeeds: true },
+    { label: "reference to target inside root", effectiveId: "rep:mock:EXAMPLE_CABINET:target-001", pathIds: [rootId], succeeds: true },
+    { label: "reference to target outside root", effectiveId: "rep:mock:EXAMPLE_CABINET:outside-001", pathIds: ["rep:mock:EXAMPLE_CABINET:outside-001"], error: "root_scope" },
+    { label: "reference to target in another cabinet", effectiveId: "rep:mock:OTHER_CABINET:outside-001", pathIds: ["rep:mock:OTHER_CABINET:outside-001"], error: "cabinet_scope" }
+  ];
+
+  for (const scenario of cases) {
+    const { rt } = await runtimeWithRoot();
+    const adapter: any = rt.adapter;
+    const originalGet = adapter.get.bind(adapter);
+    const originalContent = adapter.content.bind(adapter);
+    let contentCalls = 0;
+    adapter.get = async (request: any) => {
+      const object = await originalGet(request);
+      if (!request.resolveRef) return object;
+      return {
+        ...object,
+        id: scenario.effectiveId,
+        pathObjects: scenario.pathIds.map((id) => ({ id }))
+      };
+    };
+    adapter.content = async (request: any) => {
+      contentCalls += 1;
+      return originalContent(request);
+    };
+
+    if (scenario.succeeds) {
+      const info: any = (await rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: sourceId })).structuredContent;
+      assert.equal(info.extractable, true, scenario.label);
+      assert.equal(contentCalls, 1, scenario.label);
+    } else {
+      await assert.rejects(
+        () => rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: sourceId }),
+        (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === scenario.error,
+        scenario.label
+      );
+      assert.equal(contentCalls, 0, `${scenario.label} must fail before content dispatch`);
+    }
+  }
+});
+
+test("content result must state the effective identity proven by membership lookup", async () => {
+  const { rt } = await runtime();
+  const adapter: any = rt.adapter;
+  const originalContent = adapter.content.bind(adapter);
+  adapter.content = async (request: any) => {
+    const result = await originalContent(request);
+    return { ...result, effectiveId: undefined };
+  };
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: DOCUMENT_A }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "content_effective_identity_missing"
+  );
 });
 
 test("returned physical label mismatch fails closed and cleans the adapter file", async () => {

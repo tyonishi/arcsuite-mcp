@@ -375,6 +375,7 @@ function validateEnumConfiguration(values: Record<string, SemanticEnumValueConfi
   if (!values || typeof values !== "object" || Array.isArray(values) || !Object.keys(values).length) {
     throw new Error(`Enum semantic attribute ${scopeId}.${semanticName} requires non-empty values`);
   }
+  const physicalValues = new Set<string>();
   for (const [alias, value] of Object.entries(values)) {
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(alias)) throw new Error(`Invalid enum alias ${scopeId}.${semanticName}.${alias}`);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid enum mapping ${scopeId}.${semanticName}.${alias}`);
@@ -383,6 +384,11 @@ function validateEnumConfiguration(values: Record<string, SemanticEnumValueConfi
     if (hasPhysicalId === hasLiteral || (hasPhysicalId && (!safeConfigString(value.ns, 128) || !safeConfigString(value.name, 256))) || (hasLiteral && !safeLiteralString(value.value, 4096))) {
       throw new Error(`Enum mapping ${scopeId}.${semanticName}.${alias} must contain either ns/name or value`);
     }
+    const physicalKey = "value" in value
+      ? JSON.stringify(["string", value.value])
+      : JSON.stringify(["i18n", value.ns, value.name]);
+    if (physicalValues.has(physicalKey)) throw new Error(`Enum semantic attribute ${scopeId}.${semanticName} must use unique physical enum values`);
+    physicalValues.add(physicalKey);
   }
 }
 

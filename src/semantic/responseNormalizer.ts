@@ -1,6 +1,7 @@
 import type { AdapterRepositoryObject, AttributeValue, NormalizedDocument, PhysicalContentLabel } from "../arcsuite/types.ts";
 import type { SemanticAttributeConfig } from "./scopeRegistry.ts";
 import { physicalContentLabelKey } from "./contentLabels.ts";
+import { McpToolError } from "../mcp/errors.ts";
 
 function getAttr(obj: AdapterRepositoryObject, name: string): AttributeValue | undefined {
   return obj.attributes[`rep:${name}`] ?? obj.attributes[name];
@@ -27,8 +28,21 @@ function asInt(value: AttributeValue | undefined): number | undefined {
   return undefined;
 }
 
-function asPublicValue(value: AttributeValue | undefined): string | number | boolean | null {
+function asPublicValue(value: AttributeValue | undefined, config: SemanticAttributeConfig): string | number | boolean | null {
   if (!value) return null;
+  if (config.type === "enum") {
+    const mappings = Object.entries(config.values ?? {});
+    if (value.type === "i18n") {
+      const match = mappings.find(([, physical]) => "ns" in physical
+        && physical.ns === value.ns && physical.name === value.name);
+      if (match) return match[0];
+    }
+    if (value.type === "string") {
+      const match = mappings.find(([, physical]) => "value" in physical && physical.value === value.value);
+      if (match) return match[0];
+    }
+    throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "semantic_enum_value_unmapped", false);
+  }
   if (value.type === "string" || value.type === "date" || value.type === "datetime" || value.type === "id") return value.value;
   if (value.type === "int" || value.type === "long" || value.type === "double" || value.type === "boolean") return value.value;
   if (value.type === "i18n") return value.label ?? value.name;
@@ -72,7 +86,7 @@ export function normalizeDocument(
     status: asString(getAttr(obj, "system:status")),
     content_labels: labels,
     content_available: labels.length > 0,
-    semantic_attributes: Object.fromEntries(Object.entries(semanticAttributes).map(([name, cfg]) => [name, asPublicValue(getAttributeById(obj, cfg.attr_id.ns, cfg.attr_id.name))]))
+    semantic_attributes: Object.fromEntries(Object.entries(semanticAttributes).map(([name, cfg]) => [name, asPublicValue(getAttributeById(obj, cfg.attr_id.ns, cfg.attr_id.name), cfg)]))
   };
 }
 

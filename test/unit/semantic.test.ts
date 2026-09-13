@@ -49,6 +49,57 @@ test("scope YAML and semantic filters map without exposing physical fields", () 
   assert.equal(JSON.stringify(withConfiguredAliases).includes("EXAMPLE_PREVIEW"), false);
 });
 
+test("enum normalization returns configured aliases and rejects unknown physical values", () => {
+  const enumAttributes = {
+    lifecycle: {
+      attr_id: { ns: "rep", name: "user:lifecycle" },
+      type: "enum",
+      operators: ["eq"],
+      values: { active: { ns: "rep", name: "ACTIVE" } }
+    }
+  } as any;
+  const base = {
+    id: "rep:mock:EXAMPLE_CABINET:1001",
+    objectClass: "document",
+    attributes: {
+      "rep:user:lifecycle": { type: "i18n", ns: "rep", name: "ACTIVE", label: "有効" } as const
+    }
+  };
+
+  const normalized = normalizeDocument(base, enumAttributes);
+  assert.equal(normalized.semantic_attributes?.lifecycle, "active");
+  assert.equal(JSON.stringify(normalized).includes("EXAMPLE_PRIVATE_LITERAL"), false);
+  assert.equal(JSON.stringify(normalized).includes("有効"), false);
+
+  const stringEnumAttributes = {
+    lifecycle: {
+      attr_id: { ns: "rep", name: "user:lifecycle" },
+      type: "enum",
+      operators: ["eq"],
+      values: { published: { value: "EXAMPLE_PRIVATE_LITERAL" } }
+    }
+  } as any;
+  const stringNormalized = normalizeDocument({
+    ...base,
+    attributes: { "rep:user:lifecycle": { type: "string", value: "EXAMPLE_PRIVATE_LITERAL" } }
+  }, stringEnumAttributes);
+  assert.equal(stringNormalized.semantic_attributes?.lifecycle, "published");
+  assert.equal(JSON.stringify(stringNormalized).includes("EXAMPLE_PRIVATE_LITERAL"), false);
+
+  for (const value of [
+    { type: "i18n", ns: "other", name: "ACTIVE", label: "active" },
+    { type: "i18n", ns: "rep", name: "UNKNOWN", label: "有効" }
+  ] as any[]) {
+    assert.throws(() => normalizeDocument({ ...base, attributes: { "rep:user:lifecycle": value } }, enumAttributes),
+      (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "semantic_enum_value_unmapped");
+  }
+  assert.throws(() => normalizeDocument({
+    ...base,
+    attributes: { "rep:user:lifecycle": { type: "string", value: "UNKNOWN_PRIVATE_LITERAL" } }
+  }, stringEnumAttributes),
+  (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "semantic_enum_value_unmapped");
+});
+
 test("typed predicates use the verified schema value representation", () => {
   const registry = ScopeRegistry.load(resolve("config/scopes.mock.yaml"));
   const scope = registry.get("example_documents");
@@ -144,6 +195,7 @@ test("scope registry validates typed operator and enum configuration", () => {
   };
   assert.throws(() => new ScopeRegistry({ version: 1, scopes: { typed: { ...base, semantic_attributes: { flag: { attr_id: { ns: "rep", name: "flag" }, type: "boolean", operators: ["like"] } } } } as any }), /Unsupported operator/);
   assert.throws(() => new ScopeRegistry({ version: 1, scopes: { typed: { ...base, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { ns: "rep" } } } } } } as any }), /Enum mapping/);
+  assert.throws(() => new ScopeRegistry({ version: 1, scopes: { typed: { ...base, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { ns: "rep", name: "ACTIVE" }, current: { ns: "rep", name: "ACTIVE" } } } } } } as any }), /unique physical enum/i);
   const registry = new ScopeRegistry({ version: 1, scopes: { typed: { ...base, search: { full_text_modes: ["none", "thesaurus"] }, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { ns: "rep", name: "ACTIVE" } } } } } } as any });
   assert.deepEqual(registry.describe(["typed"])[0].full_text_modes, ["none", "thesaurus"]);
   assert.deepEqual(registry.describe(["typed"])[0].filters[0].values, ["active"]);

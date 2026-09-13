@@ -22,7 +22,7 @@ export async function buildRuntime(env: NodeJS.ProcessEnv = process.env) {
   const adapter: ArcSuiteAdapterClient = config.adapterMode === "mock"
     ? new MockArcSuiteAdapterClient(config.sharedTempDir)
     : new HttpArcSuiteAdapterClient(config.adapterBaseUrl, config.adapterInternalToken);
-  const sessions = new AdapterSessionManager(adapter);
+  const sessions = new AdapterSessionManager();
   const cursors = new CursorManager(config.cursorSecret, config.cursorTtlSeconds);
   const contentCache = new ContentSnapshotCache(
     config.contentCacheTtlSeconds,
@@ -58,6 +58,11 @@ export async function buildRuntime(env: NodeJS.ProcessEnv = process.env) {
     allowedHostnames: config.allowedHostnames,
     allowedOriginHostnames: config.allowedOriginHostnames,
     maxRequestBytes: config.maxRequestBytes,
+    schemaLimits: {
+      searchMaxLimit: config.searchMaxLimit,
+      batchMaxIds: config.batchMaxIds,
+      readMaxChars: config.readMaxChars
+    },
     health: () => adapter.health(),
     ready: async () => readyState
   });
