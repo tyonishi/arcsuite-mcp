@@ -1,16 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { toolInputSchemas } from "./mcp/sdkSchemas.ts";
+import { toolInputSchemas, TOOL_SCHEMA_HARD_LIMITS } from "./mcp/sdkSchemas.ts";
 
 export const CONFIG_LIMITS = Object.freeze({
   maxRequestBytes: 4 * 1024 * 1024,
   maxContentBytes: 100 * 1024 * 1024,
   maxExtractedChars: 1_000_000,
-  maxReadChars: 50_000,
-  maxSearchLimit: 50,
+  maxReadChars: TOOL_SCHEMA_HARD_LIMITS.readMaxChars,
+  maxSearchLimit: TOOL_SCHEMA_HARD_LIMITS.searchMaxLimit,
   maxHardReferenceCandidates: 1000,
-  maxBatchIds: 100,
+  maxBatchIds: TOOL_SCHEMA_HARD_LIMITS.batchMaxIds,
   maxCursorTtlSeconds: 86_400,
   maxPagingSnapshotIds: 5_000,
   maxPagingSnapshots: 1_000,
