@@ -20,6 +20,11 @@
   reads keep reference resolution disabled; physical relationship IDs, raw
   reference identity, and edition data are excluded from MCP output and audit
   metadata.
+- Document-integrity validation requires both profile permission and an
+  integrity-enabled semantic scope. The gateway proves target cabinet, root,
+  identity, and document type before dispatch. Evidence has a separate scope
+  opt-in; the Java adapter discards raw validation exceptions and certificate
+  attributes, and evidence cannot change validation status.
 - The TypeScript and Java layers enforce a read-only SOAP operation allowlist.
 - ArcSuite challenge/password credentials use the server public key with
   explicitly parameterized RSA-OAEP (SHA-256 with SHA-256 MGF1); the resulting

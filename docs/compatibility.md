@@ -124,5 +124,23 @@ with `ARCSUITE_LIMIT_EXCEEDED`. Synthetic tests qualify request/response
 parsing, identity proof, overflow, authorization, filtering, paging, and
 redaction. A live ArcSuite environment is still required to qualify the
 operator's configured service version and real repository behavior.
-S3 does not implement document-integrity validation; that remains the next
-approved v1.2 slice.
+
+## ArcSuite v1.2 S4 document integrity
+
+S4 adds only `validateCertificate` and `getCertificateEvidence` to the
+read-only SOAP allowlist. Their narrow request and response shapes are locked
+by synthetic Java self-tests based on the operator-provided licensed contract.
+For one requested document, validation accounting must contain exactly one
+successful result entry or one per-ID failure at input index zero. Validation
+elements are reduced to certificate ID, boolean result, and exception presence;
+evidence is reduced to certificate IDs, with certificate attributes discarded
+in the adapter. No vendor WSDL or response excerpt is redistributed.
+
+The Reference Guide semantics are intentionally conservative: a false result
+can mean a missing signature or timestamp and does not prove tampering. The MCP
+tool therefore reports `invalid_or_unverifiable` for false, exceptional, or
+empty validation results. `getCertificateEvidence` reports availability only
+and cannot promote validation status. Synthetic contracts and MCP policy are
+tested locally; live validation, component availability, unsigned objects,
+evidence behavior, and XAdES/PAdES variants still require qualification in the
+operator's licensed ArcSuite environment.

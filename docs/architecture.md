@@ -24,7 +24,7 @@ authentication and does not derive credentials from tool arguments.
 
 ### Semantic layer
 
-`src/mcp/tools.ts` exposes nine generic tools. It translates semantic scope and
+`src/mcp/tools.ts` exposes ten semantic tools. It translates semantic scope and
 filter names into adapter requests, proves that object IDs belong to an
 allowed configured scope, and shapes results without returning the raw
 physical attribute map.
@@ -34,6 +34,11 @@ IDs are bounded and authorized for cabinet, root, and object type before they
 enter the paging snapshot. The adapter keeps Hard Reference identities and
 reference-target proof data private; MCP results contain only safe semantic
 relationship metadata.
+
+Document-integrity checks require both profile permission and per-scope
+authorization. The gateway proves a document target before dispatch; the Java
+adapter parses only validation status, exception presence, and evidence
+certificate IDs, discarding raw exception and certificate-attribute content.
 
 `config/scopes.example.yaml` describes the mapping. Each operator supplies a
 separate ignored registry after checking its own ArcSuite schema.

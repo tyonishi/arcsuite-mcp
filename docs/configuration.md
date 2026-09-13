@@ -91,8 +91,8 @@ environment values. v1.2 capability discovery exposes only safe semantic scope
 metadata: scope ID/description, allowed object classes, semantic filter names,
 types/operators, enum aliases, configured full-text modes, wildcard policy, and
 whether a deep link is enabled. It also exposes configured semantic content-label
-aliases and enabled semantic relationships; physical content-label mappings
-are omitted.
+aliases, enabled semantic relationships, and enabled integrity capabilities;
+physical content-label mappings are omitted.
 
 ### Incoming Hard References
 
@@ -109,6 +109,26 @@ This setting exposes only the `hard_reference_incoming` semantic capability.
 The token profile must also include `arcsuite_list_hard_references` in its
 `allowedTools` list. See [MCP tools](tools.md#incoming-hard-reference-relationships)
 for authorization, paging, and candidate-bound behavior.
+
+### Document integrity
+
+Integrity checks default off for existing and new scope files. A token profile
+must allow `arcsuite_validate_document_integrity`, and the inferred scope must
+also opt in. Unknown keys or non-boolean values are rejected, and evidence
+cannot be enabled while validation is disabled:
+
+```yaml
+integrity:
+  enabled: true
+  allow_evidence: false
+```
+
+Set `allow_evidence: true` only when clients may request the already-calculated
+evidence-availability summary. Evidence is separate from validation and does
+not affect its status. The adapter discards raw exception details and
+certificate attributes before returning data to the gateway. See
+[Document integrity](tools.md#document-integrity) for output semantics and
+authorization behavior.
 
 ### Content labels
 
@@ -244,12 +264,16 @@ outside version control. A profile is not an ArcSuite user identity; user-aware
 ArcSuite reads are a future roadmap item.
 
 Earlier v1.1 profiles remain valid and simply do not see additive tools until
-the operator permits them. The v1.2 Hard Reference tool is:
+the operator permits them. The v1.2 Hard Reference and document-integrity tools
+are:
 
 - `arcsuite_list_hard_references`
+- `arcsuite_validate_document_integrity`
 
-Both the profile's `allowedTools` and the target scope's
-`relationships.hard_references: true` setting are required.
+Both the profile's `allowedTools` and each tool's target-scope opt-in are
+required. Hard References use `relationships.hard_references: true`; integrity
+validation uses `integrity.enabled: true`, with `integrity.allow_evidence: true`
+required when evidence is requested.
 
 ## Secret handling
 

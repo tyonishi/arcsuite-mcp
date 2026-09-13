@@ -6,9 +6,10 @@ profile. Physical cabinet IDs, Attribute IDs, SOAP operations, endpoints,
 credentials, and Session IDs are not tool inputs.
 
 v1.2 adds typed semantic predicates, explicitly configured full-text modes,
-content-label aliases, and opt-in incoming Hard Reference discovery to the v1.1
-discovery, paging, batch metadata, extraction reuse, and UI deep-link features.
-These features do not add new mutation authority.
+content-label aliases, opt-in incoming Hard Reference discovery, and
+document-integrity validation to the v1.1 discovery, paging, batch metadata,
+extraction reuse, and UI deep-link features. These features do not add mutation
+authority.
 
 | Tool | Required input | Result |
 | --- | --- | --- |
@@ -18,6 +19,7 @@ These features do not add new mutation authority.
 | `arcsuite_get_documents` | `scope`, `document_ids` | Bounded batch metadata with explicit per-input failures |
 | `arcsuite_list_folder` | `scope`; optional proven `folder_id`, or `scope` + `cursor` | Bounded child document/folder page and optional continuation cursor |
 | `arcsuite_list_hard_references` | `document_id`; optional `limit`, or `document_id` + `cursor` | One page of incoming Hard Reference relationship metadata without physical relationship IDs |
+| `arcsuite_validate_document_integrity` | `document_id`; optional `include_evidence` (default `false`) | Conservative validation state, bounded warning codes, and optional evidence-availability summary |
 | `arcsuite_list_document_revisions` | `document_id` | Revision metadata |
 | `arcsuite_get_document_content_info` | `document_id`; optional semantic `content_label` | File name/type/size/extractor support for one configured label; may warm a private short-lived extracted-content snapshot; never binary |
 | `arcsuite_read_document` | `document_id`; optional semantic `content_label` | Bounded extracted text, cache indicator, and optional signed content cursor |
@@ -32,7 +34,7 @@ the authenticated profile:
 {
   "version": "1.2",
   "read_only": true,
-  "allowed_tools": ["arcsuite_search_documents", "arcsuite_list_hard_references"],
+  "allowed_tools": ["arcsuite_search_documents", "arcsuite_list_hard_references", "arcsuite_validate_document_integrity"],
   "scopes": [
     {
       "id": "example_documents",
@@ -50,7 +52,8 @@ the authenticated profile:
       "full_text_modes": ["none"],
       "ui_deep_link": false,
       "content_labels": ["system:primary", "preview"],
-      "relationships": ["hard_reference_incoming"]
+      "relationships": ["hard_reference_incoming"],
+      "integrity": {"validation": true, "evidence": false}
     }
   ]
 }
@@ -58,6 +61,10 @@ the authenticated profile:
 
 The response deliberately omits cabinet IDs, roots, service DNs, and physical
 Attribute IDs.
+
+An `integrity` capability appears only for a scope with integrity enabled.
+`evidence` reflects its separate evidence opt-in. Discovery never names SOAP
+operations or certificate implementation classes.
 
 ## Incoming Hard Reference relationships
 
@@ -91,6 +98,31 @@ Hard Reference metadata and path reads preserve the reference object's own
 identity with reference resolution disabled. Each continuation is bound to the
 client profile, semantic scope, result kind, and target document. If the scope
 does not enable this relationship, the tool fails closed.
+
+## Document integrity
+
+Document-integrity validation is opt-in for both the token profile and the
+target semantic scope. The scope must set `integrity.enabled: true`; requesting
+evidence additionally requires `integrity.allow_evidence: true`. The target is
+looked up and proven to be an allowed document inside the configured cabinet
+and root before validation is dispatched. The MCP input accepts one document
+ID only and does not accept certificate IDs, certificate attributes, revisions,
+or ArcSuite options.
+
+The result status is one of `valid`, `invalid_or_unverifiable`, or
+`validation_failed`. `valid` means only that ArcSuite returned at least one
+validation element and every element reported success without an exception
+condition; it is not a broader document-trust guarantee. A false result or an
+empty result set is reported as `invalid_or_unverifiable`; that state does not
+claim that a document was altered or tampered with. A per-document failure in
+an otherwise structurally valid response is `validation_failed`. Provider
+faults and malformed response accounting remain stable MCP errors.
+
+When requested and allowed, `evidence` reports only `{cert_id,
+evidence_available}` for certificate IDs observed in the validation result.
+Evidence does not change validation status. Raw exception details and
+certificate-attribute structures are discarded in the Java adapter. The
+integrity path has no cache, so each call performs fresh reads.
 
 ## Search and result paging
 

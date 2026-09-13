@@ -42,6 +42,14 @@
   discovery, bounded candidate collection, cabinet/root/object-type filtering
   before target-bound paging, resolveRef=false hydration, and public semantic
   results that omit private relationship IDs and reference identity data.
+- Implemented v1.2 S4 Document Integrity: per-scope validation and separate
+  evidence opt-ins, pre-dispatch document authorization, strict single-ID
+  response accounting, conservative status normalization, and evidence
+  availability summaries with raw exception and certificate attributes
+  discarded at the Java adapter boundary.
+- Completed the v1.2 Rich Repository Read implementation and synthetic
+  contract qualification. Live ArcSuite behavior remains an operator
+  qualification responsibility; see `docs/compatibility.md`.
 - Added one read-only ArcSuite operation for incoming Hard Reference discovery;
   TypeScript and Java operation allowlists remain in parity.
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and

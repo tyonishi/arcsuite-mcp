@@ -7,9 +7,10 @@ not a general-purpose SOAP bridge. A model can ask for a document search or a
 bounded read in an allowed semantic scope; it cannot construct a SOAP body or
 choose an arbitrary ArcSuite endpoint.
 
-The v1 contract is R1 Core Read plus R2 Content Read. R3 integrity,
-thumbnails, hard references, and richer content access are roadmap items, not
-hidden options.
+The v1 contract is R1 Core Read plus R2 Content Read. The v1.2 surface adds
+typed search, content-label policy, Hard Reference reads, and document
+integrity through explicit semantic tools and per-scope authorization.
+Thumbnails and richer content access remain roadmap items, not hidden options.
 
 ## Semantic scopes
 

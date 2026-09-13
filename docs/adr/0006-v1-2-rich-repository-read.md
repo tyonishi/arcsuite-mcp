@@ -78,10 +78,10 @@ verification:
 - `validateCertificate`
 - `getCertificateEvidence`
 
-`calculateCertificateEvidence` is intentionally NOT part of the initial v1.2
-contract. Although it is described as calculating evidence without updating the
-document, its operational cost and environment impact should be qualified
-separately before any future allowlisting.
+`calculateCertificateEvidence` is intentionally excluded from v1.2, even though
+the Guide describes calculation without updating the document. It is not
+necessary for S4, and any future proposal would require a new decision and
+separate approval. S4 reads only evidence that ArcSuite has already calculated.
 
 ## Explicit exclusions
 
@@ -136,6 +136,14 @@ read-only use, all returned objects/evidence remain within semantic policy, and
 synthetic integration tests prove that invalid types, labels, relationship
 expansion, and forbidden operations fail closed. Live integrity behavior and
 search-mode support remain operator qualification items.
+
+S4 implements the integrity tool with one-document accounting, pre-dispatch
+cabinet/root/type authorization, separate validation and evidence opt-ins, and
+conservative status mapping. The Java adapter reduces validation elements to
+certificate ID, boolean result, and exception presence, and reduces evidence
+to certificate IDs; raw exception details and certificate attributes remain
+inside the SOAP parser. These synthetic contracts do not qualify a live
+ArcSuite installation.
 
 ## Related decisions
 

@@ -4,7 +4,7 @@ ArcSuite MCP Server is a generic, read-only semantic MCP gateway for a
 licensed FUJIFILM ArcSuite Web Service Interface. It lets MCP-compatible AI
 clients discover configured document scopes, search and page through results,
 inspect metadata, list folders and revisions, batch-read document metadata,
-and read bounded text from document content.
+read bounded text from document content, and check document integrity.
 
 This is an independent open-source project. It is not affiliated with or
 endorsed by FUJIFILM Business Innovation. See [NOTICE.md](NOTICE.md).
@@ -26,21 +26,26 @@ endorsed by FUJIFILM Business Innovation. See [NOTICE.md](NOTICE.md).
 - v1.2 S3 Hard References: opt-in, single-hop incoming relationship discovery,
   candidate authorization before paging, and semantic results without physical
   relationship IDs;
+- v1.2 S4 Document Integrity: per-scope opt-in validation and optional
+  already-calculated evidence availability, with conservative status mapping;
 - current MCP Streamable HTTP through the official TypeScript SDK, with a
   stateless legacy compatibility path for older 2025-era clients;
 - server-side scope mapping, token profiles, rate limits, audit metadata, and
   mechanical read-only operation checks.
 
-The v1.0 through v1.2 surface has nine generic tools; each profile sees only
+The v1.0 through v1.2 surface has ten semantic tools; each profile sees only
 the tools it allows:
 
 `arcsuite_describe_capabilities`, `arcsuite_search_documents`,
 `arcsuite_get_document`, `arcsuite_get_documents`, `arcsuite_list_folder`,
 `arcsuite_list_document_revisions`, `arcsuite_get_document_content_info`,
-`arcsuite_read_document`, and `arcsuite_list_hard_references`.
+`arcsuite_read_document`, `arcsuite_list_hard_references`, and
+`arcsuite_validate_document_integrity`.
 
-See [docs/tools.md](docs/tools.md) for typed predicates, full-text modes,
-relationship reads, paging, batch-read, cache, and deep-link behavior.
+See [docs/tools.md](docs/tools.md) for integrity validation, typed predicates,
+full-text modes, relationship reads, paging, batch-read, cache, and deep-link
+behavior. v1.2 implementation and synthetic contract qualification are
+complete; live ArcSuite qualification remains operator-dependent.
 
 ## Architecture
 
