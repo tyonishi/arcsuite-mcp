@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { HttpArcSuiteAdapterClient } from "../../src/arcsuite/soapAdapterClient.ts";
+import { mapFilter } from "../../src/semantic/attributeMapper.ts";
+import { ScopeRegistry } from "../../src/semantic/scopeRegistry.ts";
 
 async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolve, reject) => {
@@ -80,6 +82,49 @@ test("hard-reference adapter method uses the narrow internal route and contract"
     assert.deepEqual(await client.hardReferences(request), { ids: ["rep:example:EXAMPLE_CABINET:hardref-001"] });
     assert.equal(requestPath, "/internal/repository/hard-references");
     assert.deepEqual(JSON.parse(requestBody), request);
+  } finally {
+    await close(server);
+  }
+});
+
+test("typed INT and LONG filters keep integral JSON values through the internal HTTP serializer", async () => {
+  const requests: Array<Record<string, any>> = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => { body += chunk; });
+    req.on("end", () => {
+      requests.push(JSON.parse(body));
+      res.setHeader("content-type", "application/json");
+      res.end("[]");
+    });
+  });
+  const port = await listen(server);
+  try {
+    const client = new HttpArcSuiteAdapterClient(`http://127.0.0.1:${port}`, "synthetic-internal-token");
+    const scope = ScopeRegistry.load("config/scopes.mock.yaml").get("example_documents");
+    for (const dataType of ["INT_TYPE", "LONG_TYPE"] as const) {
+      const condition = mapFilter(scope, "page_count", { operator: "eq", value: -10 }, {
+        ns: "rep", name: "user:page_count", dataType, searchable: true, enumerated: false
+      });
+      await client.searchIds({
+        clientProfileId: "synthetic-client",
+        attributeConditions: [condition],
+        mode: "AND",
+        searchRegionIds: ["rep:mock:EXAMPLE_CABINET"],
+        depth: 0,
+        textSearchMode: "NONE",
+        order: [],
+        limit: 5,
+        options: []
+      });
+    }
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests.map((request) => request.attributeConditions[0].value), [
+      { type: "int", value: -10 },
+      { type: "long", value: -10 }
+    ]);
+    assert.ok(requests.every((request) => Number.isInteger(request.attributeConditions[0].value.value)));
   } finally {
     await close(server);
   }

@@ -108,8 +108,7 @@ final class ArcSuiteSoapClient {
 
     List<String> searchIds(Map<String,Object> req, String sessionId) {
         SoapResponse r=invoke("searchRepositoryObjectIds",searchBody(req,false),sessionId,true);
-        Element ret=findResponseValue(r.document(),"searchRepositoryObjectIdsReturn","result");
-        return parseStringArray(ret);
+        return parseOperationIdArray(r.document(), "searchRepositoryObjectIds");
     }
 
     List<Map<String,Object>> list(Map<String,Object> req, String sessionId) {
@@ -133,8 +132,7 @@ final class ArcSuiteSoapClient {
         b.append(el("limit",String.valueOf(integer(req,"limit",20))));
         b.append(options(req.get("options")));
         SoapResponse r=invoke("listRepositoryObjectIds",b.toString(),sessionId,true);
-        Element ret=findResponseValue(r.document(),"listRepositoryObjectIdsReturn","result");
-        return parseStringArray(ret);
+        return parseOperationIdArray(r.document(), "listRepositoryObjectIds");
     }
 
     Map<String,Object> get(Map<String,Object> req, String sessionId) {
@@ -155,8 +153,15 @@ final class ArcSuiteSoapClient {
         Element ret=findResponseValue(r.document(),op+"Return","result");
         if(ret==null) throw new AdapterException("ARCSUITE_NOT_AVAILABLE","Repository object not available");
         Map<String,Object> out=parseRepositoryObject(ret);
+        Object rawEffectiveId=out.get("id");
+        if(!(rawEffectiveId instanceof String effectiveId)||!isRepositoryObjectId(effectiveId)) {
+            throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Repository object identity was missing or malformed");
+        }
+        if(!bool(req,"resolveRef",false)&&!id.equals(effectiveId)) {
+            throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Repository object identity did not match the request");
+        }
         if(bool(req,"includePath",false)) {
-            String pathBody=el("id",id)+attrIds(List.of(Map.of("ns","rep","name","system:name")))+options(List.of());
+            String pathBody=el("id",effectiveId)+attrIds(List.of(Map.of("ns","rep","name","system:name")))+options(List.of());
             SoapResponse pr=invoke("getRepositoryObjectPath",pathBody,sessionId,true);
             Element pv=findResponseValue(pr.document(),"getRepositoryObjectPathReturn","result");
             if(pv!=null) applyPath(out,pv);
@@ -432,7 +437,7 @@ final class ArcSuiteSoapClient {
         try { Files.write(path,bytes,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE); }
         catch(IOException e){ throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Failed to materialize content",false,null,e); }
         LinkedHashMap<String,Object> out=new LinkedHashMap<>();
-        out.put("id",requestId); if(!requestId.equals(effectiveId))out.put("effectiveId",effectiveId); if(revision!=null)out.put("revisionNumber",revision.longValue()); out.put("label",returnedLabel);
+        out.put("id",requestId); out.put("effectiveId",effectiveId); if(revision!=null)out.put("revisionNumber",revision.longValue()); out.put("label",returnedLabel);
         out.put("fileName",fileName); out.put("contentType",contentType); out.put("sizeBytes",bytes.length); out.put("filePath",path.toString());
         return out;
     }
@@ -638,26 +643,45 @@ final class ArcSuiteSoapClient {
     }
     private static String textCondition(Map<String,Object> text){StringBuilder b=new StringBuilder("<t:textCondition xsi:type=\"t:TextCondition\"><t:wordList operator=\"").append(XmlUtil.esc(string(text,"operator","AND"))).append("\">");for(String w:strings(text.get("words")))b.append(el("word",w));return b.append("</t:wordList></t:textCondition>").toString();}
 
-    static List<String> parseStringArray(Element container){
-        if(container==null)return List.of();
-        LinkedHashSet<String> values=new LinkedHashSet<>();
-        for(String name:List.of("string","item","id")) {
-            for(Element e:XmlUtil.descendants(container,name)) {
-                if(!isLeaf(e))continue;
-                String text=e.getTextContent();
-                if(text!=null&&!text.isBlank()&&text.trim().startsWith("rep:"))values.add(text.trim());
-            }
+    private static List<String> parseOperationIdArray(Document document, String operation) {
+        Element returnValue = requiredOperationReturn(document, operation + "Response", operation + "Return");
+        assertNoUnexpectedText(returnValue);
+        List<Element> returnChildren = elementChildren(returnValue);
+        if (returnChildren.size() != 1 || !"result".equals(returnChildren.get(0).getLocalName())) {
+            throw responseShapeFailure();
         }
-        if(values.isEmpty()&&isLeaf(container)) {
-            String direct=container.getTextContent();
-            if(direct!=null&&!direct.isBlank()&&direct.trim().startsWith("rep:"))values.add(direct.trim());
+
+        Element result = returnChildren.get(0);
+        assertNoUnexpectedText(result);
+        List<Element> resultChildren = elementChildren(result);
+        if (resultChildren.size() != 1 || !"ids".equals(resultChildren.get(0).getLocalName())) {
+            throw responseShapeFailure();
         }
-        return new ArrayList<>(values);
+
+        Element ids = resultChildren.get(0);
+        assertNoUnexpectedText(ids);
+        List<String> values = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (Element child : elementChildren(ids)) {
+            if (!"id".equals(child.getLocalName()) || !elementChildren(child).isEmpty()) throw responseShapeFailure();
+            String raw = child.getTextContent();
+            if (raw == null || raw.isBlank()) throw responseShapeFailure();
+            String id = raw.trim();
+            if (!isRepositoryObjectId(id) || !seen.add(id)) throw responseShapeFailure();
+            values.add(id);
+        }
+        return List.copyOf(values);
     }
 
-    private static boolean isLeaf(Element element){
-        for(Node n=element.getFirstChild();n!=null;n=n.getNextSibling())if(n instanceof Element)return false;
-        return true;
+    private static void assertNoUnexpectedText(Element element) {
+        for (Node node = element.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if ((node.getNodeType() == Node.TEXT_NODE || node.getNodeType() == Node.CDATA_SECTION_NODE)
+                    && !node.getNodeValue().isBlank()) throw responseShapeFailure();
+        }
+    }
+
+    private static AdapterException responseShapeFailure() {
+        return new AdapterException("ARCSUITE_UPSTREAM_ERROR", "ArcSuite response shape or accounting mismatch");
     }
 
     private static List<Map<String,Object>> parseRepositoryObjects(Element container){ List<Map<String,Object>> out=new ArrayList<>(); if(container==null)return out; List<Element> els=XmlUtil.descendants(container,"repositoryObject"); if(els.isEmpty()&&"repositoryObject".equals(container.getLocalName()))els=List.of(container); for(Element e:els)out.add(parseRepositoryObject(e)); return out; }
