@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node --experimental-strip-types src/server.ts",
     "dev": "ARCSUITE_ADAPTER_MODE=mock MCP_VALIDATE_ON_STARTUP=true node --experimental-strip-types src/server.ts",
-    "test": "node --experimental-strip-types --test test/unit/*.test.ts test/integration/*.test.ts",
+    "test": "node --experimental-strip-types --test test/unit/*.test.ts test/integration/*.test.ts && python3 -m unittest discover -s test/python -p \"test_*.py\"",
     "typecheck": "tsc --noEmit",
     "check:invariants": "node --experimental-strip-types scripts/check-invariants.ts",
     "check:hygiene": "node scripts/check-public-hygiene.mjs",
