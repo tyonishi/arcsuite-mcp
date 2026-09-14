@@ -37,6 +37,7 @@ public final class SelfTest {
         if (!out.contains("\"a\":1")) throw new AssertionError(out);
     }
 
+    @SuppressWarnings("java/rsa-without-oaep")
     static void cryptoRoundTrip() throws Exception {
         var generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
@@ -59,7 +60,6 @@ public final class SelfTest {
             throw new AssertionError("Unexpected credential transformation: " + productionCipher.getAlgorithm());
         }
 
-        // codeql[java/rsa-without-oaep]
         var independentCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
         independentCipher.init(Cipher.DECRYPT_MODE, pair.getPrivate());
         byte[] plain = independentCipher.doFinal(ciphertext);
