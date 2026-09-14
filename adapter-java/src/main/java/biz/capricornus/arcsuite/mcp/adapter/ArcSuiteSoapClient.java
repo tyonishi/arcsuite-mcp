@@ -142,6 +142,7 @@ final class ArcSuiteSoapClient {
         Object rev=req.get("revisionNumber");
         String op;
         String returnName;
+        boolean resolveRef = rev == null && bool(req,"resolveRef",false);
         StringBuilder b=new StringBuilder();
         b.append(el("id",id));
         if (rev != null) {
@@ -151,7 +152,7 @@ final class ArcSuiteSoapClient {
         } else {
             op="getRepositoryObject";
             returnName="getRepositoryObjectReturn";
-            b.append(el("resolveRef",String.valueOf(bool(req,"resolveRef",false))));
+            b.append(el("resolveRef",String.valueOf(resolveRef)));
         }
         b.append(attrIds(req.get("attrIds"))).append(options(req.get("options")));
         SoapResponse r=invoke(op,b.toString(),sessionId,true);
@@ -161,7 +162,7 @@ final class ArcSuiteSoapClient {
         if(!(rawEffectiveId instanceof String effectiveId)||!isRepositoryObjectId(effectiveId)) {
             throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Repository object identity was missing or malformed");
         }
-        if(!bool(req,"resolveRef",false)&&!id.equals(effectiveId)) {
+        if(!resolveRef&&!id.equals(effectiveId)) {
             throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Repository object identity did not match the request");
         }
         if(bool(req,"includePath",false)) {

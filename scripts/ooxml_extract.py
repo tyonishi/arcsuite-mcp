@@ -21,6 +21,7 @@ class _Element:
         self.tag = tag
         self.attrib = attrib
         self.text = None
+        self._text_parts = []
         self._children = []
 
     def __iter__(self):
@@ -49,6 +50,7 @@ class _SafeElementTree:
         parser.ExternalEntityRefHandler = unsafe
         parser.SkippedEntityHandler = unsafe
         parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+        parser.buffer_text = True
 
         def start(name, attrs):
             nonlocal root
@@ -64,11 +66,13 @@ class _SafeElementTree:
         def end(_name):
             if not stack:
                 raise RuntimeError("OOXML_XML_INVALID")
-            stack.pop()
+            element = stack.pop()
+            if element._text_parts:
+                element.text = "".join(element._text_parts)
 
         def character_data(value):
             if stack:
-                stack[-1].text = (stack[-1].text or "") + value
+                stack[-1]._text_parts.append(value)
 
         parser.StartElementHandler = start
         parser.EndElementHandler = end

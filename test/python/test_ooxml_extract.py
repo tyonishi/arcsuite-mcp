@@ -154,6 +154,12 @@ class OoxmlStreamingBudgetTests(unittest.TestCase):
 
 
 class OoxmlXmlSecurityTests(unittest.TestCase):
+    def test_parser_accumulates_many_character_data_chunks_without_quadratic_concatenation(self):
+        payload = b"<root><t>" + (b"chunk&amp;" * 10000) + b"</t></root>"
+        parts = list(ooxml_extract.xml_text_parts(payload))
+        expected = "chunk&" * 10000
+        self.assertEqual(parts, [(expected, 0, len(expected))])
+
     def test_safe_parser_accepts_utf8_and_utf16_without_materializing_entities(self):
         utf8 = b'<root><t>normal</t></root>'
         utf16 = '<?xml version="1.0"?><root><t>utf16</t></root>'.encode("utf-16")

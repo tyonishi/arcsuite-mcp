@@ -79,7 +79,12 @@ export function boundedPrettyJson(value: unknown, maxChars: number): BoundedJson
       }
       continue;
     }
-    if (task.depth > MAX_FORMAT_DEPTH) throw new Error("JSON_OUTPUT_DEPTH_LIMIT");
+    if (task.depth > MAX_FORMAT_DEPTH) {
+      // A valid deeply nested value is still valid input. Stop formatting at
+      // the safe depth rather than failing after parsing or recursing further.
+      truncated = true;
+      break;
+    }
     const current = task.value;
     if (current === null) {
       write("null");

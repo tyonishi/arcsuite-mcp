@@ -77,3 +77,14 @@ test("JSON bounded formatter stops high-indentation expansion without recursive 
   assert.equal(result.text.length, 32);
   assert.ok(result.warnings.includes("JSON_OUTPUT_LIMIT"));
 });
+
+test("JSON bounded formatter truncates valid nesting at its safe depth", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "json-depth-limit-"));
+  const path = join(dir, "deep.json");
+  let value: unknown = "end";
+  for (let index = 0; index < 300; index += 1) value = { [`level_${index}`]: value };
+  await writeFile(path, JSON.stringify(value));
+  const result = await new JsonExtractor().extract({ filePath: path, fileName: "deep.json", contentType: "application/json", maxExtractedChars: 100_000 });
+  assert.ok(result.text.length <= 100_000);
+  assert.ok(result.warnings.includes("JSON_OUTPUT_LIMIT"));
+});

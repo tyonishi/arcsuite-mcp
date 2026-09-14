@@ -51,7 +51,7 @@ type ContentMembershipProof = {
   effectiveDocumentId: string;
   cabinetId: string;
   rootObjectId: string | null;
-  revisionNumber?: number;
+  revisionNumber: number;
   present: boolean;
 };
 
@@ -430,11 +430,11 @@ export class ToolRegistry {
             info = await this.contentBridge.infoCachedOrLoad(cacheContext, async () => this.loadContent(profile, scopeMatch.scope, {
                 clientProfileId: profile.clientProfileId,
                 id: parsed.documentId,
-                revisionNumber: parsed.revisionNumber,
+                revisionNumber: membership.proof.revisionNumber,
                 contentLabel: semanticLabel.physical,
                 options: contentOptions(scopeMatch.scope),
                 traceId
-              }, membership.proof, semanticLabel.physical, parsed.revisionNumber, soapOperations));
+              }, membership.proof, semanticLabel.physical, membership.proof.revisionNumber, soapOperations));
           } catch (error) {
             if (!(error instanceof ContentLabelNotFoundError)) throw error;
           }
@@ -479,11 +479,11 @@ export class ToolRegistry {
           }, async () => this.loadContent(profile, scopeMatch.scope, {
               clientProfileId: profile.clientProfileId,
               id: parsed.documentId,
-              revisionNumber: parsed.revisionNumber,
+              revisionNumber: membership.proof.revisionNumber,
               contentLabel: semanticLabel.physical,
               options: contentOptions(scopeMatch.scope),
               traceId
-            }, membership.proof, semanticLabel.physical, parsed.revisionNumber, soapOperations));
+            }, membership.proof, semanticLabel.physical, membership.proof.revisionNumber, soapOperations));
           objectIds = [parsed.documentId];
           resultCount = 1;
           data = read as unknown as Record<string, unknown>;
@@ -744,7 +744,11 @@ export class ToolRegistry {
     this.assertAllowedObjectType(scope, object);
     this.assertRootScope(object, scope);
     if (!resolveRef && object.id !== objectId) throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
-    if (revisionNumber !== undefined && repositoryObjectRevisionNumber(object) !== revisionNumber) {
+    const provenRevisionNumber = repositoryObjectRevisionNumber(object);
+    if (provenRevisionNumber === undefined) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_missing", false);
+    }
+    if (revisionNumber !== undefined && provenRevisionNumber !== revisionNumber) {
       throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_mismatch", false);
     }
     const membership = contentLabelMembership(object, expected);
@@ -758,7 +762,7 @@ export class ToolRegistry {
         effectiveDocumentId: object.id,
         cabinetId: scope.arcsuite.cabinet_id,
         rootObjectId: scope.arcsuite.root_object_id,
-        revisionNumber,
+        revisionNumber: provenRevisionNumber,
         present: membership === "present"
       },
       present: membership === "present"

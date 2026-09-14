@@ -931,6 +931,13 @@ public final class SelfTest {
             Map<String, Object> returned = client.get(maxRequest, "synthetic-session");
             if (!"rep:mock:EXAMPLE_CABINET:1001".equals(returned.get("id"))) throw new AssertionError("WSDL revision Return was not accepted");
 
+            String mismatchedRevisionObject = revisionObject.replace("1001", "9999");
+            response.set("<t:getRepositoryObjectByRevisionNumberResponse><t:getRepositoryDocumentByRevisionNubmerReturn>"
+                    + mismatchedRevisionObject
+                    + "</t:getRepositoryDocumentByRevisionNubmerReturn></t:getRepositoryObjectByRevisionNumberResponse>");
+            expectAdapterFailure(() -> client.get(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "revisionNumber", 1,
+                    "resolveRef", true, "attrIds", List.of(), "options", List.of()), "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
+
             response.set("<t:getRepositoryObjectByRevisionNumberResponse><t:getRepositoryObjectByRevisionNumberReturn>"
                     + revisionObject + "</t:getRepositoryObjectByRevisionNumberReturn></t:getRepositoryObjectByRevisionNumberResponse>");
             expectAdapterFailure(() -> client.get(maxRequest, "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");

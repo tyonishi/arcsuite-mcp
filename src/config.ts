@@ -148,8 +148,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const searchMaxLimit = positiveInteger(env.MCP_SEARCH_MAX_LIMIT ?? "50", "MCP_SEARCH_MAX_LIMIT", CONFIG_LIMITS.maxSearchLimit);
   if (searchDefaultLimit > searchMaxLimit) throw new Error("MCP_SEARCH_DEFAULT_LIMIT cannot exceed MCP_SEARCH_MAX_LIMIT");
   const batchMaxIds = positiveInteger(env.MCP_BATCH_MAX_IDS ?? "50", "MCP_BATCH_MAX_IDS", CONFIG_LIMITS.maxBatchIds);
-  const readDefaultMaxChars = positiveInteger(env.MCP_READ_DEFAULT_MAX_CHARS ?? "20000", "MCP_READ_DEFAULT_MAX_CHARS", CONFIG_LIMITS.maxReadChars);
-  const readMaxChars = positiveInteger(env.MCP_READ_MAX_CHARS ?? "50000", "MCP_READ_MAX_CHARS", CONFIG_LIMITS.maxReadChars);
+  const readDefaultMaxChars = positiveInteger(env.MCP_READ_DEFAULT_MAX_CHARS ?? "20000", "MCP_READ_DEFAULT_MAX_CHARS", CONFIG_LIMITS.maxReadChars, 1000);
+  const readMaxChars = positiveInteger(env.MCP_READ_MAX_CHARS ?? "50000", "MCP_READ_MAX_CHARS", CONFIG_LIMITS.maxReadChars, 1000);
   if (readDefaultMaxChars > readMaxChars) throw new Error("MCP_READ_DEFAULT_MAX_CHARS cannot exceed MCP_READ_MAX_CHARS");
   const maxRequestBytes = positiveInteger(env.MCP_MAX_REQUEST_BYTES ?? "1048576", "MCP_MAX_REQUEST_BYTES", CONFIG_LIMITS.maxRequestBytes);
   const maxContentBytes = positiveInteger(env.MCP_MAX_CONTENT_BYTES ?? "52428800", "MCP_MAX_CONTENT_BYTES", CONFIG_LIMITS.maxContentBytes);
@@ -215,9 +215,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   };
 }
 
-function positiveInteger(value: string, name: string, max = Number.MAX_SAFE_INTEGER): number {
+function positiveInteger(value: string, name: string, max = Number.MAX_SAFE_INTEGER, min = 1): number {
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > max) throw new Error(`${name} must be a positive integer <= ${max}`);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) throw new Error(`${name} must be an integer ${min}..${max}`);
   return parsed;
 }
 

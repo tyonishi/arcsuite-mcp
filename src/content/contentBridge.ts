@@ -114,14 +114,30 @@ export class ContentBridge {
     await unlink(safePath).catch(() => undefined);
   }
 
-  async read(content: AdapterContentResult, options: ReadContentOptions): Promise<ReadContentResult> {
+  async read(content: AdapterContentResult, options: ReadContentOptions, context: ContentCacheContext): Promise<ReadContentResult> {
     const cursorPayload = options.cursor ? this.cursors.parse(options.cursor) : undefined;
-    const contentLabel = options.contentLabel ?? CONTENT_LABEL_PRIMARY_ALIAS;
-    validateCursorIdentity(cursorPayload, options.documentId, options.revisionNumber, undefined, undefined, contentLabel);
+    const contentLabel = options.contentLabel ?? context.contentLabel;
+    if (context.documentId !== options.documentId || context.revisionNumber !== options.revisionNumber || context.contentLabel !== contentLabel) {
+      throw new Error("CONTENT_AUTHORITY_MISMATCH");
+    }
+    if (content.id !== context.documentId || content.effectiveId !== context.effectiveDocumentId
+      || content.revisionNumber !== context.revisionNumber
+      || content.label.ns !== context.physicalContentLabel.ns || content.label.name !== context.physicalContentLabel.name) {
+      throw new Error("CONTENT_AUTHORITY_MISMATCH");
+    }
+    validateCursorIdentity(
+      cursorPayload,
+      options.documentId,
+      options.revisionNumber,
+      context.clientProfileId,
+      context.scopeId,
+      contentLabel,
+      this.cursors.bindEffectiveIdentity(contentAuthorityInput(context))
+    );
     const startPage = cursorPayload?.start_page ?? options.startPage;
     const endPage = cursorPayload?.end_page ?? options.endPage;
     const snapshot = await this.extractSnapshot(content, startPage, endPage, undefined, contentLabel);
-    return this.sliceSnapshot(snapshot, options, cursorPayload, undefined, false);
+    return this.sliceSnapshot(snapshot, options, cursorPayload, context, false);
   }
 
   async readCachedOrLoad(
@@ -187,7 +203,7 @@ export class ContentBridge {
       const extracted = await extractor.extract(request);
       const normalized = normalizeExtractedText(extracted.text).slice(0, this.maxExtractedChars);
       const warnings = [...extracted.warnings];
-      if (extracted.text.length > this.maxExtractedChars) warnings.push("EXTRACTED_TEXT_LIMIT");
+      if (extracted.text.length > this.maxExtractedChars && !warnings.includes("EXTRACTED_TEXT_LIMIT")) warnings.push("EXTRACTED_TEXT_LIMIT");
       const hash = `sha256:${createHash("sha256").update(normalized, "utf8").digest("hex")}`;
       return {
         contentHash: hash,

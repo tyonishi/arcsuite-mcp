@@ -309,6 +309,40 @@ test("content cache and cursors are rejected after effective identity retargetin
   assert.equal(contentCalls, 2, "a retargeted cursor must fail before content dispatch");
 });
 
+test("current revision proof changes the content cache authority", async () => {
+  const { rt } = await runtime();
+  const adapter: any = rt.adapter;
+  const originalGet = adapter.get.bind(adapter);
+  const originalContent = adapter.content.bind(adapter);
+  let revision = 3;
+  let contentCalls = 0;
+  adapter.get = async (request: any) => {
+    const object = await originalGet(request);
+    if (request.id === DOCUMENT_A) {
+      object.attributes["rep:system:revisionnumber"] = { type: "int", value: revision };
+      object.attributes["rep:system:currentrevisionnumber"] = { type: "int", value: revision };
+    }
+    return object;
+  };
+  adapter.content = async (request: any) => {
+    contentCalls += 1;
+    const result = await originalContent(request);
+    const text = `revision-${revision}`;
+    await writeFile(result.filePath, text, "utf8");
+    return { ...result, revisionNumber: request.revisionNumber, sizeBytes: Buffer.byteLength(text) };
+  };
+
+  const first: any = (await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 })).structuredContent;
+  assert.equal(first.content, "revision-3");
+  assert.equal(contentCalls, 1);
+
+  revision = 4;
+  const second: any = (await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 })).structuredContent;
+  assert.equal(second.content, "revision-4");
+  assert.equal(second.cached, false);
+  assert.equal(contentCalls, 2, "a current-revision change must not reuse the old snapshot");
+});
+
 test("cached content is not served after the current effective object leaves the configured root", async () => {
   const { rt } = await runtimeWithRoot();
   const adapter: any = rt.adapter;

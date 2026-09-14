@@ -5,10 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContentBridge } from "../../src/content/contentBridge.ts";
 import { CursorManager } from "../../src/content/cursor.ts";
-import { ContentSnapshotCache } from "../../src/content/snapshotCache.ts";
+import { ContentSnapshotCache, type ContentCacheContext } from "../../src/content/snapshotCache.ts";
 
 function bridge(root: string, maxContentBytes = 1024, maxExtractedChars = 10, cache?: ContentSnapshotCache) {
   return new ContentBridge(root, new CursorManager(Buffer.from("0123456789abcdef0123456789abcdef"), 600), { maxContentBytes, maxExtractedChars }, cache);
+}
+
+function context(content: { id: string; effectiveId: string; label: { ns: string; name: string } }, revisionNumber?: number): ContentCacheContext {
+  return {
+    clientProfileId: "client-a",
+    scopeId: "scope",
+    documentId: content.id,
+    effectiveDocumentId: content.effectiveId,
+    cabinetId: "rep:mock:EXAMPLE_CABINET",
+    rootObjectId: null,
+    revisionNumber,
+    contentLabel: "system:primary",
+    physicalContentLabel: content.label
+  };
 }
 
 test("content bridge enforces byte bounds and removes rejected temp files", async () => {
@@ -17,7 +31,7 @@ test("content bridge enforces byte bounds and removes rejected temp files", asyn
   await writeFile(path, "0123456789");
   const content = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", fileName: "large.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: path };
   assert.equal(bridge(root, 5).info(content).extractable, false);
-  await assert.rejects(() => bridge(root, 5).read(content, { traceId: "trace", documentId: content.id, maxChars: 100 }), /CONTENT_SIZE_LIMIT/);
+  await assert.rejects(() => bridge(root, 5).read(content, { traceId: "trace", documentId: content.id, maxChars: 100 }, context(content)), /CONTENT_SIZE_LIMIT/);
   await assert.rejects(() => readFile(path));
 });
 
@@ -26,15 +40,32 @@ test("content bridge bounds extracted text and fails unsupported formats safely"
   const textPath = join(root, "sample.txt");
   await writeFile(textPath, "abcdefghij");
   const textContent = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", fileName: "sample.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: textPath };
-  const result = await bridge(root, 1024, 5).read(textContent, { traceId: "trace", documentId: textContent.id, maxChars: 100 });
+  const result = await bridge(root, 1024, 5).read(textContent, { traceId: "trace", documentId: textContent.id, maxChars: 100 }, context(textContent));
   assert.equal(result.content, "abcde");
   assert.deepEqual(result.warnings, ["EXTRACTED_TEXT_LIMIT"]);
 
   const unsupportedPath = join(root, "sample.bin");
   await writeFile(unsupportedPath, Buffer.from([0, 1, 2]));
   const unsupported = { ...textContent, fileName: "sample.bin", contentType: "application/octet-stream", sizeBytes: 3, filePath: unsupportedPath };
-  await assert.rejects(() => bridge(root).read(unsupported, { traceId: "trace", documentId: unsupported.id, maxChars: 100 }), /UNSUPPORTED_CONTENT_TYPE/);
+  await assert.rejects(() => bridge(root).read(unsupported, { traceId: "trace", documentId: unsupported.id, maxChars: 100 }, context(unsupported)), /UNSUPPORTED_CONTENT_TYPE/);
   await assert.rejects(() => readFile(unsupportedPath));
+});
+
+test("direct content reads bind cursor creation and continuation to current authority", async () => {
+  const root = await mkdtemp(join(tmpdir(), "content-cursor-authority-"));
+  const path = join(root, "sample.txt");
+  const content = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", fileName: "sample.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: path };
+  const authority = context(content);
+  const b = bridge(root, 1024, 100);
+  await writeFile(path, "abcdefghij");
+  const first = await b.read(content, { traceId: "trace", documentId: content.id, maxChars: 5 }, authority);
+  assert.equal(first.content, "abcde");
+  assert.equal(typeof first.next_cursor, "string");
+
+  await writeFile(path, "abcdefghij");
+  const continued = await b.read(content, { traceId: "trace", documentId: content.id, cursor: first.next_cursor!, maxChars: 5 }, authority);
+  assert.equal(continued.content, "fghij");
+  assert.equal(continued.next_cursor, null);
 });
 
 test("content info returns validated metadata when optional snapshot warming fails", async () => {

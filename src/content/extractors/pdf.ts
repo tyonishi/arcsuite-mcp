@@ -16,12 +16,12 @@ export class PdfExtractor implements ContentExtractor {
     // allowance; the bridge applies the final character bound as well.
     const maxChars = request.maxExtractedChars ?? 200_000;
     const maxStdoutBytes = Math.min(64 * 1024 * 1024, maxChars * 4 + 1024);
-    const result = await runProcess("pdftotext", args, { timeoutMs: 120_000, maxStdoutBytes });
+    const result = await runProcess("pdftotext", args, { timeoutMs: 120_000, maxStdoutBytes, truncateStdout: true });
     return {
       extractor: this.name,
       text: result.stdout.toString("utf8"),
       pageRange: request.startPage || request.endPage ? { start: request.startPage, end: request.endPage } : undefined,
-      warnings: []
+      warnings: result.stdoutTruncated ? ["EXTRACTED_TEXT_LIMIT"] : []
     };
   }
 }
