@@ -37,7 +37,6 @@ public final class SelfTest {
         if (!out.contains("\"a\":1")) throw new AssertionError(out);
     }
 
-    @SuppressWarnings("codeql[java/rsa-without-oaep]")
     static void cryptoRoundTrip() throws Exception {
         var generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
