@@ -14,7 +14,95 @@ flowchart LR
     Adapter --> Service["ArcSuite service"]
 ```
 
-## Container example
+## Docker Compose example
+
+docker-compose.example.yml is a public, synthetic template for the
+two-container deployment. Copy it to the ignored operator-owned
+docker-compose.yml; do not copy a licensed live Compose file into the
+repository:
+
+    cp docker-compose.example.yml docker-compose.yml
+    cp config/scopes.example.yaml config/scopes.yaml
+    mkdir -p local-secrets
+    chmod 700 local-secrets
+
+Create a local ignored .env and set at least ARCSUITE_SOAP_ENDPOINT and
+ARCSUITE_USERNAME from the licensed ArcSuite environment. Do not put the
+ArcSuite password or bearer-token plaintext in .env. Review the optional bounds
+and settings in the Compose file and provide any target-environment hostname,
+bind, TLS, or reverse-proxy values there.
+
+The Compose file uses normal .env interpolation and maps only the environment
+variables required by each service. It does not inject the full .env into both
+containers: the gateway receives its adapter URL, scope path, bounded MCP
+settings, and secret-file paths, while the adapter receives the ArcSuite
+endpoint and username plus its own bounded adapter settings. The gateway never
+receives adapter-only endpoint or username values, and the adapter never
+receives gateway client-token or cursor-HMAC values.
+
+Populate these four operator-owned files under local-secrets/:
+
+| Local file | Mounted path | Service |
+| --- | --- | --- |
+| arcsuite_adapter_internal_token | /run/secrets/arcsuite_adapter_internal_token | Gateway and adapter |
+| arcsuite_cursor_hmac_secret | /run/secrets/arcsuite_cursor_hmac_secret | Gateway |
+| arcsuite_client_tokens.json | /run/secrets/arcsuite_client_tokens_json | Gateway |
+| arcsuite_password | /run/secrets/arcsuite_password | Adapter |
+
+Generate the internal and cursor secrets through the approved local or secret
+manager workflow. Prepare the client-token JSON from config/tokens.example.json
+and replace its placeholder hash with a hash generated from a local bearer token
+using npm run hash-token -- '<local bearer token>'. Obtain the ArcSuite password
+file through the operator's approved secret workflow. Keep the four files mode
+600:
+
+    chmod 600 local-secrets/*
+
+The default Compose network is a Compose-managed bridge named adapter. Both
+services use it, the adapter port is only exposed to that network, and port
+18080 is not published to the host. The network is not marked internal because
+the adapter must retain outbound connectivity to the configured ArcSuite
+service. The gateway binds to 127.0.0.1 on the host by default. If a reverse
+proxy or another MCP client network is required, add a second operator-managed
+network to the gateway in the local ignored Compose file and review TLS,
+Host/Origin allowlists, and egress policy; the adapter can remain on the private
+adapter network only.
+
+The gateway and adapter use read-only root filesystems, /tmp tmpfs,
+no-new-privileges, and dropped Linux capabilities. The named arcsuite-content
+volume is mounted at /shared in both services for the bounded adapter/content
+exchange. The scope file is mounted read-only. The gateway's metadata-only
+audit output is directed to its writable /tmp tmpfs in this example; choose and
+mount a reviewed persistent destination if the target environment requires
+audit retention.
+
+The default gateway-to-adapter URL is plain HTTP,
+http://arcsuite-adapter:18080, because the Java adapter listener and the
+live-tested topology use HTTP on the private Compose-managed bridge network.
+The adapter port is not published to the host and the internal token remains
+required, but this private-network boundary does not encrypt that hop. If the
+container network cannot be treated as trusted, review TLS/mTLS or another
+protected network boundary for the target environment. TLS/mTLS is not
+configured or claimed as qualified by this generic example.
+
+The gateway waits for the adapter to be started with
+depends_on condition service_started. No unverified health endpoint is invented
+here; the gateway performs its initial health/schema validation and retries a
+failed startup validation every five seconds while /readyz remains 503. Once
+validation succeeds, the retry is stopped and /readyz becomes authoritative.
+Validate and start with the Compose-compatible command set supported by the
+target platform:
+
+    docker compose config
+    docker compose up -d --build
+
+This example is based on a two-container topology exercised in a licensed live
+ArcSuite environment. That evidence does not qualify this generic public
+example for every Docker or Podman engine, operating system, network, reverse
+proxy/TLS arrangement, secret-management integration, UID policy, or
+deployment platform. Review those boundaries before use.
+
+## Podman container example
 
 `podman/podman-run.example.sh` is a template, not a production command. It
 builds two images, mounts the operator-owned scope file read-only, mounts

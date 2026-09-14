@@ -95,9 +95,10 @@ curl -sS http://127.0.0.1:8080/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"arcsuite_search_documents","arguments":{"scope":"example_documents","filters":{"document_number":"DOC-000001"}}}}'
 ```
 
-For an operator deployment, copy the example files to ignored local paths,
-replace every placeholder with values verified in the licensed environment,
-and run the Java adapter in a private network. See
+For an operator deployment, copy docker-compose.example.yml (or the Podman
+template) to ignored local paths, replace every placeholder with values
+verified in the licensed environment, and run the Java adapter in a private
+network. See
 [docs/getting-started.md](docs/getting-started.md) and
 [docs/deployment.md](docs/deployment.md).
 
