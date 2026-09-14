@@ -25,6 +25,38 @@ async function runtime(scopeFile = resolve("config/scopes.mock.yaml")) {
   return { rt, dir };
 }
 
+async function runtimeWithRoot() {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-root-"));
+  const scopeFile = join(dir, "scopes.yaml");
+  await writeFile(scopeFile, `version: 1
+scopes:
+  example_documents:
+    description: Synthetic rooted document scope
+    enabled: true
+    arcsuite:
+      cabinet_alias: EXAMPLE_CABINET
+      cabinet_id: "rep:mock:EXAMPLE_CABINET"
+      root_object_id: "rep:mock:EXAMPLE_CABINET:root-001"
+      resolve_references: true
+    allowed_object_types: [document]
+    default_attr_ids:
+      - {ns: rep, name: system:name}
+    semantic_attributes: {}
+`);
+  const rt = await buildRuntime({
+    ...process.env,
+    NODE_ENV: "test",
+    ARCSUITE_ADAPTER_MODE: "mock",
+    MCP_DEV_BEARER_TOKEN: "test-token",
+    MCP_SCOPES_FILE: scopeFile,
+    MCP_SHARED_TEMP_DIR: join(dir, "shared"),
+    MCP_AUDIT_LOG_PATH: join(dir, "audit.jsonl"),
+    MCP_CURSOR_HMAC_SECRET: "0123456789abcdef0123456789abcdef",
+    MCP_VALIDATE_ON_STARTUP: "true"
+  });
+  return { rt, dir };
+}
+
 function profile(allowedScopes = ["example_documents"], clientProfileId = "dev-profile") {
   return {
     clientProfileId,
@@ -195,6 +227,164 @@ test("membership is checked with namespace and exact revision metadata before co
   assert.equal(contentCalls, 0);
 });
 
+test("resolved effective identity and its own root path authorize content", async () => {
+  const rootId = "rep:mock:EXAMPLE_CABINET:root-001";
+  const sourceId = DOCUMENT_A;
+  const cases = [
+    { label: "ordinary document inside root", effectiveId: sourceId, pathIds: [rootId], succeeds: true },
+    { label: "reference to target inside root", effectiveId: "rep:mock:EXAMPLE_CABINET:target-001", pathIds: [rootId], succeeds: true },
+    { label: "reference to target outside root", effectiveId: "rep:mock:EXAMPLE_CABINET:outside-001", pathIds: ["rep:mock:EXAMPLE_CABINET:outside-001"], error: "root_scope" },
+    { label: "reference to target in another cabinet", effectiveId: "rep:mock:OTHER_CABINET:outside-001", pathIds: ["rep:mock:OTHER_CABINET:outside-001"], error: "cabinet_scope" }
+  ];
+
+  for (const scenario of cases) {
+    const { rt } = await runtimeWithRoot();
+    const adapter: any = rt.adapter;
+    const originalGet = adapter.get.bind(adapter);
+    const originalContent = adapter.content.bind(adapter);
+    let contentCalls = 0;
+    adapter.get = async (request: any) => {
+      const object = await originalGet(request);
+      if (!request.resolveRef) return object;
+      return {
+        ...object,
+        id: scenario.effectiveId,
+        pathObjects: scenario.pathIds.map((id) => ({ id }))
+      };
+    };
+    adapter.content = async (request: any) => {
+      contentCalls += 1;
+      return originalContent(request);
+    };
+
+    if (scenario.succeeds) {
+      const info: any = (await rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: sourceId })).structuredContent;
+      assert.equal(info.extractable, true, scenario.label);
+      assert.equal(contentCalls, 1, scenario.label);
+    } else {
+      await assert.rejects(
+        () => rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: sourceId }),
+        (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === scenario.error,
+        scenario.label
+      );
+      assert.equal(contentCalls, 0, `${scenario.label} must fail before content dispatch`);
+    }
+  }
+});
+
+test("content cache and cursors are rejected after effective identity retargeting", async () => {
+  const { rt } = await runtime();
+  const adapter: any = rt.adapter;
+  const originalGet = adapter.get.bind(adapter);
+  const originalContent = adapter.content.bind(adapter);
+  let effectiveId = DOCUMENT_A;
+  let contentCalls = 0;
+  adapter.get = async (request: any) => {
+    const object = await originalGet(request);
+    if (!request.resolveRef) return object;
+    return { ...object, id: effectiveId };
+  };
+  adapter.content = async (request: any) => {
+    contentCalls += 1;
+    const result = await originalContent(request);
+    const text = effectiveId === DOCUMENT_A ? "A".repeat(3000) : "B".repeat(3000);
+    await writeFile(result.filePath, text, "utf8");
+    return { ...result, effectiveId, sizeBytes: Buffer.byteLength(text) };
+  };
+
+  const first: any = (await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 })).structuredContent;
+  assert.equal(first.content, "A".repeat(1000));
+  assert.equal(typeof first.next_cursor, "string");
+  assert.equal(contentCalls, 1);
+
+  effectiveId = DOCUMENT_B;
+  const retargeted: any = (await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 })).structuredContent;
+  assert.equal(retargeted.content, "B".repeat(1000));
+  assert.equal(retargeted.cached, false);
+  assert.equal(contentCalls, 2, "a cache entry for A must not serve after R is retargeted to B");
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, cursor: first.next_cursor, max_chars: 1000 }),
+    (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+  );
+  assert.equal(contentCalls, 2, "a retargeted cursor must fail before content dispatch");
+});
+
+test("current revision proof changes the content cache authority", async () => {
+  const { rt } = await runtime();
+  const adapter: any = rt.adapter;
+  const originalGet = adapter.get.bind(adapter);
+  const originalContent = adapter.content.bind(adapter);
+  let revision = 3;
+  let contentCalls = 0;
+  adapter.get = async (request: any) => {
+    const object = await originalGet(request);
+    if (request.id === DOCUMENT_A) {
+      object.attributes["rep:system:revisionnumber"] = { type: "int", value: revision };
+      object.attributes["rep:system:currentrevisionnumber"] = { type: "int", value: revision };
+    }
+    return object;
+  };
+  adapter.content = async (request: any) => {
+    contentCalls += 1;
+    const result = await originalContent(request);
+    const text = `revision-${revision}`;
+    await writeFile(result.filePath, text, "utf8");
+    return { ...result, revisionNumber: request.revisionNumber, sizeBytes: Buffer.byteLength(text) };
+  };
+
+  const first: any = (await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 })).structuredContent;
+  assert.equal(first.content, "revision-3");
+  assert.equal(contentCalls, 1);
+
+  revision = 4;
+  const second: any = (await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 })).structuredContent;
+  assert.equal(second.content, "revision-4");
+  assert.equal(second.cached, false);
+  assert.equal(contentCalls, 2, "a current-revision change must not reuse the old snapshot");
+});
+
+test("cached content is not served after the current effective object leaves the configured root", async () => {
+  const { rt } = await runtimeWithRoot();
+  const adapter: any = rt.adapter;
+  const originalGet = adapter.get.bind(adapter);
+  const originalContent = adapter.content.bind(adapter);
+  const rootId = "rep:mock:EXAMPLE_CABINET:root-001";
+  let effectiveId = DOCUMENT_A;
+  let contentCalls = 0;
+  adapter.get = async (request: any) => {
+    const object = await originalGet(request);
+    if (!request.resolveRef) return object;
+    const id = effectiveId;
+    return { ...object, id, pathObjects: [{ id: effectiveId === DOCUMENT_A ? rootId : effectiveId }] };
+  };
+  adapter.content = async (request: any) => {
+    contentCalls += 1;
+    return originalContent(request);
+  };
+  await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 });
+  assert.equal(contentCalls, 1);
+  effectiveId = "rep:mock:EXAMPLE_CABINET:outside-001";
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 }),
+    (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "root_scope"
+  );
+  assert.equal(contentCalls, 1, "root migration must be rejected before content dispatch");
+});
+
+test("content result must state the effective identity proven by membership lookup", async () => {
+  const { rt } = await runtime();
+  const adapter: any = rt.adapter;
+  const originalContent = adapter.content.bind(adapter);
+  adapter.content = async (request: any) => {
+    const result = await originalContent(request);
+    return { ...result, effectiveId: undefined };
+  };
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_get_document_content_info", { document_id: DOCUMENT_A }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "content_effective_identity_missing"
+  );
+});
+
 test("returned physical label mismatch fails closed and cleans the adapter file", async () => {
   const { rt } = await runtime();
   const adapter: any = rt.adapter;
@@ -254,7 +444,7 @@ test("read cursors bind to preview, preserve it when omitted, and reject cross-l
   );
 });
 
-test("valid legacy primary cursors remain accepted for their original short lifetime", async () => {
+test("pre-v2 cursors fail cleanly after the effective-identity binding format bump", async () => {
   const { rt } = await runtime();
   const adapter: any = rt.adapter;
   const originalContent = adapter.content.bind(adapter);
@@ -273,8 +463,12 @@ test("valid legacy primary cursors remain accepted for their original short life
   const [body] = first.next_cursor.split(".");
   const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
   delete payload.content_label;
+  delete payload.version;
+  delete payload.effective_identity_binding;
   const legacyBody = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const legacy = `${legacyBody}.${createHmac("sha256", rt.config.cursorSecret).update(legacyBody).digest("base64url")}`;
-  const continued: any = (await rt.tools.call(p, "arcsuite_read_document", { document_id: DOCUMENT_A, cursor: legacy, max_chars: 1000 })).structuredContent;
-  assert.equal(continued.content_label, "system:primary");
+  await assert.rejects(
+    () => rt.tools.call(p, "arcsuite_read_document", { document_id: DOCUMENT_A, cursor: legacy, max_chars: 1000 }),
+    (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+  );
 });

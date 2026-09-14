@@ -17,6 +17,12 @@ scopes:
     # relationships:
     #   hard_references: false
 
+    # Document integrity reads are disabled unless explicitly enabled per scope.
+    # Evidence is a separate opt-in and returns only availability by certificate ID.
+    # integrity:
+    #   enabled: true
+    #   allow_evidence: false
+
     # Optional read-only content labels. Aliases are caller-visible; the
     # physical ns/name mapping is trusted operator configuration and is never
     # returned through MCP discovery or tool results.

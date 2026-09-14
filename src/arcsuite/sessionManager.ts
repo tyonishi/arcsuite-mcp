@@ -1,17 +1,6 @@
-import type { ArcSuiteAdapterClient } from "./soapAdapterClient.ts";
-import { ArcSuiteAdapterError } from "./errors.ts";
-
+/** Java owns ArcSuite session refresh and the single bounded business-read retry. */
 export class AdapterSessionManager {
-  private readonly adapter: ArcSuiteAdapterClient;
-  constructor(adapter: ArcSuiteAdapterClient) { this.adapter = adapter; }
-
-  async executeRead<T>(clientProfileId: string, operation: () => Promise<T>): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      if (!(error instanceof ArcSuiteAdapterError) || error.code !== "ARCSUITE_SESSION_EXPIRED") throw error;
-      await this.adapter.login(clientProfileId);
-      return await operation();
-    }
+  executeRead<T>(_clientProfileId: string, operation: () => Promise<T>): Promise<T> {
+    return operation();
   }
 }

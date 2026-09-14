@@ -32,18 +32,63 @@ final class MtomParser {
     private record Part(Map<String,String> headers, byte[] data) {}
 
     private static List<Part> split(byte[] body, byte[] marker) {
-        List<Part> out=new ArrayList<>(); int pos=0;
-        while(true){ int start=indexOf(body,marker,pos); if(start<0)break; start+=marker.length;
-            if(start+2<=body.length && body[start]=='-' && body[start+1]=='-') break;
-            if(start+2<=body.length && body[start]=='\r'&&body[start+1]=='\n') start+=2;
-            int next=indexOf(body,marker,start); if(next<0)break; int end=next;
-            while(end>start && (body[end-1]=='\r'||body[end-1]=='\n')) end--;
-            byte[] part=Arrays.copyOfRange(body,start,end); int sep=indexOf(part,"\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1),0);
-            if(sep<0){pos=next;continue;} String hs=new String(part,0,sep,StandardCharsets.ISO_8859_1); Map<String,String> h=new HashMap<>();
-            for(String line:hs.split("\\r\\n")){ int c=line.indexOf(':'); if(c>0) h.put(line.substring(0,c).trim().toLowerCase(Locale.ROOT),line.substring(c+1).trim()); }
-            out.add(new Part(h,Arrays.copyOfRange(part,sep+4,part.length))); pos=next;
+        List<Part> out=new ArrayList<>();
+        int first = boundaryAt(body, marker, 0);
+        if (first != 0) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response has an invalid initial boundary");
+        int cursor = marker.length;
+        while (true) {
+            if (startsWith(body, cursor, (byte) '-', (byte) '-')) break;
+            if (!startsWith(body, cursor, (byte) '\r', (byte) '\n')) {
+                throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response boundary framing was invalid");
+            }
+            cursor += 2;
+            int headerEnd = indexOf(body, "\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1), cursor);
+            if (headerEnd < 0) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM part headers were invalid");
+            String hs = new String(body, cursor, headerEnd - cursor, StandardCharsets.ISO_8859_1);
+            Map<String,String> headers = new HashMap<>();
+            for (String line : hs.split("\\r\\n", -1)) {
+                int colon = line.indexOf(':');
+                if (colon <= 0) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM part header was invalid");
+                headers.put(line.substring(0, colon).trim().toLowerCase(Locale.ROOT), line.substring(colon + 1).trim());
+            }
+            int dataStart = headerEnd + 4;
+            int next = boundaryAt(body, marker, dataStart);
+            if (next < 0 || next < dataStart + 2) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response boundary was missing");
+            // The CRLF immediately before a valid delimiter belongs to MIME
+            // framing. Remove exactly that pair; all earlier payload bytes,
+            // including payload CR/LF endings, are retained byte-for-byte.
+            int dataEnd = next - 2;
+            if (body[dataEnd] != '\r' || body[dataEnd + 1] != '\n') {
+                throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response boundary framing was invalid");
+            }
+            out.add(new Part(headers, Arrays.copyOfRange(body, dataStart, dataEnd)));
+            cursor = next + marker.length;
+        }
+        if (!startsWith(body, cursor, (byte) '-', (byte) '-')) {
+            throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM closing boundary was invalid");
+        }
+        cursor += 2;
+        if (cursor < body.length && startsWith(body, cursor, (byte) '\r', (byte) '\n')) cursor += 2;
+        for (int i = cursor; i < body.length; i++) {
+            if (body[i] != '\r' && body[i] != '\n') throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM trailing bytes were invalid");
         }
         return out;
+    }
+
+    private static int boundaryAt(byte[] body, byte[] marker, int from) {
+        int candidate = indexOf(body, marker, from);
+        while (candidate >= 0) {
+            boolean lineStart = candidate == 0 || (candidate >= 2 && body[candidate - 2] == '\r' && body[candidate - 1] == '\n');
+            boolean delimiterEnd = startsWith(body, candidate + marker.length, (byte) '-', (byte) '-')
+                    || startsWith(body, candidate + marker.length, (byte) '\r', (byte) '\n');
+            if (lineStart && delimiterEnd) return candidate;
+            candidate = indexOf(body, marker, candidate + 1);
+        }
+        return -1;
+    }
+
+    private static boolean startsWith(byte[] body, int offset, byte first, byte second) {
+        return offset >= 0 && offset + 1 < body.length && body[offset] == first && body[offset + 1] == second;
     }
 
     private static int indexOf(byte[] hay, byte[] needle, int from){ outer:for(int i=Math.max(0,from);i<=hay.length-needle.length;i++){for(int j=0;j<needle.length;j++)if(hay[i+j]!=needle[j])continue outer;return i;}return -1;}

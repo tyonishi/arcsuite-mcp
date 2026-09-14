@@ -42,19 +42,23 @@ ADR: [0006-v1-2-rich-repository-read.md](docs/adr/0006-v1-2-rich-repository-read
 Goal: expose selected higher-value ArcSuite repository reads through the same
 semantic policy boundary.
 
-Planned scope:
+Implemented scope:
 
-- related-document / hard-reference traversal with bounded fan-out;
-- document integrity validation;
-- already-calculated certificate evidence retrieval;
+- bounded, single-hop incoming Hard Reference traversal;
+- document integrity validation and optional already-calculated evidence
+  availability;
 - typed semantic filters for string, numeric, boolean, date/time, and enum
   attributes after live schema validation;
 - operator-allowlisted full-text search modes;
 - operator-allowlisted additional content labels.
 
-S1 Typed Search Foundation and S2 Content Labels are implemented slices of
-v1.2. S3 Hard References and S4 Integrity/Evidence remain future approved
-slices; v1.2 does not include timestamp attachment, evidence mutation,
+S1 Typed Search Foundation, S2 Content Labels, S3 Hard References, and S4
+Document Integrity are implemented and covered by synthetic contract tests.
+The F1–F7 closure remediation and Closure Remediation Round 2 are implemented
+and covered by the local cross-boundary regression suite. An independent Astra
+High final cross-cutting re-audit and live ArcSuite qualification remain
+pending. v1.2 does not include
+`calculateCertificateEvidence`, timestamp attachment, evidence mutation,
 repository mutation, RMS, Collaboration, or Workflow operations.
 
 ## v1.3 — Advanced Content and Scope

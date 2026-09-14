@@ -17,7 +17,7 @@
 | XML entity or archive attack | DTD/entity rejection, safe XML parser, archive limits | Add format-specific fixtures before enabling an extractor |
 | Temporary content persistence | Shared-directory check and `finally` cleanup | Monitor volume permissions and cleanup failures |
 | Label membership or returned label is confused across namespaces | Exact `ns` + `name` proof in `system:contentlabellist`, adapter response identity check, namespace-safe cache key | Exercise revision/reference behavior in a licensed environment |
-| Content cursor is replayed across labels | Signed semantic `content_label` binding plus profile/scope/document checks | Keep cursor TTL short and rotate HMAC keys as required |
+| Content cache/cursor is reused after a reference retarget or root migration | Current requested/effective cabinet/root/type/revision/label proof before cache access; v2 cursor HMAC binding includes opaque effective identity | Keep cursor TTL short and rotate HMAC keys as required |
 | Upstream fault leaks private details | Stable error mapping and bounded adapter messages | Test representative licensed-service faults |
 | SSRF through an MCP client or proxy | Endpoint is server configuration; deployment network allowlist | Review reverse proxy and client egress rules |
 

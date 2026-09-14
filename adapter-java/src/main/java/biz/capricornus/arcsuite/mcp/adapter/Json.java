@@ -82,7 +82,9 @@ final class Json {
             throw err("string"); }
         Number number(){ int start=i; if(peek('-'))i++; while(!eof()&&Character.isDigit(s.charAt(i)))i++; boolean floating=false;
             if(peek('.')){floating=true;i++;while(!eof()&&Character.isDigit(s.charAt(i)))i++;} if(!eof()&&(s.charAt(i)=='e'||s.charAt(i)=='E')){floating=true;i++;if(!eof()&&(s.charAt(i)=='+'||s.charAt(i)=='-'))i++;while(!eof()&&Character.isDigit(s.charAt(i)))i++;}
-            String n=s.substring(start,i); return floating?Double.parseDouble(n):Long.parseLong(n); }
+            String n=s.substring(start,i);
+            if (floating) return Double.valueOf(n);
+            return Long.valueOf(n); }
         boolean take(String t){ if(s.startsWith(t,i)){i+=t.length();return true;}return false; }
         boolean peek(char c){ return !eof()&&s.charAt(i)==c; }
         void expect(char c){ ws(); if(eof()||s.charAt(i)!=c) throw err("'"+c+"'"); i++; }

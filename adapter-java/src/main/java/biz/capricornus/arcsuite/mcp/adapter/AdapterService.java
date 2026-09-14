@@ -27,6 +27,16 @@ final class AdapterService {
         String p=String.valueOf(request.get("clientProfileId"));
         return sessions.read(p,sid->soap.hardReferences(request,sid));
     }
+    Object validateIntegrity(Map<String,Object> body){
+        Map<String,Object> request=prepareIntegrityRequest(body);
+        String p=String.valueOf(request.get("clientProfileId"));
+        return sessions.read(p,sid->soap.validateIntegrity(request,sid));
+    }
+    Object certificateEvidence(Map<String,Object> body){
+        Map<String,Object> request=prepareEvidenceRequest(body);
+        String p=String.valueOf(request.get("clientProfileId"));
+        return sessions.read(p,sid->soap.certificateEvidence(request,sid));
+    }
     Object getMany(Map<String,Object> body){
         String p=profile(body);
         Map<String,Object> request=prepareGetManyRequest(body);
@@ -43,6 +53,22 @@ final class AdapterService {
         id=ArcSuiteSoapClient.requiredRepositoryObjectId(id,"id");
         int maxResults=ArcSuiteSoapClient.hardReferenceMaxResults(body.get("maxResults"));
         return Map.of("clientProfileId",p,"id",id,"maxResults",maxResults);
+    }
+    static Map<String,Object> prepareIntegrityRequest(Map<String,Object> body){
+        if(!body.keySet().equals(Set.of("clientProfileId","id")))throw new IllegalArgumentException("Unexpected integrity request fields");
+        String p=profile(body);
+        Object rawId=body.get("id");
+        if(!(rawId instanceof String id))throw new IllegalArgumentException("id is required");
+        id=ArcSuiteSoapClient.requiredRepositoryObjectId(id,"id");
+        return Map.of("clientProfileId",p,"id",id);
+    }
+    static Map<String,Object> prepareEvidenceRequest(Map<String,Object> body){
+        if(!body.keySet().equals(Set.of("clientProfileId","id")))throw new IllegalArgumentException("Unexpected evidence request fields");
+        String p=profile(body);
+        Object rawId=body.get("id");
+        if(!(rawId instanceof String id))throw new IllegalArgumentException("id is required");
+        id=ArcSuiteSoapClient.requiredRepositoryObjectId(id,"id");
+        return Map.of("clientProfileId",p,"id",id);
     }
     Object revisions(Map<String,Object> body){return sessions.read(profile(body),sid->soap.revisions(body,sid));}
     Object content(Map<String,Object> body){return sessions.read(profile(body),sid->soap.content(body,sid));}

@@ -53,6 +53,15 @@ The adapter serializes the `getRepositoryObjects` `ids` parameter as the ArcSuit
 locks this request shape so it cannot silently regress to a generic string-array
 wire representation.
 
+The licensed WSDL defines the `searchRepositoryObjectIds` and
+`listRepositoryObjectIds` Return values directly as `Ids`: zero or more direct
+`id` children, with no `result` or nested `ids` wrapper. The adapter accepts
+valid empty/single/multiple responses and rejects missing Return elements,
+nested wrappers, malformed or duplicate IDs, and mixed valid/invalid results.
+The revision list Return is directly `RepositoryObjects` with zero or more
+direct `repositoryObject` children; malformed or missing responses fail as
+upstream errors rather than becoming an empty history.
+
 v1.1 batch metadata hydration deliberately sends `resolveRef=false` for
 `getRepositoryObjects`. Paging snapshots are keyed by the exact IDs returned by
 the ID-only operations, so reference resolution at this internal batch step
@@ -84,6 +93,13 @@ must be operator-qualified against the target environment's actual enum
 values. These checks are implementation and synthetic-contract qualified;
 they are not a live ArcSuite qualification claim.
 
+Configured semantic Attribute IDs are exact namespace/name pairs; the gateway
+does not fall back from `user:state` to another namespace's `rep:state`.
+Physical enum names and localized labels are not public semantic output. The
+top-level `status` field is emitted only when one unambiguous configured
+semantic enum maps the exact `rep:system:status` physical value; otherwise it
+is omitted.
+
 ## Qualification limits
 
 Local tests use a mock adapter and synthetic content. They verify protocol
@@ -107,6 +123,22 @@ the same effective object used by the content request. Real label existence,
 reference behavior, revision content, and MTOM behavior remain live-environment
 qualification responsibilities for the operator.
 
+Content-info, initial reads, and cursor continuations revalidate current
+authority before consulting a private snapshot. A signed cursor proves token
+integrity only; its opaque effective-identity binding must match the current
+requested/effective object and configured cabinet/root context.
+
+The WSDL declares revision numbers as `xsd:int`. The public semantic contract
+accepts positive values `1..2147483647`, inclusive, and the MCP schemas,
+runtime parser, Java serializer, and provider dispatch use that same range.
+
+The WSDL's revision-get response uses the exact
+`getRepositoryDocumentByRevisionNubmerReturn` element name. The adapter uses
+that operation-specific Return and treats a missing or malformed object as an
+upstream error; an ordinary ArcSuite SOAP not-available fault retains its
+stable not-available classification. MTOM attachments are handled as bytes,
+with only MIME framing CRLF removed at a boundary.
+
 ## ArcSuite v1.2 S3 incoming Hard References
 
 S3 adds one bounded, single-hop incoming Hard Reference read. The operator must
@@ -125,5 +157,32 @@ with `ARCSUITE_LIMIT_EXCEEDED`. Synthetic tests qualify request/response
 parsing, identity proof, overflow, authorization, filtering, paging, and
 redaction. A live ArcSuite environment is still required to qualify the
 operator's configured service version and real repository behavior.
-S3 does not implement document-integrity validation; that remains the next
-approved v1.2 slice.
+
+## ArcSuite v1.2 S4 document integrity
+
+S4 adds only `validateCertificate` and `getCertificateEvidence` to the
+read-only SOAP allowlist. Their narrow request and response shapes are locked
+by synthetic Java self-tests based on the operator-provided licensed contract.
+For one requested document, validation accounting must contain exactly one
+successful result entry or one per-ID failure at input index zero. Validation
+elements are reduced to certificate ID, boolean result, and exception presence;
+evidence is reduced to certificate IDs, with certificate attributes discarded
+in the adapter. No vendor WSDL or response excerpt is redistributed.
+
+The Reference Guide semantics are intentionally conservative: a false result
+can mean a missing signature or timestamp and does not prove tampering. The MCP
+tool therefore reports `invalid_or_unverifiable` for false, exceptional, or
+empty validation results. `getCertificateEvidence` reports availability only
+and cannot promote validation status. Synthetic contracts and MCP policy are
+tested locally; live validation, component availability, unsigned objects,
+evidence behavior, and XAdES/PAdES variants still require qualification in the
+operator's licensed ArcSuite environment.
+
+## v1.2 cross-cutting remediation status
+
+The F1–F7 closure remediation is implemented and covered by the complete local
+validation suite. Closure Remediation Round 2 is also implemented, including
+current content authority, strict WSDL response shapes, bounded materialization,
+and MCP revision-schema parity. This records implementation evidence only: an
+independent Astra High final cross-cutting re-audit remains pending, as does
+live ArcSuite qualification by an operator.

@@ -15,11 +15,20 @@
   returned by search, list, get, and revision operations. Returned object IDs
   and path IDs are checked against the selected cabinet, and configured root
   membership is revalidated before results are exposed.
+- Semantic enum values and top-level status never fall back to ArcSuite
+  physical names or localized labels. Configured Attribute IDs are looked up
+  by exact namespace and name, and duplicate physical enum mappings are
+  rejected during scope loading.
 - Incoming Hard Reference candidates are bounded before hydration, and only
   cabinet/root/type-authorized IDs enter a paging snapshot. Hard Reference
   reads keep reference resolution disabled; physical relationship IDs, raw
   reference identity, and edition data are excluded from MCP output and audit
   metadata.
+- Document-integrity validation requires both profile permission and an
+  integrity-enabled semantic scope. The gateway proves target cabinet, root,
+  identity, and document type before dispatch. Evidence has a separate scope
+  opt-in; the Java adapter discards raw validation exceptions and certificate
+  attributes, and evidence cannot change validation status.
 - The TypeScript and Java layers enforce a read-only SOAP operation allowlist.
 - ArcSuite challenge/password credentials use the server public key with RSA
   PKCS#1 v1.5 padding (`RSA/ECB/PKCS1Padding`) over UTF-8
@@ -28,11 +37,16 @@
 - Administrator mode is fixed false; privileged-print, ACL, delete, workflow,
   delegation, and arbitrary SOAP operations are absent.
 - Content is size-bounded, character-bounded, extracted by allowlisted
-  handlers, and deleted from the shared directory in all normal paths.
+  handlers, and deleted from the shared directory in all normal paths. Content
+  caches and cursors are optimizations/integrity tokens, not authority: each
+  content-info call, initial read, and continuation revalidates current
+  requested/effective identity, cabinet/root/type, revision, and exact label
+  membership before reuse.
 - XML DTD/external entities, unsafe archive paths, suspicious compression, and
-  macro/embedded-object execution are rejected or never attempted. XML entity
-  decoding leaves ampersands until the final pass, preventing nested entities
-  from being decoded twice.
+  macro/embedded-object execution are rejected or never attempted. The shared
+  OOXML helper rejects DTD and entity declarations in an encoding-aware parser
+  before expansion. XML entity decoding leaves ampersands until the final
+  pass, preventing nested entities from being decoded twice.
 - Audit records contain request metadata only. Query and extracted content are
   excluded from audit output.
 - GitHub Actions workflow references and container base images are pinned to
@@ -62,8 +76,10 @@ semantic policy. The Java adapter is a separate private service with its own
 internal bearer token. ArcSuite is an external enterprise service whose
 permissions and schema are environment-specific.
 
-The gateway's read retry is limited to one session refresh. A future mutation
-must not reuse this retry behavior: business mutation retry is zero.
+The Java adapter's `SessionManager` owns the read retry and permits one session
+refresh, for at most two business SOAP attempts. The TypeScript gateway sends
+each adapter read once and does not replay it. A future mutation must not use
+this retry behavior: business mutation retry is zero.
 
 ## Operator responsibilities
 

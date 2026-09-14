@@ -28,8 +28,8 @@ for (const root of [join(process.cwd(), "src"), join(process.cwd(), "adapter-jav
     }
   }
 }
-if (V1_SOAP_OPERATION_ALLOWLIST.size !== 24) throw new Error(`Unexpected v1.2 S3 SOAP allowlist size: ${V1_SOAP_OPERATION_ALLOWLIST.size}`);
-for (const operation of ["listRepositoryObjectIds", "searchRepositoryObjectIds", "getRepositoryObjects", "listRepositoryObjectHardReferences"]) {
+if (V1_SOAP_OPERATION_ALLOWLIST.size !== 26) throw new Error(`Unexpected v1.2 S4 SOAP allowlist size: ${V1_SOAP_OPERATION_ALLOWLIST.size}`);
+for (const operation of ["listRepositoryObjectIds", "searchRepositoryObjectIds", "getRepositoryObjects", "listRepositoryObjectHardReferences", "validateCertificate", "getCertificateEvidence"]) {
   if (!V1_SOAP_OPERATION_ALLOWLIST.has(operation)) throw new Error(`Required SOAP read operation missing: ${operation}`);
 }
 
@@ -57,7 +57,8 @@ const requiredTools = [
   "arcsuite_list_document_revisions",
   "arcsuite_get_document_content_info",
   "arcsuite_read_document",
-  "arcsuite_list_hard_references"
+  "arcsuite_list_hard_references",
+  "arcsuite_validate_document_integrity"
 ];
 for (const tool of requiredTools) {
   if (!toolSource.includes(`name: "${tool}"`)) throw new Error(`Required semantic tool missing: ${tool}`);

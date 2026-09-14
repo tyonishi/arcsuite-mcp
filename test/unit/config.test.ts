@@ -19,6 +19,14 @@ test("configuration rejects request and content limits above hard bounds", () =>
   assert.throws(() => loadConfig({ ...baseEnv, MCP_MAX_CONTENT_BYTES: String(100 * 1024 * 1024 + 1) }), /MCP_MAX_CONTENT_BYTES/);
 });
 
+test("configuration keeps read character bounds aligned with the public schema", () => {
+  assert.throws(() => loadConfig({ ...baseEnv, MCP_READ_DEFAULT_MAX_CHARS: "999", MCP_READ_MAX_CHARS: "1000" }), /MCP_READ_DEFAULT_MAX_CHARS/);
+  assert.throws(() => loadConfig({ ...baseEnv, MCP_READ_DEFAULT_MAX_CHARS: "1000", MCP_READ_MAX_CHARS: "999" }), /MCP_READ_MAX_CHARS/);
+  const config = loadConfig({ ...baseEnv, MCP_READ_DEFAULT_MAX_CHARS: "1000", MCP_READ_MAX_CHARS: "1000" });
+  assert.equal(config.readDefaultMaxChars, 1000);
+  assert.equal(config.readMaxChars, 1000);
+});
+
 test("configuration rejects malformed token profile rate limits", () => {
   const tokenSha256 = createHash("sha256").update("synthetic").digest("hex");
   const tokens = JSON.stringify({ tokens: [{

@@ -4,6 +4,10 @@ export type ContentCacheContext = {
   clientProfileId: string;
   scopeId: string;
   documentId: string;
+  /** Current effective identity proven by the gateway before cache access. */
+  effectiveDocumentId: string;
+  cabinetId: string;
+  rootObjectId: string | null;
   revisionNumber?: number;
   contentLabel: string;
   physicalContentLabel: PhysicalContentLabel;
@@ -125,6 +129,9 @@ function locatorKey(context: ContentCacheContext): string {
     context.clientProfileId,
     context.scopeId,
     context.documentId,
+    context.effectiveDocumentId,
+    context.cabinetId,
+    context.rootObjectId,
     context.revisionNumber ?? "current",
     context.contentLabel,
     context.physicalContentLabel.ns,

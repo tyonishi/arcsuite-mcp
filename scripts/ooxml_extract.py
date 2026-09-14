@@ -6,19 +6,121 @@ does not open external relationships, execute VBA, or materialize embedded
 objects. All archive and output limits are enforced before returning text.
 """
 
+import io
 import re
 import sys
 import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
+from xml.parsers import expat
+
+
+class _Element:
+    """Small ElementTree-compatible view built by the safe Expat parser."""
+
+    def __init__(self, tag: str, attrib: dict[str, str]):
+        self.tag = tag
+        self.attrib = attrib
+        self.text = None
+        self._text_parts = []
+        self._children = []
+
+    def __iter__(self):
+        return iter(self._children)
+
+    def iter(self):
+        yield self
+        for child in self._children:
+            yield from child.iter()
+
+
+class _SafeElementTree:
+    """ElementTree-compatible facade with parser-level DTD/entity rejection."""
+
+    @staticmethod
+    def fromstring(data: bytes):
+        root = None
+        stack = []
+        parser = expat.ParserCreate(namespace_separator="}")
+
+        def unsafe(*_args):
+            raise RuntimeError("UNSAFE_XML_DECLARATION")
+
+        parser.StartDoctypeDeclHandler = unsafe
+        parser.EntityDeclHandler = unsafe
+        parser.ExternalEntityRefHandler = unsafe
+        parser.SkippedEntityHandler = unsafe
+        parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+        parser.buffer_text = True
+
+        def start(name, attrs):
+            nonlocal root
+            element = _Element(name, dict(attrs))
+            if stack:
+                stack[-1]._children.append(element)
+            elif root is not None:
+                raise RuntimeError("OOXML_XML_INVALID")
+            else:
+                root = element
+            stack.append(element)
+
+        def end(_name):
+            if not stack:
+                raise RuntimeError("OOXML_XML_INVALID")
+            element = stack.pop()
+            if element._text_parts:
+                element.text = "".join(element._text_parts)
+
+        def character_data(value):
+            if stack:
+                stack[-1]._text_parts.append(value)
+
+        parser.StartElementHandler = start
+        parser.EndElementHandler = end
+        parser.CharacterDataHandler = character_data
+        try:
+            parser.Parse(data, True)
+        except RuntimeError:
+            raise
+        except expat.ExpatError as error:
+            raise RuntimeError("OOXML_XML_INVALID") from error
+        if root is None or stack:
+            raise RuntimeError("OOXML_XML_INVALID")
+        return root
+
+
+# Tests may replace this narrow facade with a synthetic tree, while production
+# always uses the encoding-aware Expat parser above.
+ET = _SafeElementTree
 
 MAX_FILES = 20_000
 MAX_TOTAL_UNCOMPRESSED = 128 * 1024 * 1024
 MAX_RATIO = 200.0
 
 
-def bounded_text(value: str, limit: int) -> str:
-    return value[:limit]
+class OutputBudget:
+    def __init__(self, limit: int):
+        self.limit = limit
+        self._buffer = io.StringIO()
+        self.size = 0
+
+    @property
+    def remaining(self) -> int:
+        return self.limit - self.size
+
+    def append(self, value: str):
+        self.append_slice(value, 0, len(value))
+
+    def append_slice(self, value: str, start: int, end: int):
+        if self.remaining <= 0 or start >= end:
+            return
+        end = min(end, start + self.remaining)
+        part = value[start:end]
+        if part:
+            self._buffer.write(part)
+            self.size += len(part)
+
+    def build(self) -> str:
+        return self._buffer.getvalue()
 
 
 def safe_zip(path: str, max_chars: int):
@@ -58,62 +160,75 @@ def read_member(zf, name: str, max_bytes: int) -> bytes:
     return data
 
 
-def xml_text(data: bytes, limit: int):
-    head = data[:65536].upper()
-    if b"<!DOCTYPE" in head or b"<!ENTITY" in head:
-        raise RuntimeError("UNSAFE_XML_DECLARATION")
+def xml_text_parts(data: bytes):
     root = ET.fromstring(data)
-    parts = []
-    size = 0
     for elem in root.iter():
-        if elem.text and elem.text.strip():
-            local = elem.tag.rsplit("}", 1)[-1]
-            if local in {"t", "v", "f", "instrText"}:
-                part = elem.text.strip()
-                remaining = limit - size
-                if remaining <= 0:
-                    break
-                parts.append(part[:remaining])
-                size += len(parts[-1]) + 1
-    return bounded_text(" ".join(parts), limit)
+        local = elem.tag.rsplit("}", 1)[-1]
+        if local not in {"t", "v", "f", "instrText"} or not elem.text:
+            continue
+        value = elem.text
+        start = 0
+        end = len(value)
+        while start < end and value[start].isspace():
+            start += 1
+        while end > start and value[end - 1].isspace():
+            end -= 1
+        if start < end:
+            yield value, start, end
+
+
+def append_xml_text(writer: OutputBudget, data: bytes, prefix: str = "") -> bool:
+    parts = iter(xml_text_parts(data))
+    first = next(parts, None)
+    if first is None:
+        return False
+    writer.append(prefix)
+    writer.append_slice(*first)
+    for value, start, end in parts:
+        if writer.remaining <= 0:
+            break
+        writer.append(" ")
+        writer.append_slice(value, start, end)
+    return True
 
 
 def docx(zf, member_limit: int, max_chars: int):
-    names = [n for n in zf.namelist() if n == "word/document.xml" or re.match(r"word/(header|footer)\d+\.xml$", n)]
-    out = []
-    for name in names:
-        out.append(xml_text(read_member(zf, name, member_limit), max_chars))
-    return bounded_text("\n".join(x for x in out if x), max_chars)
+    writer = OutputBudget(max_chars)
+    has_content = False
+    for name in zf.namelist():
+        if writer.remaining <= 0:
+            break
+        if name != "word/document.xml" and not re.match(r"word/(header|footer)\d+\.xml$", name):
+            continue
+        data = read_member(zf, name, member_limit)
+        if append_xml_text(writer, data, "\n" if has_content else ""):
+            has_content = True
+    return writer.build()
 
 
 def xlsx(zf, member_limit: int, max_chars: int):
     shared = []
     if "xl/sharedStrings.xml" in zf.namelist():
         data = read_member(zf, "xl/sharedStrings.xml", member_limit)
-        if b"<!DOCTYPE" in data[:65536].upper() or b"<!ENTITY" in data[:65536].upper():
-            raise RuntimeError("UNSAFE_XML_DECLARATION")
         root = ET.fromstring(data)
-        used = 0
         for si in root.iter():
             if si.tag.rsplit("}", 1)[-1] == "si":
-                value = "".join(e.text or "" for e in si.iter() if e.tag.rsplit("}", 1)[-1] == "t")
-                if used < max_chars:
-                    shared.append(bounded_text(value, max_chars - used))
-                    used += len(shared[-1])
-    out = []
-    used = 0
+                shared.append(si)
+    writer = OutputBudget(max_chars)
+    has_sheet_block = False
     sheets = sorted(n for n in zf.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
     for sheet in sheets:
+        if writer.remaining <= 0:
+            break
         data = read_member(zf, sheet, member_limit)
-        if b"<!DOCTYPE" in data[:65536].upper() or b"<!ENTITY" in data[:65536].upper():
-            raise RuntimeError("UNSAFE_XML_DECLARATION")
         root = ET.fromstring(data)
-        rows = []
+        sheet_has_rows = False
+        stop = False
         for row in root.iter():
             if row.tag.rsplit("}", 1)[-1] != "row":
                 continue
-            cells = []
-            for cell in list(row):
+            row_has_cells = False
+            for cell in row:
                 if cell.tag.rsplit("}", 1)[-1] != "c":
                     continue
                 kind = cell.attrib.get("t")
@@ -124,22 +239,48 @@ def xlsx(zf, member_limit: int, max_chars: int):
                         break
                 if value is None:
                     continue
+                if not row_has_cells:
+                    if not sheet_has_rows:
+                        prefix = ("\n\n" if has_sheet_block else "") + f"[{Path(sheet).stem}]\n"
+                        writer.append(prefix)
+                        has_sheet_block = True
+                        if writer.remaining <= 0:
+                            stop = True
+                            break
+                    else:
+                        writer.append("\n")
+                        if writer.remaining <= 0:
+                            stop = True
+                            break
+                    row_has_cells = True
+                    sheet_has_rows = True
+                else:
+                    writer.append("\t")
+                    if writer.remaining <= 0:
+                        stop = True
+                        break
                 if kind == "s":
                     try:
-                        value = shared[int(value)]
+                        index = int(value)
+                        if index < 0:
+                            raise IndexError
+                        shared_value = shared[index]
                     except (ValueError, IndexError):
-                        pass
-                cells.append(str(value))
-            if cells:
-                rows.append("\t".join(cells))
-        if rows:
-            block = f"[{Path(sheet).stem}]\n" + "\n".join(rows)
-            remaining = max_chars - used
-            if remaining <= 0:
+                        writer.append(str(value))
+                    else:
+                        for element in shared_value.iter():
+                            if element.tag.rsplit("}", 1)[-1] == "t" and element.text:
+                                writer.append(element.text)
+                                if writer.remaining <= 0:
+                                    break
+                else:
+                    writer.append(str(value))
+                if writer.remaining <= 0:
+                    stop = True
+                    break
+            if stop:
                 break
-            out.append(block[:remaining])
-            used += len(out[-1])
-    return bounded_text("\n\n".join(out), max_chars)
+    return writer.build()
 
 
 def pptx(zf, member_limit: int, max_chars: int):
@@ -147,17 +288,16 @@ def pptx(zf, member_limit: int, max_chars: int):
         (n for n in zf.namelist() if re.match(r"ppt/slides/slide\d+\.xml$", n)),
         key=lambda n: int(re.search(r"(\d+)", Path(n).stem).group(1)),
     )
-    out = []
-    used = 0
+    writer = OutputBudget(max_chars)
+    has_slide = False
     for index, name in enumerate(slides, 1):
-        text = xml_text(read_member(zf, name, member_limit), max_chars)
-        block = f"[Slide {index}]\n{text}" if text else ""
-        remaining = max_chars - used
-        if remaining <= 0:
+        if writer.remaining <= 0:
             break
-        out.append(block[:remaining])
-        used += len(out[-1])
-    return bounded_text("\n\n".join(x for x in out if x), max_chars)
+        data = read_member(zf, name, member_limit)
+        prefix = ("\n\n" if has_slide else "") + f"[Slide {index}]\n"
+        if append_xml_text(writer, data, prefix):
+            has_slide = True
+    return writer.build()
 
 
 def main():

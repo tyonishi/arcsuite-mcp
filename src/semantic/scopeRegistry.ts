@@ -40,6 +40,10 @@ export type SemanticScope = {
   relationships?: {
     hard_references?: boolean;
   };
+  integrity?: {
+    enabled?: boolean;
+    allow_evidence?: boolean;
+  };
   search?: {
     full_text_modes?: FullTextSearchMode[];
   };
@@ -69,6 +73,7 @@ export type PublicScopeDescription = {
   ui_deep_link: boolean;
   content_labels: string[];
   relationships: string[];
+  integrity?: { validation: true; evidence: boolean };
 };
 
 export const SEMANTIC_OPERATOR_MATRIX: Record<SemanticType, readonly SemanticOperator[]> = {
@@ -110,6 +115,7 @@ export class ScopeRegistry {
       }
       validateContentLabelConfiguration(scope.content_labels, name);
       validateRelationshipConfiguration(scope.relationships, name);
+      validateIntegrityConfiguration(scope.integrity, name);
       validateSearchConfiguration(scope.search, name);
       if (scope.ui !== undefined) {
         if (!scope.ui || typeof scope.ui !== "object" || Array.isArray(scope.ui)) throw new Error(`Scope ${name} ui must be an object`);
@@ -215,7 +221,10 @@ export class ScopeRegistry {
         full_text_modes: fullTextModes(scope),
         ui_deep_link: Boolean(scope.ui?.document_url_template),
         content_labels: [...this.contentLabels(scope).keys()],
-        relationships: scope.relationships?.hard_references ? ["hard_reference_incoming"] : []
+        relationships: scope.relationships?.hard_references ? ["hard_reference_incoming"] : [],
+        ...(scope.integrity?.enabled === true
+          ? { integrity: { validation: true as const, evidence: scope.integrity.allow_evidence === true } }
+          : {})
       });
     }
     return out;
@@ -339,14 +348,39 @@ function validateRelationshipConfiguration(relationships: SemanticScope["relatio
   }
 }
 
+function validateIntegrityConfiguration(integrity: SemanticScope["integrity"], scopeId: string): void {
+  if (integrity === undefined) return;
+  if (!integrity || typeof integrity !== "object" || Array.isArray(integrity)) {
+    throw new Error(`Scope ${scopeId} integrity must be an object`);
+  }
+  for (const key of Object.keys(integrity)) {
+    if (key !== "enabled" && key !== "allow_evidence") throw new Error(`Scope ${scopeId} has unknown integrity key ${key}`);
+  }
+  if (integrity.enabled !== undefined && typeof integrity.enabled !== "boolean") {
+    throw new Error(`Scope ${scopeId} integrity.enabled must be a boolean`);
+  }
+  if (integrity.allow_evidence !== undefined && typeof integrity.allow_evidence !== "boolean") {
+    throw new Error(`Scope ${scopeId} integrity.allow_evidence must be a boolean`);
+  }
+  if (integrity.allow_evidence === true && integrity.enabled !== true) {
+    throw new Error(`Scope ${scopeId} integrity.allow_evidence requires integrity.enabled=true`);
+  }
+}
+
 function fullTextModes(scope: SemanticScope): FullTextSearchMode[] {
   return [...(scope.search?.full_text_modes ?? ["none"])] as FullTextSearchMode[];
+}
+
+export function semanticEnumPhysicalKey(value: SemanticEnumValueConfig): string {
+  if ("value" in value) return JSON.stringify(["string", value.value]);
+  return JSON.stringify(["i18n", value.ns, value.name]);
 }
 
 function validateEnumConfiguration(values: Record<string, SemanticEnumValueConfig> | undefined, scopeId: string, semanticName: string): void {
   if (!values || typeof values !== "object" || Array.isArray(values) || !Object.keys(values).length) {
     throw new Error(`Enum semantic attribute ${scopeId}.${semanticName} requires non-empty values`);
   }
+  const physicalValues = new Set<string>();
   for (const [alias, value] of Object.entries(values)) {
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(alias)) throw new Error(`Invalid enum alias ${scopeId}.${semanticName}.${alias}`);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid enum mapping ${scopeId}.${semanticName}.${alias}`);
@@ -355,6 +389,9 @@ function validateEnumConfiguration(values: Record<string, SemanticEnumValueConfi
     if (hasPhysicalId === hasLiteral || (hasPhysicalId && (!safeConfigString(value.ns, 128) || !safeConfigString(value.name, 256))) || (hasLiteral && !safeLiteralString(value.value, 4096))) {
       throw new Error(`Enum mapping ${scopeId}.${semanticName}.${alias} must contain either ns/name or value`);
     }
+    const physicalKey = semanticEnumPhysicalKey(value);
+    if (physicalValues.has(physicalKey)) throw new Error(`Enum semantic attribute ${scopeId}.${semanticName} must use unique physical enum values`);
+    physicalValues.add(physicalKey);
   }
 }
 

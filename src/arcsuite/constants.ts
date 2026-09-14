@@ -5,6 +5,11 @@ export const ARCSUITE_WSDL_PATH = "/ArcSuite/2021/04/ws?wsdl";
 export const ARCSUITE_REQUEST_VERSION = "4.0.0.0";
 export const ARCSUITE_ATTACHMENT_TYPE = "mtom";
 export const ARCSUITE_DEFAULT_LOCALE = "ja";
+// ArcSuite's licensed WSDL declares revisionNumber as xsd:int.  The public
+// semantic contract is deliberately narrower: revisions are positive and are
+// validated before any adapter request is constructed.
+export const MIN_REVISION_NUMBER = 1;
+export const MAX_REVISION_NUMBER = 2_147_483_647;
 export const CONTENT_LABEL_PRIMARY = { ns: "rep", name: "system:primary" } as const;
 
 export const DEFAULT_ATTRS = {

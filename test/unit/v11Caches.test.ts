@@ -96,6 +96,9 @@ test("content snapshots are isolated by client scope document revision and varia
     clientProfileId: "client-a",
     scopeId: "scope_a",
     documentId: "rep:a:1",
+    effectiveDocumentId: "rep:a:1",
+    cabinetId: "rep:a",
+    rootObjectId: null,
     revisionNumber: 3,
     contentLabel: "system:primary",
     physicalContentLabel: { ns: "rep", name: "system:primary" },
@@ -136,6 +139,9 @@ test("content cache separates semantic labels and same-name labels in different 
     clientProfileId: "client-a",
     scopeId: "scope",
     documentId: "rep:a:1",
+    effectiveDocumentId: "rep:a:1",
+    cabinetId: "rep:a",
+    rootObjectId: null,
     contentLabel: "system:primary",
     physicalContentLabel: { ns: "rep", name: "system:primary" }
   };
@@ -169,8 +175,8 @@ test("content cache evicts old entries to enforce per-client and byte bounds", (
     text,
     warnings: []
   });
-  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
-  const second = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:2", contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
+  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", effectiveDocumentId: "rep:a:1", cabinetId: "rep:a", rootObjectId: null, contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
+  const second = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:2", effectiveDocumentId: "rep:a:2", cabinetId: "rep:a", rootObjectId: null, contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
   cache.put(first, snapshot("first"));
   cache.put(second, snapshot("second"));
   assert.equal(cache.get(first), undefined);
@@ -189,8 +195,8 @@ test("content cache evicts the oldest entry when the total byte bound is exceede
     text,
     warnings: []
   });
-  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
-  const second = { clientProfileId: "client-b", scopeId: "scope", documentId: "rep:b:1", contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
+  const first = { clientProfileId: "client-a", scopeId: "scope", documentId: "rep:a:1", effectiveDocumentId: "rep:a:1", cabinetId: "rep:a", rootObjectId: null, contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
+  const second = { clientProfileId: "client-b", scopeId: "scope", documentId: "rep:b:1", effectiveDocumentId: "rep:b:1", cabinetId: "rep:b", rootObjectId: null, contentLabel: "system:primary", physicalContentLabel: { ns: "rep", name: "system:primary" } };
   cache.put(first, snapshot("a".repeat(80)));
   cache.put(second, snapshot("b".repeat(80)));
   assert.equal(cache.get(first), undefined);

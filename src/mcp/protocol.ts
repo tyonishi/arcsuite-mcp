@@ -4,7 +4,7 @@ import { hostHeaderValidation, originValidation, toNodeHandler } from "@modelcon
 import type { ProfileStore, RateLimiter } from "./auth.ts";
 import type { ToolRegistry } from "./tools.ts";
 import { toMcpToolError } from "./errors.ts";
-import { toolInputSchemaForProfile, type ToolInputName } from "./sdkSchemas.ts";
+import { toolInputSchemaForProfile, type ToolInputName, type ToolSchemaLimits } from "./sdkSchemas.ts";
 import { readJsonBody } from "../util/http.ts";
 
 export type McpHttpServerOptions = {
@@ -16,11 +16,13 @@ export type McpHttpServerOptions = {
   allowedHostnames: string[];
   allowedOriginHostnames: string[];
   maxRequestBytes: number;
+  schemaLimits: ToolSchemaLimits;
 };
 
 type AuthenticatedRequest = IncomingMessage & { auth?: AuthInfo };
 
 export function createMcpHttpServer(options: McpHttpServerOptions) {
+  const schemaLimits = Object.freeze({ ...options.schemaLimits });
   const handler = createMcpHandler((context) => {
     const profileId = context.authInfo?.extra?.clientProfileId;
     const profile = typeof profileId === "string" ? options.profiles.get(profileId) : undefined;
@@ -29,7 +31,7 @@ export function createMcpHttpServer(options: McpHttpServerOptions) {
     const server = new McpServer({ name: "arcsuite-mcp", version: "0.2.0" });
     for (const definition of options.tools.list(profile)) {
       const name = definition.name as ToolInputName;
-      const schema = toolInputSchemaForProfile(name, profile.allowedScopes);
+      const schema = toolInputSchemaForProfile(name, profile.allowedScopes, schemaLimits);
       if (!schema) continue;
       server.registerTool(definition.name, {
         description: definition.description,

@@ -75,7 +75,8 @@ const expectedNames = [
   "arcsuite_list_folder",
   "arcsuite_list_hard_references",
   "arcsuite_read_document",
-  "arcsuite_search_documents"
+  "arcsuite_search_documents",
+  "arcsuite_validate_document_integrity"
 ];
 
 test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
@@ -88,6 +89,11 @@ test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
   const list = await modernRpc(base, 2, "tools/list");
   assert.equal(list.status, 200);
   assert.deepEqual(list.json.result.tools.map((tool: { name: string }) => tool.name).sort(), expectedNames);
+  for (const name of ["arcsuite_get_document", "arcsuite_get_document_content_info", "arcsuite_read_document"]) {
+    const tool: any = list.json.result.tools.find((item: any) => item.name === name);
+    assert.equal(tool.inputSchema.properties.revision_number.minimum, 1);
+    assert.equal(tool.inputSchema.properties.revision_number.maximum, 2147483647);
+  }
 });
 
 test("MCP initialize, profile-aware discovery and semantic search work over Streamable HTTP", async (t) => {
@@ -113,6 +119,10 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.ok(hardReferenceBranches.every((branch: any) => branch.additionalProperties === false));
   assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.cursor?.not && !branch.properties.limit?.not));
   assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.limit?.not && !branch.properties.cursor?.not));
+  const integrity = tools.find((tool: { name: string }) => tool.name === "arcsuite_validate_document_integrity");
+  assert.deepEqual(integrity.inputSchema.required, ["document_id"]);
+  assert.equal(integrity.inputSchema.properties.include_evidence.default, false);
+  assert.equal(integrity.inputSchema.additionalProperties, false);
 
   const capabilities = await rpc(base, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "arcsuite_describe_capabilities", arguments: {} } });
   assert.equal(capabilities.status, 200);
@@ -132,6 +142,140 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.equal(relationships.json.result.structuredContent.relationship, "hard_reference_incoming");
   assert.equal(relationships.json.result.structuredContent.count, 2);
   assert.equal(JSON.stringify(relationships.json.result.structuredContent).includes("hardref-001"), false);
+
+  const integrityCall = await rpc(base, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "arcsuite_validate_document_integrity", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001" } } });
+  assert.equal(integrityCall.status, 200);
+  assert.equal(integrityCall.json.result.structuredContent.status, "valid");
+  assert.equal(Object.hasOwn(integrityCall.json.result.structuredContent, "evidence"), false);
+
+  const integrityEvidenceCall = await rpc(base, { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "arcsuite_validate_document_integrity", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001", include_evidence: true } } });
+  assert.equal(integrityEvidenceCall.status, 200);
+  assert.deepEqual(integrityEvidenceCall.json.result.structuredContent.evidence, [
+    { cert_id: 101, evidence_available: true },
+    { cert_id: 102, evidence_available: false }
+  ]);
+
+  const invalidIntegrityCall = await rpc(base, { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "arcsuite_validate_document_integrity", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1002" } } });
+  assert.equal(invalidIntegrityCall.status, 200);
+  assert.equal(invalidIntegrityCall.json.result.structuredContent.status, "invalid_or_unverifiable");
+  assert.deepEqual(invalidIntegrityCall.json.result.structuredContent.warnings, ["VALIDATION_NOT_PROVEN"]);
+});
+
+test("tools/list advertises effective request limits and rejects over-limit calls before runtime dispatch", async (t) => {
+  const { rt, base } = await start({
+    MCP_BATCH_MAX_IDS: "3",
+    MCP_SEARCH_DEFAULT_LIMIT: "4",
+    MCP_SEARCH_MAX_LIMIT: "5",
+    MCP_READ_DEFAULT_MAX_CHARS: "1500",
+    MCP_READ_MAX_CHARS: "2000"
+  });
+  t.after(() => rt.server.close());
+
+  const listed = await rpc(base, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  assert.equal(listed.status, 200);
+  const tools = listed.json.result.tools;
+  const byName = (name: string) => tools.find((tool: any) => tool.name === name);
+  assert.equal(byName("arcsuite_get_documents").inputSchema.properties.document_ids.maxItems, 3);
+  assert.match(byName("arcsuite_get_documents").description, /Maximum batch size: 3/);
+  assert.equal(byName("arcsuite_search_documents").inputSchema.properties.limit.maximum, 5);
+  assert.equal(byName("arcsuite_list_folder").inputSchema.properties.limit.maximum, 5);
+  assert.equal(byName("arcsuite_list_document_revisions").inputSchema.properties.limit.maximum, 5);
+  assert.ok(byName("arcsuite_list_hard_references").inputSchema.anyOf.every((branch: any) => branch.properties.limit?.maximum === 5 || branch.properties.limit?.not));
+  assert.equal(byName("arcsuite_read_document").inputSchema.properties.max_chars.maximum, 2000);
+  const revisionDefinition: any = rt.tools.list(rt.config.tokenProfiles[0]).find((tool) => tool.name === "arcsuite_list_document_revisions");
+  assert.equal(revisionDefinition.inputSchema.properties.limit.default, 4);
+
+  const adapter: any = rt.adapter;
+  const providerCalls = { searchIds: 0, listIds: 0, revisions: 0, hardReferences: 0, getMany: 0, content: 0 };
+  for (const method of Object.keys(providerCalls) as Array<keyof typeof providerCalls>) {
+    const original = adapter[method].bind(adapter);
+    adapter[method] = async (...args: unknown[]) => {
+      providerCalls[method] += 1;
+      return original(...args);
+    };
+  }
+  const runtimeCalls: string[] = [];
+  const originalToolCall = rt.tools.call.bind(rt.tools);
+  (rt.tools as any).call = async (profile: unknown, name: string, args: unknown) => {
+    runtimeCalls.push(name);
+    return originalToolCall(profile as any, name, args);
+  };
+  const invoke = (id: number, name: string, args: Record<string, unknown>) => rpc(base, {
+    jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args }
+  });
+
+  const accepted = await Promise.all([
+    invoke(2, "arcsuite_search_documents", { scope: "example_documents", query: "DOC", limit: 5 }),
+    invoke(3, "arcsuite_list_folder", { scope: "example_documents", limit: 5 }),
+    invoke(4, "arcsuite_list_document_revisions", { document_id: "rep:mock:EXAMPLE_CABINET:1001", limit: 5 }),
+    invoke(5, "arcsuite_list_hard_references", { document_id: "rep:mock:EXAMPLE_CABINET:1001", limit: 5 }),
+    invoke(6, "arcsuite_get_documents", {
+      scope: "example_documents",
+      document_ids: [
+        "rep:mock:EXAMPLE_CABINET:1001",
+        "rep:mock:EXAMPLE_CABINET:1002",
+        "rep:mock:EXAMPLE_CABINET:1003"
+      ]
+    }),
+    invoke(7, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", max_chars: 2000 })
+  ]);
+  for (const response of accepted) {
+    assert.equal(response.status, 200);
+    assert.equal(Boolean(response.json.result?.isError), false, JSON.stringify(response.json));
+  }
+  assert.deepEqual(providerCalls, { searchIds: 1, listIds: 1, revisions: 1, hardReferences: 1, getMany: 4, content: 1 });
+
+  const defaultRevision = await invoke(14, "arcsuite_list_document_revisions", { document_id: "rep:mock:EXAMPLE_CABINET:1001" });
+  assert.equal(Boolean(defaultRevision.json.result?.isError), false, JSON.stringify(defaultRevision.json));
+  assert.equal(defaultRevision.json.result.structuredContent.limit, 4, "runtime default must match the configured schema default");
+
+  const callsBeforeOverLimit = runtimeCalls.length;
+  const rejected = await Promise.all([
+    invoke(8, "arcsuite_search_documents", { scope: "example_documents", query: "DOC", limit: 6 }),
+    invoke(9, "arcsuite_list_folder", { scope: "example_documents", limit: 6 }),
+    invoke(10, "arcsuite_list_document_revisions", { document_id: "rep:mock:EXAMPLE_CABINET:1001", limit: 6 }),
+    invoke(11, "arcsuite_list_hard_references", { document_id: "rep:mock:EXAMPLE_CABINET:1001", limit: 6 }),
+    invoke(12, "arcsuite_get_documents", {
+      scope: "example_documents",
+      document_ids: [
+        "rep:mock:EXAMPLE_CABINET:1001",
+        "rep:mock:EXAMPLE_CABINET:1002",
+        "rep:mock:EXAMPLE_CABINET:1003",
+        "rep:mock:EXAMPLE_CABINET:1004"
+      ]
+    }),
+    invoke(13, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", max_chars: 2001 })
+  ]);
+  assert.ok(rejected.every((response) => response.json.error || response.json.result?.isError));
+  assert.equal(runtimeCalls.length, callsBeforeOverLimit, "invalid tool input must not reach ToolRegistry.call");
+  assert.deepEqual(providerCalls, { searchIds: 1, listIds: 1, revisions: 2, hardReferences: 1, getMany: 4, content: 1 });
+});
+
+test("actual tools/call enforces the advertised revision maximum before provider dispatch", async (t) => {
+  const { rt, base } = await start();
+  t.after(() => rt.server.close());
+  const list = await rpc(base, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const getTool: any = list.json.result.tools.find((item: any) => item.name === "arcsuite_get_document");
+  assert.equal(getTool.inputSchema.properties.revision_number.maximum, 2147483647);
+  let providerCalls = 0;
+  const originalGet = (rt.adapter as any).get.bind(rt.adapter);
+  (rt.adapter as any).get = async (...args: unknown[]) => {
+    providerCalls += 1;
+    return originalGet(...args);
+  };
+  const accepted = await rpc(base, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "arcsuite_get_document", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001", revision_number: 2147483647 } }
+  });
+  assert.equal(Boolean(accepted.json.result?.isError), false, JSON.stringify(accepted.json));
+  assert.equal(providerCalls, 1);
+  const beforeRejected = providerCalls;
+  const rejected = await rpc(base, {
+    jsonrpc: "2.0", id: 3, method: "tools/call",
+    params: { name: "arcsuite_get_document", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001", revision_number: 2147483648 } }
+  });
+  assert.ok(rejected.json.error || rejected.json.result?.isError);
+  assert.equal(providerCalls, beforeRejected);
 });
 
 test("MCP rejects unknown bearer token", async (t) => {

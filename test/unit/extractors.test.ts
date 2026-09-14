@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { OfficeOpenXmlExtractor } from "../../src/content/extractors/officeOpenXml.ts";
 import { XmlExtractor } from "../../src/content/extractors/xml.ts";
+import { JsonExtractor } from "../../src/content/extractors/json.ts";
 
 function runPython(code: string, args: string[] = []): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -47,4 +48,43 @@ with zipfile.ZipFile(p,'w',zipfile.ZIP_DEFLATED) as z:
   const extractor = new OfficeOpenXmlExtractor();
   const result = await extractor.extract({ filePath: path, fileName: "sample.docx", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
   assert.match(result.text, /ArcSuite MCP sample/);
+});
+
+test("JSON extractor pretty-prints small values and bounds materialization", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "json-bounded-"));
+  const path = join(dir, "large.json");
+  const large = Object.fromEntries(Array.from({ length: 3000 }, (_, index) => [`property_${index}`, "x".repeat(40)]));
+  await writeFile(path, JSON.stringify(large));
+  const extractor = new JsonExtractor();
+  const result = await extractor.extract({ filePath: path, fileName: "large.json", contentType: "application/json", maxExtractedChars: 64 });
+  assert.equal(result.text.length, 64);
+  assert.ok(result.warnings.includes("JSON_OUTPUT_LIMIT"));
+
+  const smallPath = join(dir, "small.json");
+  await writeFile(smallPath, '{"a":{"b":[true,"x"]},"control":"\\u0001\\n","emoji":"😀"}');
+  const small = await extractor.extract({ filePath: smallPath, fileName: "small.json", contentType: "application/json", maxExtractedChars: 1000 });
+  assert.equal(small.text, JSON.stringify(JSON.parse(await readFile(smallPath, "utf8")), null, 2));
+  assert.ok(small.text.includes('"\\u0001\\n"'));
+});
+
+test("JSON bounded formatter stops high-indentation expansion without recursive materialization", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "json-depth-"));
+  const path = join(dir, "deep.json");
+  let value: unknown = "end";
+  for (let index = 0; index < 220; index += 1) value = { [`level_${index}`]: value };
+  await writeFile(path, JSON.stringify(value));
+  const result = await new JsonExtractor().extract({ filePath: path, fileName: "deep.json", contentType: "application/json", maxExtractedChars: 32 });
+  assert.equal(result.text.length, 32);
+  assert.ok(result.warnings.includes("JSON_OUTPUT_LIMIT"));
+});
+
+test("JSON bounded formatter truncates valid nesting at its safe depth", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "json-depth-limit-"));
+  const path = join(dir, "deep.json");
+  let value: unknown = "end";
+  for (let index = 0; index < 300; index += 1) value = { [`level_${index}`]: value };
+  await writeFile(path, JSON.stringify(value));
+  const result = await new JsonExtractor().extract({ filePath: path, fileName: "deep.json", contentType: "application/json", maxExtractedChars: 100_000 });
+  assert.ok(result.text.length <= 100_000);
+  assert.ok(result.warnings.includes("JSON_OUTPUT_LIMIT"));
 });

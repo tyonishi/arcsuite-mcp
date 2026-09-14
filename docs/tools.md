@@ -6,9 +6,10 @@ profile. Physical cabinet IDs, Attribute IDs, SOAP operations, endpoints,
 credentials, and Session IDs are not tool inputs.
 
 v1.2 adds typed semantic predicates, explicitly configured full-text modes,
-content-label aliases, and opt-in incoming Hard Reference discovery to the v1.1
-discovery, paging, batch metadata, extraction reuse, and UI deep-link features.
-These features do not add new mutation authority.
+content-label aliases, opt-in incoming Hard Reference discovery, and
+document-integrity validation to the v1.1 discovery, paging, batch metadata,
+extraction reuse, and UI deep-link features. These features do not add mutation
+authority.
 
 | Tool | Required input | Result |
 | --- | --- | --- |
@@ -18,9 +19,16 @@ These features do not add new mutation authority.
 | `arcsuite_get_documents` | `scope`, `document_ids` | Bounded batch metadata with explicit per-input failures |
 | `arcsuite_list_folder` | `scope`; optional proven `folder_id`, or `scope` + `cursor` | Bounded child document/folder page and optional continuation cursor |
 | `arcsuite_list_hard_references` | `document_id`; optional `limit`, or `document_id` + `cursor` | One page of incoming Hard Reference relationship metadata without physical relationship IDs |
+| `arcsuite_validate_document_integrity` | `document_id`; optional `include_evidence` (default `false`) | Conservative validation state, bounded warning codes, and optional evidence-availability summary |
 | `arcsuite_list_document_revisions` | `document_id` | Revision metadata |
 | `arcsuite_get_document_content_info` | `document_id`; optional semantic `content_label` | File name/type/size/extractor support for one configured label; may warm a private short-lived extracted-content snapshot; never binary |
 | `arcsuite_read_document` | `document_id`; optional semantic `content_label` | Bounded extracted text, cache indicator, and optional signed content cursor |
+
+The registered `tools/list` schemas reflect the effective configuration for
+batch size (`MCP_BATCH_MAX_IDS`), page size (`MCP_SEARCH_MAX_LIMIT`), and read
+characters (`MCP_READ_MAX_CHARS`). Runtime validation enforces those same
+values. The repository hard caps remain in force even when an operator sets a
+larger environment value.
 
 ## Capability discovery
 
@@ -32,7 +40,7 @@ the authenticated profile:
 {
   "version": "1.2",
   "read_only": true,
-  "allowed_tools": ["arcsuite_search_documents", "arcsuite_list_hard_references"],
+  "allowed_tools": ["arcsuite_search_documents", "arcsuite_list_hard_references", "arcsuite_validate_document_integrity"],
   "scopes": [
     {
       "id": "example_documents",
@@ -50,7 +58,8 @@ the authenticated profile:
       "full_text_modes": ["none"],
       "ui_deep_link": false,
       "content_labels": ["system:primary", "preview"],
-      "relationships": ["hard_reference_incoming"]
+      "relationships": ["hard_reference_incoming"],
+      "integrity": {"validation": true, "evidence": false}
     }
   ]
 }
@@ -58,6 +67,10 @@ the authenticated profile:
 
 The response deliberately omits cabinet IDs, roots, service DNs, and physical
 Attribute IDs.
+
+An `integrity` capability appears only for a scope with integrity enabled.
+`evidence` reflects its separate evidence opt-in. Discovery never names SOAP
+operations or certificate implementation classes.
 
 ## Incoming Hard Reference relationships
 
@@ -91,6 +104,31 @@ Hard Reference metadata and path reads preserve the reference object's own
 identity with reference resolution disabled. Each continuation is bound to the
 client profile, semantic scope, result kind, and target document. If the scope
 does not enable this relationship, the tool fails closed.
+
+## Document integrity
+
+Document-integrity validation is opt-in for both the token profile and the
+target semantic scope. The scope must set `integrity.enabled: true`; requesting
+evidence additionally requires `integrity.allow_evidence: true`. The target is
+looked up and proven to be an allowed document inside the configured cabinet
+and root before validation is dispatched. The MCP input accepts one document
+ID only and does not accept certificate IDs, certificate attributes, revisions,
+or ArcSuite options.
+
+The result status is one of `valid`, `invalid_or_unverifiable`, or
+`validation_failed`. `valid` means only that ArcSuite returned at least one
+validation element and every element reported success without an exception
+condition; it is not a broader document-trust guarantee. A false result or an
+empty result set is reported as `invalid_or_unverifiable`; that state does not
+claim that a document was altered or tampered with. A per-document failure in
+an otherwise structurally valid response is `validation_failed`. Provider
+faults and malformed response accounting remain stable MCP errors.
+
+When requested and allowed, `evidence` reports only `{cert_id,
+evidence_available}` for certificate IDs observed in the validation result.
+Evidence does not change validation status. Raw exception details and
+certificate-attribute structures are discarded in the Java adapter. The
+integrity path has no cache, so each call performs fresh reads.
 
 ## Search and result paging
 
@@ -139,6 +177,10 @@ unambiguous RFC3339 values. Legacy scalar date-time forms remain accepted where
 the v1.1 configuration depended on them. Long integer inputs outside the
 JavaScript safe-integer range are rejected without rounding.
 
+Public `revision_number` inputs are positive `xsd:int` values only: `1` through
+`2147483647`, inclusive. The same range is advertised by `tools/list`, enforced
+by the runtime parser, and validated before adapter dispatch.
+
 `text_search_mode` defaults to `none`, and a non-`none` mode requires a text
 query. `stemming` and `thesaurus` are available only when the selected scope
 explicitly lists them in `search.full_text_modes`; the operator must qualify
@@ -186,8 +228,11 @@ results without making one MCP call per object:
 
 The server bounds the batch size, checks every requested ID against the selected
 scope, validates every returned object, and returns upstream partial failures
-with their original request index and document ID. Missing or inconsistent
-batch coverage fails closed rather than silently dropping objects.
+with their original request index and document ID. Batch metadata and any
+attached path are required to retain the same requested repository identity;
+path hydration uses reference resolution disabled and rejects an ID or object
+class mismatch. Missing or inconsistent batch coverage fails closed rather than
+silently dropping objects.
 
 ## Content labels and read reuse
 
@@ -203,10 +248,12 @@ content_labels:
 
 The namespace/name pair is trusted server-side configuration, not an MCP input.
 Discovery returns only aliases. Runtime scope resolution still rejects an
-alias configured for another scope or an unknown alias. Before a cache miss can
-fetch content, the target document or requested revision must advertise the
-exact namespace and name in `rep:system:contentlabellist`. If the label is not
-present, content-info returns `extractable: false` with
+alias configured for another scope or an unknown alias. Before any cache
+lookup or content dispatch, the gateway re-proves the current
+requested/effective object, cabinet, root, type, revision where applicable,
+and exact content-label membership. The target document or requested revision
+must advertise the exact namespace and name in
+`rep:system:contentlabellist`. If the label is not present, content-info returns `extractable: false` with
 `reason: "CONTENT_LABEL_NOT_FOUND"`; a document read fails without dispatching
 the content operation.
 
@@ -228,13 +275,14 @@ Read example:
 ```
 
 When a text read is truncated, send `next_cursor` back as `cursor` without
-also sending page-selection fields. Content cursors are signed, expire, and are
-bound to document, revision, extracted content, extractor, semantic
-`content_label`, client profile, and scope. The page selection that produced
-the snapshot is preserved across continuation reads. Omitting the label on a
-continuation uses the signed cursor label; supplying a different label fails.
-Valid short-lived v1.1 cursors without a label are interpreted as
-`system:primary`.
+also sending page-selection fields. Content cursors are v2 signed tokens that
+expire and bind document, revision, extracted content, extractor, semantic
+`content_label`, client profile, scope, and an opaque HMAC-derived current
+effective-identity authority binding. The page selection that produced the
+snapshot is preserved across continuation reads. The current authority is
+re-proved before a continuation can use the cursor; a valid signature alone is
+not authorization. Omitting the label on a continuation uses the signed cursor
+label; supplying a different label fails. Older cursor formats fail cleanly.
 
 The result field `cached` reports whether that specific read used an already
 existing private extracted-content snapshot. It is informational only and does

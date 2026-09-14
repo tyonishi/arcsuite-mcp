@@ -15,19 +15,28 @@ test("v1 SOAP allowlist contains no forbidden operation", () => {
   assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("deleteRepositoryObject"), false);
   assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("changeRepositoryObjectAcl"), false);
   assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("listRepositoryObjectHardReferences"), true);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("validateCertificate"), true);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has("getCertificateEvidence"), true);
   for (const operation of [
     "putHardReference", "putHardReferenceWithClass", "putReference", "putReferenceWithClass",
-    "attachTimestamp", "attachTimestampWithOptions", "calculateCertificateEvidence",
-    "validateCertificate", "getCertificateEvidence"
+    "attachTimestamp", "attachTimestampWithOptions", "calculateCertificateEvidence"
   ]) {
     assert.equal(V1_SOAP_OPERATION_ALLOWLIST.has(operation), false, operation);
   }
-  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.size, 24);
+  assert.equal(V1_SOAP_OPERATION_ALLOWLIST.size, 26);
 });
 
 test("signed cursor detects tampering", () => {
   const c = new CursorManager(Buffer.from("0123456789abcdef0123456789abcdef"), 600);
-  const token = c.create({ trace_id: "t", document_id: "rep:x:y:1", content_hash: "sha256:x", offset: 10, extractor: "text" });
+  const token = c.create({
+    version: 2,
+    trace_id: "t",
+    document_id: "rep:x:y:1",
+    content_hash: "sha256:x",
+    offset: 10,
+    extractor: "text",
+    effective_identity_binding: "opaque-binding"
+  });
   const parsed = c.parse(token);
   assert.equal(parsed.offset, 10);
   assert.throws(() => c.parse(token.slice(0, -1) + (token.endsWith("a") ? "b" : "a")));
@@ -35,4 +44,15 @@ test("signed cursor detects tampering", () => {
 
 test("extracted text normalization strips control characters", () => {
   assert.equal(normalizeExtractedText("a\r\nb\u0000\u0001\t c  \n"), "a\nb\t c");
+});
+
+test("text normalization handles large whitespace runs with linear scanner semantics", () => {
+  const input = `${" ".repeat(20_000)}x${" ".repeat(20_000)}\r\n${"\t".repeat(20_000)}y`;
+  const normalized = normalizeExtractedText(input);
+  assert.equal(normalized[0], "x");
+  assert.equal(normalized[1], "\n");
+  assert.equal(normalized.includes(`${" ".repeat(20_000)}\n`), false);
+  assert.equal(normalized.endsWith("y"), true);
+  const scaled = normalizeExtractedText(`${" \t".repeat(40_000)}tail`);
+  assert.equal(scaled, "tail");
 });

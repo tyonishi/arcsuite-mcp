@@ -78,6 +78,12 @@ for deployment resource limits. The Java adapter also caps internal JSON
 requests at 2,000,000 bytes and the gateway caps a materialized adapter JSON
 response at 8 MiB.
 
+The authenticated MCP `tools/list` schemas expose the effective configured
+limits for batch IDs, search/list/revision/Hard Reference page sizes, and read
+characters. A request above one of those deployment limits is rejected by the
+registered schema before tool dispatch; the runtime parsers enforce the same
+limits as defense in depth.
+
 ## Scope registry
 
 Use `config/scopes.example.yaml` as a template. A scope must have a stable
@@ -91,8 +97,8 @@ environment values. v1.2 capability discovery exposes only safe semantic scope
 metadata: scope ID/description, allowed object classes, semantic filter names,
 types/operators, enum aliases, configured full-text modes, wildcard policy, and
 whether a deep link is enabled. It also exposes configured semantic content-label
-aliases and enabled semantic relationships; physical content-label mappings
-are omitted.
+aliases, enabled semantic relationships, and enabled integrity capabilities;
+physical content-label mappings are omitted.
 
 ### Incoming Hard References
 
@@ -109,6 +115,26 @@ This setting exposes only the `hard_reference_incoming` semantic capability.
 The token profile must also include `arcsuite_list_hard_references` in its
 `allowedTools` list. See [MCP tools](tools.md#incoming-hard-reference-relationships)
 for authorization, paging, and candidate-bound behavior.
+
+### Document integrity
+
+Integrity checks default off for existing and new scope files. A token profile
+must allow `arcsuite_validate_document_integrity`, and the inferred scope must
+also opt in. Unknown keys or non-boolean values are rejected, and evidence
+cannot be enabled while validation is disabled:
+
+```yaml
+integrity:
+  enabled: true
+  allow_evidence: false
+```
+
+Set `allow_evidence: true` only when clients may request the already-calculated
+evidence-availability summary. Evidence is separate from validation and does
+not affect its status. The adapter discards raw exception details and
+certificate attributes before returning data to the gateway. See
+[Document integrity](tools.md#document-integrity) for output semantics and
+authorization behavior.
 
 ### Content labels
 
@@ -128,9 +154,11 @@ Aliases must match `[a-z][a-z0-9_]{0,63}`. The registry accepts at most 32
 custom labels per scope and bounds namespace/name lengths, whitespace, control
 characters, duplicate physical mappings, and reserved-alias redefinition.
 The server does not make a startup call to prove that each configured label
-exists. Document or revision membership is checked at runtime from the exact
-`rep:system:contentlabellist` metadata before a content cache miss dispatches
-`getRepositoryObjectContentWithOptions`.
+exists. Before any content cache lookup or content dispatch, document or
+revision membership is checked at runtime from the exact
+`rep:system:contentlabellist` metadata together with current cabinet, root,
+object-type, and effective-identity proof. The selected physical label is
+never a public fallback value.
 
 ### Typed semantic filters
 
@@ -163,8 +191,17 @@ For `I18N_STRING_TYPE` enums, `values` entries use `ns`/`name` and must be
 present in the validated schema's `enumLabels`. For a string-valued enumerated
 attribute (`STRING_TYPE` with `enumerated: true`), use a literal mapping such
 as `active: {value: "ACTIVE"}`; it is sent as `StringValue`. The alias names,
-not physical mappings, are returned to MCP clients. Long integer requests must
+not physical mappings, are returned to MCP clients. Duplicate aliases for the
+same physical enum identity are rejected using the same canonical key for
+I18n (`type + namespace + name`) and string (`type + exact literal`) mappings.
+Unambiguous configured aliases are the only public enum/status values; raw
+physical names and localized labels are omitted. Long integer requests must
 be JavaScript safe integers; unsafe values fail closed.
+
+Public `revision_number` inputs are positive `xsd:int` values from `1` through
+`2147483647`, inclusive. The declarative schemas, actual MCP `tools/list`
+schemas, runtime parser, and Java adapter use this same range; values above it
+are rejected before provider dispatch.
 
 ### Full-text search modes
 
@@ -225,15 +262,18 @@ unbounded follow-up search.
 v1.1 can reuse a short-lived process-local snapshot of normalized extracted
 text. This avoids repeated ArcSuite downloads/extraction for content-info +
 read or successive read chunks. Cache identity includes client profile, scope,
-document, revision, content label, extraction variant, and content hash.
+requested and effective document identity, cabinet/root authority context,
+revision, semantic and physical content label, extraction variant, and content
+hash.
 
 The cache:
 
 - is bounded by TTL, entry count, per-client count, and total UTF-8 bytes;
 - is not persisted;
 - is cleared on normal server shutdown on a best-effort basis;
-- never changes ArcSuite authorization; every cached lookup is profile/scope
-  bound;
+- never changes ArcSuite authorization; every cached lookup is preceded by
+  current profile/scope/cabinet/root/type/revision/content-label proof and an
+  exact comparison with the snapshot authority binding;
 - never writes extracted content to the audit log.
 
 ## Token profiles
@@ -244,12 +284,16 @@ outside version control. A profile is not an ArcSuite user identity; user-aware
 ArcSuite reads are a future roadmap item.
 
 Earlier v1.1 profiles remain valid and simply do not see additive tools until
-the operator permits them. The v1.2 Hard Reference tool is:
+the operator permits them. The v1.2 Hard Reference and document-integrity tools
+are:
 
 - `arcsuite_list_hard_references`
+- `arcsuite_validate_document_integrity`
 
-Both the profile's `allowedTools` and the target scope's
-`relationships.hard_references: true` setting are required.
+Both the profile's `allowedTools` and each tool's target-scope opt-in are
+required. Hard References use `relationships.hard_references: true`; integrity
+validation uses `integrity.enabled: true`, with `integrity.allow_evidence: true`
+required when evidence is requested.
 
 ## Secret handling
 

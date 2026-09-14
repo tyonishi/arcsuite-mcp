@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildRuntime } from "../../src/server.ts";
+import { ArcSuiteAdapterError } from "../../src/arcsuite/errors.ts";
 
 async function runtime(scopeFile = resolve("config/scopes.mock.yaml"), overrides: Record<string, string> = {}) {
   const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-test-"));
@@ -34,7 +35,8 @@ function profile() {
       "arcsuite_list_document_revisions",
       "arcsuite_get_document_content_info",
       "arcsuite_read_document",
-      "arcsuite_list_hard_references"
+      "arcsuite_list_hard_references",
+      "arcsuite_validate_document_integrity"
     ],
     rateLimit: { requestsPerMinute: 120, burst: 30 }
   } as any;
@@ -49,7 +51,8 @@ const expectedTools = [
   "arcsuite_list_document_revisions",
   "arcsuite_get_document_content_info",
   "arcsuite_read_document",
-  "arcsuite_list_hard_references"
+  "arcsuite_list_hard_references",
+  "arcsuite_validate_document_integrity"
 ];
 
 test("mock tool surface exposes the v1.2 semantic read tools", async () => {
@@ -124,6 +127,89 @@ test("typed semantic predicates and configured full-text modes work in the mock"
     scope: "example_documents",
     filters: { page_count: { operator: "gte", value: Number.MAX_SAFE_INTEGER + 1 } }
   }), (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT");
+});
+
+test("enum aliases normalize consistently across every metadata surface", async () => {
+  const rt = await runtime();
+  const p = profile();
+  const search: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { lifecycle: "active" }
+  })).structuredContent;
+  const get: any = (await rt.tools.call(p, "arcsuite_get_document", {
+    document_id: "rep:mock:EXAMPLE_CABINET:1001"
+  })).structuredContent;
+  const batch: any = (await rt.tools.call(p, "arcsuite_get_documents", {
+    scope: "example_documents",
+    document_ids: ["rep:mock:EXAMPLE_CABINET:1001"]
+  })).structuredContent;
+  const hardReferences: any = (await rt.tools.call(p, "arcsuite_list_hard_references", {
+    document_id: "rep:mock:EXAMPLE_CABINET:1001"
+  })).structuredContent;
+  const folder: any = (await rt.tools.call(p, "arcsuite_list_folder", {
+    scope: "example_documents"
+  })).structuredContent;
+  const revisions: any = (await rt.tools.call(p, "arcsuite_list_document_revisions", {
+    document_id: "rep:mock:EXAMPLE_CABINET:1001"
+  })).structuredContent;
+
+  assert.equal(search.results[0].semantic_attributes.lifecycle, "active");
+  assert.equal(search.results[0].status, "active");
+  assert.equal(get.semantic_attributes.lifecycle, "active");
+  assert.equal(get.status, "active");
+  assert.equal(batch.results[0].semantic_attributes.lifecycle, "active");
+  assert.equal(batch.results[0].status, "active");
+  assert.equal(hardReferences.results[0].semantic_attributes.lifecycle, "active");
+  assert.equal(hardReferences.results[0].status, "active");
+  assert.equal(folder.results.find((item: any) => item.document_id.endsWith(":1001")).status, "active");
+  assert.ok(revisions.revisions.every((item: any) => item.status === "active"));
+
+  const publicOutput = JSON.stringify({ search, get, batch, folder, revisions, hardReferences });
+  assert.equal(publicOutput.includes("ACTIVE"), false);
+  const audit = await readFile(rt.config.auditLogPath, "utf8");
+  assert.equal(audit.includes("ACTIVE"), false);
+});
+
+test("malformed provider ID results fail before a paging snapshot is stored", async () => {
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  const paging = (rt.tools as any).paging;
+  const responses = [
+    ["rep:mock:EXAMPLE_CABINET:1001", "not-a-repository-id"],
+    ["rep:mock:EXAMPLE_CABINET:1001", "rep:mock:EXAMPLE_CABINET:1001"]
+  ];
+
+  for (const ids of responses) {
+    adapter.searchIds = async () => ids;
+    await assert.rejects(() => rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      query: "DOC",
+      limit: 1
+    }));
+    assert.equal(paging.snapshots.size, 0);
+  }
+});
+
+test("S1-S4 semantic reads do not replay adapter operations after session expiry", async () => {
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  const calls = { searchIds: 0, content: 0, hardReferences: 0, validateIntegrity: 0, login: 0 };
+  const expired = () => new ArcSuiteAdapterError("ARCSUITE_SESSION_EXPIRED", "expired", { retryable: true });
+  adapter.searchIds = async () => { calls.searchIds++; throw expired(); };
+  adapter.content = async () => { calls.content++; throw expired(); };
+  adapter.hardReferences = async () => { calls.hardReferences++; throw expired(); };
+  adapter.validateIntegrity = async () => { calls.validateIntegrity++; throw expired(); };
+  adapter.login = async () => { calls.login++; };
+
+  const operations: Array<[string, Record<string, unknown>]> = [
+    ["arcsuite_search_documents", { scope: "example_documents", query: "DOC" }],
+    ["arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001" }],
+    ["arcsuite_list_hard_references", { document_id: "rep:mock:EXAMPLE_CABINET:1001" }],
+    ["arcsuite_validate_document_integrity", { document_id: "rep:mock:EXAMPLE_CABINET:1001" }]
+  ];
+  for (const [name, args] of operations) await assert.rejects(() => rt.tools.call(profile(), name, args));
+
+  assert.deepEqual(calls, { searchIds: 1, content: 1, hardReferences: 1, validateIntegrity: 1, login: 0 });
 });
 
 test("omitted full-text configuration defaults to none and rejects other modes", async () => {
@@ -300,6 +386,28 @@ test("batch results fail closed when success and failure coverage is inconsisten
       (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === item.category
     );
   }
+});
+
+test("batch path hydration cannot attach a resolved target path to reference metadata", async () => {
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  const requestedId = "rep:mock:EXAMPLE_CABINET:reference-001";
+  const targetId = "rep:mock:EXAMPLE_CABINET:document-002";
+  adapter.getMany = async () => ({
+    objects: [{ id: requestedId, objectClass: "reference", attributes: { "rep:system:name": { type: "string", value: "Reference R" } } }],
+    failures: []
+  });
+  adapter.get = async (request: any) => ({
+    id: targetId,
+    objectClass: "reference",
+    attributes: { "rep:system:name": { type: "string", value: "Target T" } },
+    pathObjects: [{ id: "rep:mock:EXAMPLE_CABINET:folder-target", name: "Target folder", objectClass: "folder" }],
+    fullPath: true
+  });
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_get_documents", { scope: "example_documents", document_ids: [requestedId], include_path: true }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "batch_path_identity"
+  );
 });
 
 test("content responses must preserve the requested object identity", async () => {

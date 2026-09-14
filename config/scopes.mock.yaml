@@ -15,6 +15,10 @@ scopes:
     relationships:
       hard_references: true
 
+    integrity:
+      enabled: true
+      allow_evidence: true
+
     content_labels:
       preview:
         ns: "rep"

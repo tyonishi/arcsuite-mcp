@@ -104,6 +104,30 @@ export type AdapterHardReferencesRequest = {
 /** Private Hard Reference object IDs; never return this shape through MCP. */
 export type AdapterHardReferencesResult = { ids: string[] };
 
+export type AdapterIntegrityValidationRequest = {
+  clientProfileId: string;
+  id: string;
+};
+
+export type AdapterIntegrityCertificateResult = {
+  certId: number;
+  result: boolean;
+  exceptionPresent: boolean;
+};
+
+export type AdapterIntegrityValidationResult = {
+  certificates: AdapterIntegrityCertificateResult[];
+  failure: "per_id" | null;
+};
+
+export type AdapterCertificateEvidenceRequest = {
+  clientProfileId: string;
+  id: string;
+};
+
+/** Private evidence certificate IDs only; certAttributes never cross the adapter boundary. */
+export type AdapterCertificateEvidenceResult = { certIds: number[] };
+
 export type AdapterRevisionsRequest = {
   clientProfileId: string;
   id: string;
@@ -126,7 +150,7 @@ export type AdapterContentResult = {
   /** Exact physical label returned by ArcSuite; never exposed directly by MCP. */
   label: PhysicalContentLabel;
   /** Effective object identity after adapter-side reference/revision resolution. */
-  effectiveId?: string;
+  effectiveId: string;
   fileName: string;
   contentType: string;
   sizeBytes: number;
