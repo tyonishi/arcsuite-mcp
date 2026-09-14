@@ -78,10 +78,27 @@ public final class SelfTest {
         var pub = (RSAPublicKey) pair.getPublic();
         byte[] modulus = unsigned(pub.getModulus().toByteArray());
         byte[] exponent = unsigned(pub.getPublicExponent().toByteArray());
-        String encrypted = Crypto.encryptCredential("challenge", "password", Base64.getEncoder().encodeToString(modulus), Base64.getEncoder().encodeToString(exponent));
-        var cipher = Crypto.credentialCipher(Cipher.DECRYPT_MODE, pair.getPrivate());
-        String plain = new String(cipher.doFinal(Base64.getDecoder().decode(encrypted)), StandardCharsets.UTF_8);
-        if (!"challengepassword".equals(plain)) throw new AssertionError(plain);
+        if ((modulus[0] & 0x80) == 0) throw new AssertionError("synthetic modulus did not exercise a positive BigInteger boundary");
+
+        String challenge = "challenge-日本語🚀";
+        String credentialSuffix = "password-パスワード🔐";
+        String modulusB64 = Base64.getEncoder().encodeToString(modulus);
+        String exponentB64 = Base64.getEncoder().encodeToString(exponent);
+        String encrypted = Crypto.encryptCredential(challenge, credentialSuffix, modulusB64, exponentB64);
+        byte[] ciphertext = Base64.getDecoder().decode(encrypted);
+        byte[] expected = (challenge + credentialSuffix).getBytes(StandardCharsets.UTF_8);
+
+        var productionCipher = Crypto.credentialCipher(Cipher.DECRYPT_MODE, pair.getPrivate());
+        if (!"RSA/ECB/PKCS1Padding".equals(productionCipher.getAlgorithm())) {
+            throw new AssertionError("Unexpected credential transformation: " + productionCipher.getAlgorithm());
+        }
+
+        var independentCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+        independentCipher.init(Cipher.DECRYPT_MODE, pair.getPrivate());
+        byte[] plain = independentCipher.doFinal(ciphertext);
+        if (!java.util.Arrays.equals(expected, plain)) {
+            throw new AssertionError("Credential plaintext did not preserve UTF-8 challenge/password concatenation");
+        }
     }
 
     static void mtomDecode() {

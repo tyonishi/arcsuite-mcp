@@ -20,6 +20,7 @@ config/scopes.yaml
 config/tokens.json
 config/clients.json
 local-secrets
+docker-compose.yml
 vendor/
 vendor-material/
 .env

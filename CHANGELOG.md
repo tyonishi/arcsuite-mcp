@@ -67,9 +67,12 @@
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and
   `listRepositoryObjectIds` operations to the mechanically checked allowlist;
   mutation/admin/ACL/delete/privileged-print exclusions remain unchanged.
-- Remediated CodeQL findings by using explicit RSA-OAEP credential encryption,
-  avoiding staged wildcard-regex unescaping, and making XML entity decoding
-  resistant to nested double-unescaping.
+- Corrected ArcSuite credential encryption to the documented RSA PKCS#1 v1.5
+  wire contract; the corresponding `java/rsa-without-oaep` CodeQL findings
+  remain visible as an intentional ArcSuite compatibility exception for
+  security review.
+- Remediated staged wildcard-regex unescaping and nested XML entity-decoding
+  findings.
 
 Real ArcSuite and client qualification remain environment-dependent; see
 `docs/compatibility.md`.

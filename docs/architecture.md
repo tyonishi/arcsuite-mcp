@@ -55,7 +55,7 @@ deletes the file on every read/discard path.
 ### Java adapter
 
 `adapter-java/` owns SOAP request construction, the ArcSuite Session header,
-RSA-OAEP encrypted login, session refresh, MTOM parsing, and response
+RSA PKCS#1 v1.5 encrypted login, session refresh, MTOM parsing, and response
 materializing.
 It exposes internal HTTP routes only to the TypeScript gateway. Its
 `SessionManager` owns the single read refresh/retry (at most two business SOAP

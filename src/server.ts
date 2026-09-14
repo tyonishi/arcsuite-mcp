@@ -12,7 +12,16 @@ import { AuditLogger } from "./audit/auditLogger.ts";
 import { ToolRegistry } from "./mcp/tools.ts";
 import { assertOperationAllowlistSafe } from "./arcsuite/operationAllowlist.ts";
 
-export async function buildRuntime(env: NodeJS.ProcessEnv = process.env) {
+const DEFAULT_STARTUP_VALIDATION_RETRY_DELAY_MS = 5_000;
+
+type RuntimeOptions = {
+  startupValidationRetryDelayMs?: number;
+};
+
+export async function buildRuntime(
+  env: NodeJS.ProcessEnv = process.env,
+  options: RuntimeOptions = {}
+) {
   assertOperationAllowlistSafe();
   const config = loadConfig(env);
   await mkdir(config.sharedTempDir, { recursive: true, mode: 0o700 });
@@ -37,16 +46,49 @@ export async function buildRuntime(env: NodeJS.ProcessEnv = process.env) {
   const audit = new AuditLogger(config.auditLogPath);
   const tools = new ToolRegistry(config, scopes, adapter, sessions, bridge, audit);
   let readyState: { ok: boolean; message?: string } = { ok: !config.validateOnStartup, message: config.validateOnStartup ? "validation pending" : undefined };
+  let validationInFlight: Promise<boolean> | undefined;
+  let validationRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  let validationRetryStopped = false;
+  const startupValidationRetryDelayMs = options.startupValidationRetryDelayMs ?? DEFAULT_STARTUP_VALIDATION_RETRY_DELAY_MS;
 
-  const validate = async () => {
+  const clearValidationRetry = () => {
+    if (!validationRetryTimer) return;
+    clearTimeout(validationRetryTimer);
+    validationRetryTimer = undefined;
+  };
+
+  const scheduleValidationRetry = () => {
+    if (validationRetryStopped || !config.validateOnStartup || readyState.ok || validationRetryTimer) return;
+    validationRetryTimer = setTimeout(() => {
+      validationRetryTimer = undefined;
+      void validate();
+    }, startupValidationRetryDelayMs);
+    validationRetryTimer.unref?.();
+  };
+
+  const validate = async (): Promise<boolean> => {
+    if (validationInFlight) return validationInFlight;
+    const attempt = (async () => {
+      try {
+        const first = profiles.first();
+        if (!first) throw new Error("No client profiles configured");
+        if (!(await adapter.health())) throw new Error("SOAP adapter is not healthy");
+        await scopes.validateAgainstAdapter(adapter, first.clientProfileId);
+        readyState = { ok: true };
+        clearValidationRetry();
+        return true;
+      } catch (error) {
+        readyState = { ok: false, message: error instanceof Error ? error.message : String(error) };
+        return false;
+      }
+    })();
+    validationInFlight = attempt;
     try {
-      const first = profiles.first();
-      if (!first) throw new Error("No client profiles configured");
-      if (!(await adapter.health())) throw new Error("SOAP adapter is not healthy");
-      await scopes.validateAgainstAdapter(adapter, first.clientProfileId);
-      readyState = { ok: true };
-    } catch (error) {
-      readyState = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      const valid = await attempt;
+      if (!valid) scheduleValidationRetry();
+      return valid;
+    } finally {
+      if (validationInFlight === attempt) validationInFlight = undefined;
     }
   };
   if (config.validateOnStartup) await validate();
@@ -66,7 +108,11 @@ export async function buildRuntime(env: NodeJS.ProcessEnv = process.env) {
     health: () => adapter.health(),
     ready: async () => readyState
   });
-  return { config, scopes, adapter, tools, server, validate, bridge };
+  const stopValidationRetry = () => {
+    validationRetryStopped = true;
+    clearValidationRetry();
+  };
+  return { config, scopes, adapter, tools, server, validate, stopValidationRetry, bridge };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -75,6 +121,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`ArcSuite MCP listening on http://${runtime.config.bindHost}:${runtime.config.port}`);
   });
   const shutdown = async () => {
+    runtime.stopValidationRetry();
     runtime.bridge.clearCache();
     runtime.server.close();
     process.exitCode = 0;

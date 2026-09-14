@@ -1,0 +1,128 @@
+# Public Compose template for an operator-managed ArcSuite deployment.
+#
+# Copy this file to docker-compose.yml, create a local .env, and populate the
+# ignored scope and secret files before starting the services. The local
+# docker-compose.yml and all operator values remain outside version control.
+
+services:
+  mcp-gateway:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: arcsuite-mcp-gateway:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    ports:
+      - "${ARCSUITE_MCP_BIND_IP:-127.0.0.1}:${ARCSUITE_MCP_HOST_PORT:-8080}:8080"
+    environment:
+      NODE_ENV: production
+      ARCSUITE_ADAPTER_MODE: http
+      ARCSUITE_MCP_BIND_HOST: 0.0.0.0
+      ARCSUITE_MCP_PORT: "8080"
+      ARCSUITE_ADAPTER_BASE_URL: http://arcsuite-adapter:18080
+      ARCSUITE_ADAPTER_INTERNAL_TOKEN_FILE: /run/secrets/arcsuite_adapter_internal_token
+      MCP_CURSOR_HMAC_SECRET_FILE: /run/secrets/arcsuite_cursor_hmac_secret
+      ARCSUITE_MCP_CLIENT_TOKENS_JSON_FILE: /run/secrets/arcsuite_client_tokens_json
+      MCP_SCOPES_FILE: /app/config/scopes.yaml
+      MCP_SHARED_TEMP_DIR: /shared
+      # Keep metadata-only audit output on the writable /tmp tmpfs.
+      MCP_AUDIT_LOG_PATH: /tmp/arcsuite-mcp-audit.jsonl
+      MCP_VALIDATE_ON_STARTUP: "${MCP_VALIDATE_ON_STARTUP:-true}"
+      MCP_ALLOWED_HOSTNAMES: "${MCP_ALLOWED_HOSTNAMES:-localhost,127.0.0.1}"
+      MCP_ALLOWED_ORIGIN_HOSTNAMES: "${MCP_ALLOWED_ORIGIN_HOSTNAMES:-localhost,127.0.0.1}"
+      MCP_SEARCH_DEFAULT_LIMIT: "${MCP_SEARCH_DEFAULT_LIMIT:-20}"
+      MCP_SEARCH_MAX_LIMIT: "${MCP_SEARCH_MAX_LIMIT:-50}"
+      MCP_HARD_REFERENCE_MAX_CANDIDATES: "${MCP_HARD_REFERENCE_MAX_CANDIDATES:-200}"
+      MCP_BATCH_MAX_IDS: "${MCP_BATCH_MAX_IDS:-50}"
+      MCP_READ_DEFAULT_MAX_CHARS: "${MCP_READ_DEFAULT_MAX_CHARS:-20000}"
+      MCP_READ_MAX_CHARS: "${MCP_READ_MAX_CHARS:-50000}"
+      MCP_MAX_REQUEST_BYTES: "${MCP_MAX_REQUEST_BYTES:-1048576}"
+      MCP_MAX_CONTENT_BYTES: "${MCP_MAX_CONTENT_BYTES:-52428800}"
+      MCP_MAX_EXTRACTED_CHARS: "${MCP_MAX_EXTRACTED_CHARS:-200000}"
+      MCP_CURSOR_TTL_SECONDS: "${MCP_CURSOR_TTL_SECONDS:-600}"
+      MCP_PAGING_TTL_SECONDS: "${MCP_PAGING_TTL_SECONDS:-600}"
+      MCP_PAGING_SNAPSHOT_MAX_IDS: "${MCP_PAGING_SNAPSHOT_MAX_IDS:-1000}"
+      MCP_PAGING_MAX_SNAPSHOTS: "${MCP_PAGING_MAX_SNAPSHOTS:-100}"
+      MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT: "${MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT:-10}"
+      MCP_PAGING_MAX_TOTAL_IDS: "${MCP_PAGING_MAX_TOTAL_IDS:-10000}"
+      MCP_CONTENT_CACHE_TTL_SECONDS: "${MCP_CONTENT_CACHE_TTL_SECONDS:-600}"
+      MCP_CONTENT_CACHE_MAX_ENTRIES: "${MCP_CONTENT_CACHE_MAX_ENTRIES:-64}"
+      MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT: "${MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT:-16}"
+      MCP_CONTENT_CACHE_MAX_BYTES: "${MCP_CONTENT_CACHE_MAX_BYTES:-16777216}"
+    volumes:
+      - ./config/scopes.yaml:/app/config/scopes.yaml:ro
+      - arcsuite-content:/shared
+    secrets:
+      - arcsuite_adapter_internal_token
+      - arcsuite_cursor_hmac_secret
+      - arcsuite_client_tokens_json
+    networks:
+      - adapter
+    depends_on:
+      arcsuite-adapter:
+        condition: service_started
+
+  arcsuite-adapter:
+    build:
+      context: ./adapter-java
+      dockerfile: Containerfile
+    image: arcsuite-mcp-adapter:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    expose:
+      - "18080"
+    environment:
+      ARCSUITE_SOAP_ENDPOINT: "${ARCSUITE_SOAP_ENDPOINT:?Set ARCSUITE_SOAP_ENDPOINT in the local .env}"
+      ARCSUITE_USERNAME: "${ARCSUITE_USERNAME:?Set ARCSUITE_USERNAME in the local .env}"
+      ARCSUITE_PASSWORD_FILE: /run/secrets/arcsuite_password
+      ARCSUITE_ADAPTER_INTERNAL_TOKEN_FILE: /run/secrets/arcsuite_adapter_internal_token
+      ARCSUITE_ADAPTER_BIND_HOST: 0.0.0.0
+      ARCSUITE_ADAPTER_PORT: "18080"
+      MCP_TEMP_DIR: /shared
+      ARCSUITE_ALLOW_HTTP: "${ARCSUITE_ALLOW_HTTP:-false}"
+      ARCSUITE_CONNECT_TIMEOUT_MS: "${ARCSUITE_CONNECT_TIMEOUT_MS:-30000}"
+      ARCSUITE_REQUEST_TIMEOUT_MS: "${ARCSUITE_REQUEST_TIMEOUT_MS:-600000}"
+      ARCSUITE_SESSION_IDLE_TTL_SECONDS: "${ARCSUITE_SESSION_IDLE_TTL_SECONDS:-1500}"
+      ARCSUITE_SESSION_MAX_AGE_SECONDS: "${ARCSUITE_SESSION_MAX_AGE_SECONDS:-1700}"
+      ARCSUITE_PER_SESSION_CONCURRENCY: "${ARCSUITE_PER_SESSION_CONCURRENCY:-4}"
+      ARCSUITE_LOCALE: "${ARCSUITE_LOCALE:-ja}"
+      ARCSUITE_REQUEST_VERSION: "${ARCSUITE_REQUEST_VERSION:-4.0.0.0}"
+      ARCSUITE_MAX_CONTENT_BYTES: "${ARCSUITE_MAX_CONTENT_BYTES:-52428800}"
+    volumes:
+      - arcsuite-content:/shared
+    secrets:
+      - arcsuite_adapter_internal_token
+      - arcsuite_password
+    networks:
+      - adapter
+
+volumes:
+  arcsuite-content:
+
+networks:
+  adapter:
+    driver: bridge
+
+secrets:
+  arcsuite_adapter_internal_token:
+    file: ./local-secrets/arcsuite_adapter_internal_token
+  arcsuite_cursor_hmac_secret:
+    file: ./local-secrets/arcsuite_cursor_hmac_secret
+  arcsuite_client_tokens_json:
+    file: ./local-secrets/arcsuite_client_tokens.json
+  arcsuite_password:
+    file: ./local-secrets/arcsuite_password
