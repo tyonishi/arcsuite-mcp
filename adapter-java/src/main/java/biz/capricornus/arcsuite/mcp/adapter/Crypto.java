@@ -1,8 +1,6 @@
 package biz.capricornus.arcsuite.mcp.adapter;
 
 import javax.crypto.Cipher;
-import javax.crypto.spec.OAEPParameterSpec;
-import javax.crypto.spec.PSource;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -10,19 +8,17 @@ import java.security.Key;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.spec.RSAPublicKeySpec;
-import java.security.spec.MGF1ParameterSpec;
 import java.util.Base64;
 
 final class Crypto {
-    private static final String CREDENTIAL_TRANSFORMATION = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding";
-    private static final OAEPParameterSpec CREDENTIAL_OAEP = new OAEPParameterSpec(
-            "SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
+    private static final String CREDENTIAL_TRANSFORMATION =
+            "RSA/ECB/PKCS1Padding";
 
     private Crypto() {}
 
     static Cipher credentialCipher(int mode, Key key) throws GeneralSecurityException {
         Cipher cipher = Cipher.getInstance(CREDENTIAL_TRANSFORMATION);
-        cipher.init(mode, key, CREDENTIAL_OAEP);
+        cipher.init(mode, key);
         return cipher;
     }
 

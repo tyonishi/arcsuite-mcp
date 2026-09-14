@@ -61,10 +61,11 @@ single-object and content paths continue to apply the configured reference
 resolution policy where their contracts allow it.
 
 The Java adapter encrypts the `getLoginInfo` challenge concatenated with the
-configured password using explicitly parameterized RSA-OAEP (SHA-256 with
-SHA-256 MGF1). This padding choice is part of the adapter's wire behavior and
-must be qualified against the operator's licensed ArcSuite version before
-deployment.
+configured password using RSA PKCS#1 v1.5 padding
+(`RSA/ECB/PKCS1Padding`). The plaintext is the UTF-8 encoding of
+`challenge + password`. This padding choice is part of the adapter's wire
+behavior and must be qualified against the operator's licensed ArcSuite
+version before deployment.
 
 ## ArcSuite v1.2 S1 typed search requirements
 

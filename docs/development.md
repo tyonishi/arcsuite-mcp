@@ -24,7 +24,8 @@ configuration.
   calls, synthetic search/read behavior, authentication, Origin checks, raw-field
   rejection, object-class/cabinet/root response-boundary checks, and excluded
   tool reachability;
-- the Java self-test covers JSON, RSA-OAEP encrypted credential construction,
+- the Java self-test covers JSON, RSA PKCS#1 v1.5 encrypted credential
+  construction,
   MTOM parsing, XML entity rejection, and synthetic Hard Reference SOAP shapes
   and identity proof.
 
