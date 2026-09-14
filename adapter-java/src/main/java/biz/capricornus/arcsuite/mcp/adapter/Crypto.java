@@ -10,9 +10,9 @@ import java.security.PublicKey;
 import java.security.spec.RSAPublicKeySpec;
 import java.util.Base64;
 
+@SuppressWarnings("codeql[java/rsa-without-oaep]")
 final class Crypto {
     // ArcSuite 4.0 requires this exact PKCS#1 v1.5 credential wire contract.
-    // lgtm[java/rsa-without-oaep]
     private static final String CREDENTIAL_TRANSFORMATION = "RSA/ECB/PKCS1Padding";
 
     private Crypto() {}
