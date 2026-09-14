@@ -54,6 +54,14 @@
   cross-boundary regression tests and the complete local validation suite
   pass; independent final cross-cutting re-audit and live ArcSuite
   qualification remain pending.
+- Implemented Closure Remediation Round 2: current authority revalidation for
+  content caches/cursors, exact batch path identity, namespace-exact semantic
+  attributes, physical enum/status suppression, WSDL-correct ID/revision
+  response parsing, positive `xsd:int` revision bounds, byte-preserving MTOM,
+  bounded JSON/text/XML materialization, parser-level OOXML DTD/entity
+  rejection, and actual MCP schema/runtime revision parity. The local
+  cross-cutting review and regression suite pass; an independent Astra High
+  re-audit and live ArcSuite qualification remain pending.
 - Added one read-only ArcSuite operation for incoming Hard Reference discovery;
   TypeScript and Java operation allowlists remain in parity.
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and

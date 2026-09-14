@@ -177,6 +177,10 @@ unambiguous RFC3339 values. Legacy scalar date-time forms remain accepted where
 the v1.1 configuration depended on them. Long integer inputs outside the
 JavaScript safe-integer range are rejected without rounding.
 
+Public `revision_number` inputs are positive `xsd:int` values only: `1` through
+`2147483647`, inclusive. The same range is advertised by `tools/list`, enforced
+by the runtime parser, and validated before adapter dispatch.
+
 `text_search_mode` defaults to `none`, and a non-`none` mode requires a text
 query. `stemming` and `thesaurus` are available only when the selected scope
 explicitly lists them in `search.full_text_modes`; the operator must qualify
@@ -224,8 +228,11 @@ results without making one MCP call per object:
 
 The server bounds the batch size, checks every requested ID against the selected
 scope, validates every returned object, and returns upstream partial failures
-with their original request index and document ID. Missing or inconsistent
-batch coverage fails closed rather than silently dropping objects.
+with their original request index and document ID. Batch metadata and any
+attached path are required to retain the same requested repository identity;
+path hydration uses reference resolution disabled and rejects an ID or object
+class mismatch. Missing or inconsistent batch coverage fails closed rather than
+silently dropping objects.
 
 ## Content labels and read reuse
 
@@ -241,10 +248,12 @@ content_labels:
 
 The namespace/name pair is trusted server-side configuration, not an MCP input.
 Discovery returns only aliases. Runtime scope resolution still rejects an
-alias configured for another scope or an unknown alias. Before a cache miss can
-fetch content, the target document or requested revision must advertise the
-exact namespace and name in `rep:system:contentlabellist`. If the label is not
-present, content-info returns `extractable: false` with
+alias configured for another scope or an unknown alias. Before any cache
+lookup or content dispatch, the gateway re-proves the current
+requested/effective object, cabinet, root, type, revision where applicable,
+and exact content-label membership. The target document or requested revision
+must advertise the exact namespace and name in
+`rep:system:contentlabellist`. If the label is not present, content-info returns `extractable: false` with
 `reason: "CONTENT_LABEL_NOT_FOUND"`; a document read fails without dispatching
 the content operation.
 
@@ -266,13 +275,14 @@ Read example:
 ```
 
 When a text read is truncated, send `next_cursor` back as `cursor` without
-also sending page-selection fields. Content cursors are signed, expire, and are
-bound to document, revision, extracted content, extractor, semantic
-`content_label`, client profile, and scope. The page selection that produced
-the snapshot is preserved across continuation reads. Omitting the label on a
-continuation uses the signed cursor label; supplying a different label fails.
-Valid short-lived v1.1 cursors without a label are interpreted as
-`system:primary`.
+also sending page-selection fields. Content cursors are v2 signed tokens that
+expire and bind document, revision, extracted content, extractor, semantic
+`content_label`, client profile, scope, and an opaque HMAC-derived current
+effective-identity authority binding. The page selection that produced the
+snapshot is preserved across continuation reads. The current authority is
+re-proved before a continuation can use the cursor; a valid signature alone is
+not authorization. Omitting the label on a continuation uses the signed cursor
+label; supplying a different label fails. Older cursor formats fail cleanly.
 
 The result field `cached` reports whether that specific read used an already
 existing private extracted-content snapshot. It is informational only and does

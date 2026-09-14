@@ -71,6 +71,17 @@ test("enum normalization returns configured aliases and rejects unknown physical
   assert.equal(JSON.stringify(normalized).includes("EXAMPLE_PRIVATE_LITERAL"), false);
   assert.equal(JSON.stringify(normalized).includes("有効"), false);
 
+  const statusNormalized = normalizeDocument({
+    ...base,
+    attributes: {
+      ...base.attributes,
+      "rep:system:status": { type: "i18n", ns: "rep", name: "ACTIVE", label: "有効" }
+    }
+  }, { lifecycle: { ...enumAttributes.lifecycle, attr_id: { ns: "rep", name: "system:status" } } });
+  assert.equal(statusNormalized.status, "active");
+  assert.equal(JSON.stringify(statusNormalized).includes("ACTIVE"), false);
+  assert.equal(JSON.stringify(statusNormalized).includes("有効"), false);
+
   const stringEnumAttributes = {
     lifecycle: {
       attr_id: { ns: "rep", name: "user:lifecycle" },
@@ -98,6 +109,33 @@ test("enum normalization returns configured aliases and rejects unknown physical
     attributes: { "rep:user:lifecycle": { type: "string", value: "UNKNOWN_PRIVATE_LITERAL" } }
   }, stringEnumAttributes),
   (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "semantic_enum_value_unmapped");
+
+  const wrongNamespaceStatus = normalizeDocument({
+    ...base,
+    attributes: { "rep:system:status": { type: "i18n", ns: "other", name: "ACTIVE", label: "有効" } as any }
+  }, {});
+  assert.equal(wrongNamespaceStatus.status, undefined);
+});
+
+test("configured semantic AttributeIds use exact namespace without name fallback", () => {
+  const config = {
+    state: { attr_id: { ns: "user", name: "state" }, type: "string", operators: ["eq"] }
+  } as any;
+  const wrongNamespace = normalizeDocument({
+    id: "rep:mock:EXAMPLE_CABINET:1001",
+    objectClass: "document",
+    attributes: { "rep:state": { type: "string", value: "WRONG_NAMESPACE" } }
+  }, config);
+  assert.equal(wrongNamespace.semantic_attributes?.state, null);
+  const exact = normalizeDocument({
+    id: "rep:mock:EXAMPLE_CABINET:1001",
+    objectClass: "document",
+    attributes: {
+      "rep:state": { type: "string", value: "WRONG_NAMESPACE" },
+      "user:state": { type: "string", value: "EXACT_NAMESPACE" }
+    }
+  }, config);
+  assert.equal(exact.semantic_attributes?.state, "EXACT_NAMESPACE");
 });
 
 test("typed predicates use the verified schema value representation", () => {
@@ -196,6 +234,8 @@ test("scope registry validates typed operator and enum configuration", () => {
   assert.throws(() => new ScopeRegistry({ version: 1, scopes: { typed: { ...base, semantic_attributes: { flag: { attr_id: { ns: "rep", name: "flag" }, type: "boolean", operators: ["like"] } } } } as any }), /Unsupported operator/);
   assert.throws(() => new ScopeRegistry({ version: 1, scopes: { typed: { ...base, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { ns: "rep" } } } } } } as any }), /Enum mapping/);
   assert.throws(() => new ScopeRegistry({ version: 1, scopes: { typed: { ...base, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { ns: "rep", name: "ACTIVE" }, current: { ns: "rep", name: "ACTIVE" } } } } } } as any }), /unique physical enum/i);
+  assert.throws(() => new ScopeRegistry({ version: 1, scopes: { typed: { ...base, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { value: "ACTIVE" }, current: { value: "ACTIVE" } } } } } } as any }), /unique physical enum/i);
+  assert.doesNotThrow(() => new ScopeRegistry({ version: 1, scopes: { typed: { ...base, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { rep_active: { ns: "rep", name: "ACTIVE" }, user_active: { ns: "user", name: "ACTIVE" } } } } } } as any }));
   const registry = new ScopeRegistry({ version: 1, scopes: { typed: { ...base, search: { full_text_modes: ["none", "thesaurus"] }, semantic_attributes: { state: { attr_id: { ns: "rep", name: "state" }, type: "enum", operators: ["eq"], values: { active: { ns: "rep", name: "ACTIVE" } } } } } } as any });
   assert.deepEqual(registry.describe(["typed"])[0].full_text_modes, ["none", "thesaurus"]);
   assert.deepEqual(registry.describe(["typed"])[0].filters[0].values, ["active"]);

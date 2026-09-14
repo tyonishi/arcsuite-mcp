@@ -153,5 +153,41 @@ class OoxmlStreamingBudgetTests(unittest.TestCase):
         self.assertEqual(pptx_archive.opened, ["ppt/slides/slide1.xml"])
 
 
+class OoxmlXmlSecurityTests(unittest.TestCase):
+    def test_safe_parser_accepts_utf8_and_utf16_without_materializing_entities(self):
+        utf8 = b'<root><t>normal</t></root>'
+        utf16 = '<?xml version="1.0"?><root><t>utf16</t></root>'.encode("utf-16")
+        self.assertEqual([("normal", 0, 6)], list(ooxml_extract.xml_text_parts(utf8)))
+        self.assertEqual([("utf16", 0, 5)], list(ooxml_extract.xml_text_parts(utf16)))
+
+    def test_parser_rejects_dtd_and_entities_after_large_prefix_and_in_utf16(self):
+        late_dtd = b"<?xml version='1.0'?>" + (b"<!-- valid prefix -->" * 5000) + b'<!DOCTYPE root [<!ENTITY e "ATTACKER">]><root><t>&e;</t></root>'
+        external = b'<!DOCTYPE root [<!ENTITY e SYSTEM "file:///etc/passwd">]><root><t>&e;</t></root>'
+        nested = b'<!DOCTYPE root [<!ENTITY a "A"><!ENTITY b "&a;&a;">]><root><t>&b;</t></root>'
+        utf16 = '<!DOCTYPE root [<!ENTITY e "ATTACKER">]><root><t>&e;</t></root>'.encode("utf-16")
+        for payload in (late_dtd, external, nested, utf16):
+            with self.assertRaisesRegex(RuntimeError, "UNSAFE_XML_DECLARATION"):
+                list(ooxml_extract.xml_text_parts(payload))
+
+    def test_shared_docx_xlsx_pptx_paths_reject_late_and_utf16_declarations(self):
+        late = b"<?xml version='1.0'?>" + (b"<!-- prefix -->" * 6000) + b'<!DOCTYPE root [<!ENTITY e "ATTACKER">]><root><t>&e;</t></root>'
+        utf16 = '<!DOCTYPE root [<!ENTITY e "ATTACKER">]><root><t>&e;</t></root>'.encode("utf-16")
+        cases = [
+            ("docx", {"word/document.xml": late}),
+            ("xlsx", {"xl/worksheets/sheet1.xml": utf16}),
+            ("pptx", {"ppt/slides/slide1.xml": late}),
+        ]
+        for kind, parts in cases:
+            with self.subTest(kind=kind):
+                with zipfile.ZipFile(io.BytesIO(xlsx_bytes(parts))) as archive:
+                    with self.assertRaisesRegex(RuntimeError, "UNSAFE_XML_DECLARATION"):
+                        if kind == "docx":
+                            ooxml_extract.docx(archive, 1024 * 1024, 100)
+                        elif kind == "xlsx":
+                            ooxml_extract.xlsx(archive, 1024 * 1024, 100)
+                        else:
+                            ooxml_extract.pptx(archive, 1024 * 1024, 100)
+
+
 if __name__ == "__main__":
     unittest.main()

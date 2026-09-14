@@ -129,7 +129,7 @@ test("typed semantic predicates and configured full-text modes work in the mock"
   }), (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT");
 });
 
-test("enum aliases normalize consistently across search, get, batch, and Hard Reference results", async () => {
+test("enum aliases normalize consistently across every metadata surface", async () => {
   const rt = await runtime();
   const p = profile();
   const search: any = (await rt.tools.call(p, "arcsuite_search_documents", {
@@ -146,13 +146,25 @@ test("enum aliases normalize consistently across search, get, batch, and Hard Re
   const hardReferences: any = (await rt.tools.call(p, "arcsuite_list_hard_references", {
     document_id: "rep:mock:EXAMPLE_CABINET:1001"
   })).structuredContent;
+  const folder: any = (await rt.tools.call(p, "arcsuite_list_folder", {
+    scope: "example_documents"
+  })).structuredContent;
+  const revisions: any = (await rt.tools.call(p, "arcsuite_list_document_revisions", {
+    document_id: "rep:mock:EXAMPLE_CABINET:1001"
+  })).structuredContent;
 
   assert.equal(search.results[0].semantic_attributes.lifecycle, "active");
+  assert.equal(search.results[0].status, "active");
   assert.equal(get.semantic_attributes.lifecycle, "active");
+  assert.equal(get.status, "active");
   assert.equal(batch.results[0].semantic_attributes.lifecycle, "active");
+  assert.equal(batch.results[0].status, "active");
   assert.equal(hardReferences.results[0].semantic_attributes.lifecycle, "active");
+  assert.equal(hardReferences.results[0].status, "active");
+  assert.equal(folder.results.find((item: any) => item.document_id.endsWith(":1001")).status, "active");
+  assert.ok(revisions.revisions.every((item: any) => item.status === "active"));
 
-  const publicOutput = JSON.stringify({ search, get, batch, hardReferences });
+  const publicOutput = JSON.stringify({ search, get, batch, folder, revisions, hardReferences });
   assert.equal(publicOutput.includes("ACTIVE"), false);
   const audit = await readFile(rt.config.auditLogPath, "utf8");
   assert.equal(audit.includes("ACTIVE"), false);
@@ -374,6 +386,28 @@ test("batch results fail closed when success and failure coverage is inconsisten
       (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === item.category
     );
   }
+});
+
+test("batch path hydration cannot attach a resolved target path to reference metadata", async () => {
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  const requestedId = "rep:mock:EXAMPLE_CABINET:reference-001";
+  const targetId = "rep:mock:EXAMPLE_CABINET:document-002";
+  adapter.getMany = async () => ({
+    objects: [{ id: requestedId, objectClass: "reference", attributes: { "rep:system:name": { type: "string", value: "Reference R" } } }],
+    failures: []
+  });
+  adapter.get = async (request: any) => ({
+    id: targetId,
+    objectClass: "reference",
+    attributes: { "rep:system:name": { type: "string", value: "Target T" } },
+    pathObjects: [{ id: "rep:mock:EXAMPLE_CABINET:folder-target", name: "Target folder", objectClass: "folder" }],
+    fullPath: true
+  });
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_get_documents", { scope: "example_documents", document_ids: [requestedId], include_path: true }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "batch_path_identity"
+  );
 });
 
 test("content responses must preserve the requested object identity", async () => {

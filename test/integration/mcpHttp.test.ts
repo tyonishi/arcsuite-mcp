@@ -89,6 +89,11 @@ test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
   const list = await modernRpc(base, 2, "tools/list");
   assert.equal(list.status, 200);
   assert.deepEqual(list.json.result.tools.map((tool: { name: string }) => tool.name).sort(), expectedNames);
+  for (const name of ["arcsuite_get_document", "arcsuite_get_document_content_info", "arcsuite_read_document"]) {
+    const tool: any = list.json.result.tools.find((item: any) => item.name === name);
+    assert.equal(tool.inputSchema.properties.revision_number.minimum, 1);
+    assert.equal(tool.inputSchema.properties.revision_number.maximum, 2147483647);
+  }
 });
 
 test("MCP initialize, profile-aware discovery and semantic search work over Streamable HTTP", async (t) => {
@@ -244,6 +249,33 @@ test("tools/list advertises effective request limits and rejects over-limit call
   assert.ok(rejected.every((response) => response.json.error || response.json.result?.isError));
   assert.equal(runtimeCalls.length, callsBeforeOverLimit, "invalid tool input must not reach ToolRegistry.call");
   assert.deepEqual(providerCalls, { searchIds: 1, listIds: 1, revisions: 2, hardReferences: 1, getMany: 4, content: 1 });
+});
+
+test("actual tools/call enforces the advertised revision maximum before provider dispatch", async (t) => {
+  const { rt, base } = await start();
+  t.after(() => rt.server.close());
+  const list = await rpc(base, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const getTool: any = list.json.result.tools.find((item: any) => item.name === "arcsuite_get_document");
+  assert.equal(getTool.inputSchema.properties.revision_number.maximum, 2147483647);
+  let providerCalls = 0;
+  const originalGet = (rt.adapter as any).get.bind(rt.adapter);
+  (rt.adapter as any).get = async (...args: unknown[]) => {
+    providerCalls += 1;
+    return originalGet(...args);
+  };
+  const accepted = await rpc(base, {
+    jsonrpc: "2.0", id: 2, method: "tools/call",
+    params: { name: "arcsuite_get_document", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001", revision_number: 2147483647 } }
+  });
+  assert.equal(Boolean(accepted.json.result?.isError), false, JSON.stringify(accepted.json));
+  assert.equal(providerCalls, 1);
+  const beforeRejected = providerCalls;
+  const rejected = await rpc(base, {
+    jsonrpc: "2.0", id: 3, method: "tools/call",
+    params: { name: "arcsuite_get_document", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001", revision_number: 2147483648 } }
+  });
+  assert.ok(rejected.json.error || rejected.json.result?.isError);
+  assert.equal(providerCalls, beforeRejected);
 });
 
 test("MCP rejects unknown bearer token", async (t) => {

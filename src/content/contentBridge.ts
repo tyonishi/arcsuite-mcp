@@ -130,7 +130,15 @@ export class ContentBridge {
     load: () => Promise<AdapterContentResult>
   ): Promise<ReadContentResult> {
     const cursorPayload = options.cursor ? this.cursors.parse(options.cursor) : undefined;
-    validateCursorIdentity(cursorPayload, options.documentId, options.revisionNumber, context.clientProfileId, context.scopeId, context.contentLabel);
+    validateCursorIdentity(
+      cursorPayload,
+      options.documentId,
+      options.revisionNumber,
+      context.clientProfileId,
+      context.scopeId,
+      context.contentLabel,
+      this.cursors.bindEffectiveIdentity(contentAuthorityInput(context))
+    );
     const startPage = cursorPayload?.start_page ?? options.startPage;
     const endPage = cursorPayload?.end_page ?? options.endPage;
     const cacheContext = { ...context, variant: pageVariant(startPage, endPage) };
@@ -213,6 +221,7 @@ export class ContentBridge {
     const chunk = snapshot.text.slice(offset, end);
     const truncated = end < snapshot.text.length;
     const next = truncated ? this.cursors.create({
+      version: 2,
       trace_id: options.traceId,
       client_profile_id: context?.clientProfileId,
       scope_id: context?.scopeId,
@@ -223,7 +232,10 @@ export class ContentBridge {
       offset: end,
       extractor: snapshot.extractor,
       start_page: cursorPayload?.start_page ?? options.startPage,
-      end_page: cursorPayload?.end_page ?? options.endPage
+      end_page: cursorPayload?.end_page ?? options.endPage,
+      effective_identity_binding: context
+        ? this.cursors.bindEffectiveIdentity(contentAuthorityInput(context))
+        : (() => { throw new Error("CONTENT_AUTHORITY_REQUIRED"); })()
     }) : null;
     return {
       document_id: options.documentId,
@@ -259,7 +271,8 @@ function validateCursorIdentity(
   revisionNumber?: number,
   clientProfileId?: string,
   scopeId?: string,
-  contentLabel = CONTENT_LABEL_PRIMARY_ALIAS
+  contentLabel = CONTENT_LABEL_PRIMARY_ALIAS,
+  authorityBinding?: string
 ): void {
   if (!cursor) return;
   if (cursor.document_id !== documentId || cursor.revision_number !== revisionNumber) throw new Error("CURSOR_DOCUMENT_MISMATCH");
@@ -270,10 +283,25 @@ function validateCursorIdentity(
   if (scopeId !== undefined && cursor.scope_id !== scopeId) throw new Error("CURSOR_SCOPE_MISMATCH");
   const cursorLabel = cursor.content_label ?? CONTENT_LABEL_PRIMARY_ALIAS;
   if (cursorLabel !== contentLabel) throw new Error("CURSOR_CONTENT_LABEL_MISMATCH");
+  if (authorityBinding !== undefined && cursor.effective_identity_binding !== authorityBinding) throw new Error("CURSOR_AUTHORITY_MISMATCH");
 }
 
 function pageVariant(startPage?: number, endPage?: number): string {
   return startPage === undefined ? "full" : `pages:${startPage}-${endPage ?? "end"}`;
+}
+
+function contentAuthorityInput(context: ContentCacheContext) {
+  return {
+    clientProfileId: context.clientProfileId,
+    scopeId: context.scopeId,
+    requestedDocumentId: context.documentId,
+    effectiveDocumentId: context.effectiveDocumentId,
+    revisionNumber: context.revisionNumber,
+    contentLabel: context.contentLabel,
+    physicalContentLabel: context.physicalContentLabel,
+    cabinetId: context.cabinetId,
+    rootObjectId: context.rootObjectId
+  };
 }
 
 function infoFromSnapshot(label: string, snapshot: ContentSnapshot, cached: boolean): ContentInfo {
@@ -289,10 +317,19 @@ function infoFromSnapshot(label: string, snapshot: ContentSnapshot, cached: bool
 }
 
 export function normalizeExtractedText(text: string): string {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .replace(/\u0000/g, "")
-    .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .trim();
+  // A single pass keeps normalization O(n), including adversarial runs of
+  // spaces/tabs before line boundaries.
+  const output: string[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code === 13 || code === 10) {
+      if (code === 13 && text.charCodeAt(index + 1) === 10) index += 1;
+      while (output.length && (output[output.length - 1] === " " || output[output.length - 1] === "\t")) output.pop();
+      output.push("\n");
+      continue;
+    }
+    if (code === 0 || (code >= 1 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127) continue;
+    output.push(text[index]);
+  }
+  return output.join("").trim();
 }

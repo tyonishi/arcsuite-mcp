@@ -45,8 +45,9 @@ the tools it allows:
 See [docs/tools.md](docs/tools.md) for integrity validation, typed predicates,
 full-text modes, relationship reads, paging, batch-read, cache, and deep-link
 behavior. S1–S4 implementation is present and covered by synthetic tests. The
-F1–F7 closure remediation has passed the complete local validation suite;
-independent final cross-cutting re-audit and live ArcSuite qualification remain
+F1–F7 closure remediation and Closure Remediation Round 2 are implemented and
+covered by the local cross-boundary regression suite; an independent Astra
+High final cross-cutting re-audit and live ArcSuite qualification remain
 pending.
 
 ## Architecture
@@ -151,16 +152,22 @@ never MCP tool arguments. Token profiles are hashes of bearer tokens; use
 token configuration out of version control.
 
 v1.1 paging/content caches are process-local and bounded by configuration.
-They do not expand ArcSuite authority, are isolated by client profile/scope,
-and never write extracted document text to the audit log. S2 content snapshots
-also include the semantic label and exact physical namespace/name in their
-private identity.
+They are optimizations, not authorities: every content-info request, initial
+read, and cursor continuation re-proves current cabinet/root/type, effective
+object, revision, and content-label membership before a cache or cursor result
+is used. Private content snapshots include client profile, scope, requested
+and effective object identity, revision, semantic and physical label identity,
+extractor variant, and content hash. Read cursors use a signed opaque
+effective-identity binding; older cursor formats fail cleanly. Caches never
+write extracted document text to the audit log.
 
 v1.2 typed filter values are validated against the configured ArcSuite schema.
 Explicit predicates use only the small semantic operator matrix documented in
-[docs/tools.md](docs/tools.md); enum aliases hide physical values. `none` is the
-default full-text mode, while `stemming` and `thesaurus` require explicit
-scope configuration.
+[docs/tools.md](docs/tools.md); enum aliases hide physical values. Public
+status and semantic attributes expose a configured alias only after an exact,
+unambiguous physical mapping; otherwise the physical enum name/label is
+omitted. `none` is the default full-text mode, while `stemming` and
+`thesaurus` require explicit scope configuration.
 
 S2 content reads accept semantic aliases such as `system:primary` (the default)
 and an operator-configured `preview`; callers cannot submit a physical
@@ -198,10 +205,15 @@ under [docs/integrations/dify.md](docs/integrations/dify.md) and
 The content bridge currently supports text, CSV, JSON, XML, PDF, DOCX, XLSX,
 and PPTX extraction where the corresponding local runtime is available.
 XML DTD/external entities are rejected. OOXML archive paths, file counts,
-decompression, member sizes, and extracted characters are bounded. Macros and
-embedded objects are not executed. DocuWorks/XDW is intentionally unsupported
-in v1.x and fails safely unless a future optional provider is explicitly
-configured. No normal MCP tool returns binary or base64 content.
+decompression, member sizes, and extracted characters are bounded. Shared
+OOXML extraction uses an encoding-aware parser-level declaration/entity
+rejection before expansion; late and UTF-16 declarations are not accepted.
+JSON, text, and OOXML materialization is bounded by the configured output
+budget or a reviewed input bound; PDF subprocess output is bounded near the
+same budget. Macros and embedded objects are not executed. DocuWorks/XDW is
+intentionally unsupported in v1.x and fails safely unless a future optional
+provider is explicitly configured. No normal MCP tool returns binary or
+base64 content.
 
 ## Security philosophy and non-goals
 

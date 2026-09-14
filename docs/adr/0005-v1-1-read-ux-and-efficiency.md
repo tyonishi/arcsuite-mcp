@@ -110,8 +110,11 @@ In particular, v1.1 SHALL NOT add:
 - ordinary MCP tool responses containing raw binary/base64 document data.
 
 Paging and content caches are performance features, not new authorities. A
-cache hit MUST be authorized using the same client profile and semantic scope
-that authorized the original read.
+content cache hit or cursor continuation MUST first reauthorize the current
+requested/effective repository identity with the same client profile, semantic
+scope, cabinet/root/object-type, revision, and exact content-label membership
+that applies to the current request. A signed cursor proves integrity, not
+current authorization.
 
 ## Compatibility impact
 

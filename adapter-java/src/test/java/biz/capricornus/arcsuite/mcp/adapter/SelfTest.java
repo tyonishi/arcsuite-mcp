@@ -3,6 +3,7 @@ package biz.capricornus.arcsuite.mcp.adapter;
 import com.sun.net.httpserver.HttpServer;
 import javax.crypto.Cipher;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +33,7 @@ public final class SelfTest {
         typedAttributeValueShapes();
         attributeSchemaMetadataParsing();
         responseIdParsing();
+        revisionContractParsing();
         xmlXxeBlocked();
         boundedStreams();
         System.out.println("Java adapter self-test: PASS");
@@ -84,10 +86,21 @@ public final class SelfTest {
 
     static void mtomDecode() {
         String boundary="test-boundary";
-        String body="--"+boundary+"\r\nContent-Type: application/xop+xml; charset=UTF-8; type=\"text/xml\"\r\nContent-ID: <root>\r\n\r\n<Envelope><data><xop:Include xmlns:xop=\"http://www.w3.org/2004/08/xop/include\" href=\"cid:bin\"/></data></Envelope>\r\n"+
-                "--"+boundary+"\r\nContent-Type: application/octet-stream\r\nContent-ID: <bin>\r\n\r\nABC123\r\n--"+boundary+"--\r\n";
-        MtomMessage m=MtomParser.parse("multipart/related; boundary=\""+boundary+"\"",body.getBytes(StandardCharsets.ISO_8859_1));
-        if(!"ABC123".equals(new String(m.attachments().get("bin"),StandardCharsets.ISO_8859_1))) throw new AssertionError();
+        byte[] root = ("--"+boundary+"\r\nContent-Type: application/xop+xml; charset=UTF-8; type=\"text/xml\"\r\nContent-ID: <root>\r\n\r\n<Envelope><data><xop:Include xmlns:xop=\"http://www.w3.org/2004/08/xop/include\" href=\"cid:bin\"/></data></Envelope>\r\n--"+boundary+"\r\nContent-Type: application/octet-stream\r\nContent-ID: <bin>\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1);
+        byte[] suffix = ("\r\n--"+boundary+"--\r\n").getBytes(StandardCharsets.ISO_8859_1);
+        for (byte[] payload : List.of(
+                new byte[0], "ABC123".getBytes(StandardCharsets.ISO_8859_1),
+                new byte[]{'A','B','C','\n'}, new byte[]{'A','B','C','\r'},
+                new byte[]{'A','B','C','\r','\n'}, new byte[]{'A','\r','\n','\r','\n'},
+                new byte[]{0, (byte) 0xff, 1, 2, '\r', '\n'},
+                ("inside--"+boundary+"-not-a-delimiter").getBytes(StandardCharsets.ISO_8859_1))) {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            bytes.writeBytes(root);
+            bytes.writeBytes(payload);
+            bytes.writeBytes(suffix);
+            MtomMessage m=MtomParser.parse("multipart/related; boundary=\""+boundary+"\"",bytes.toByteArray());
+            if(!java.util.Arrays.equals(payload, m.attachments().get("bin"))) throw new AssertionError("MTOM payload changed: " + java.util.Arrays.toString(payload));
+        }
     }
 
     static void soapRequestShapes() {
@@ -126,6 +139,7 @@ public final class SelfTest {
         String effectiveId = "rep:mock:EXAMPLE_CABINET:document-002";
         AtomicReference<String> returnedObjectId = new AtomicReference<>(effectiveId);
         AtomicReference<String> pathRequestId = new AtomicReference<>();
+        AtomicReference<String> pathResponse = new AtomicReference<>("<t:getRepositoryObjectPathResponse><t:getRepositoryObjectPathReturn><t:objects/><t:fullPath>true</t:fullPath></t:getRepositoryObjectPathReturn></t:getRepositoryObjectPathResponse>");
         AtomicInteger pathCalls = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/soap", exchange -> {
@@ -136,7 +150,7 @@ public final class SelfTest {
                 pathCalls.incrementAndGet();
                 var parsed = XmlUtil.parse(request);
                 pathRequestId.set(XmlUtil.firstDesc(parsed.getDocumentElement(), "id").getTextContent());
-                response = soapEnvelope("<t:getRepositoryObjectPathResponse><t:getRepositoryObjectPathReturn><t:objects/></t:getRepositoryObjectPathReturn></t:getRepositoryObjectPathResponse>");
+                response = soapEnvelope(pathResponse.get());
             } else {
                 String id = returnedObjectId.get();
                 String identity = id == null ? "" : "<t:id>" + XmlUtil.esc(id) + "</t:id>";
@@ -167,6 +181,12 @@ public final class SelfTest {
             Map<String, Object> resolved = client.get(request, "synthetic-session");
             if (!effectiveId.equals(resolved.get("id"))) throw new AssertionError("Resolved object identity was lost: " + resolved);
             if (!effectiveId.equals(pathRequestId.get())) throw new AssertionError("Path was requested for " + pathRequestId.get() + " instead of " + effectiveId);
+
+            pathResponse.set("<t:getRepositoryObjectPathResponse><t:getRepositoryObjectPathReturn><t:objects/></t:getRepositoryObjectPathReturn></t:getRepositoryObjectPathResponse>");
+            expectAdapterFailure(() -> client.get(request, "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
+            pathResponse.set("<t:getRepositoryObjectPathResponse><t:result><t:objects/><t:fullPath>true</t:fullPath></t:result></t:getRepositoryObjectPathResponse>");
+            expectAdapterFailure(() -> client.get(request, "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
+            pathResponse.set("<t:getRepositoryObjectPathResponse><t:getRepositoryObjectPathReturn><t:objects/><t:fullPath>true</t:fullPath></t:getRepositoryObjectPathReturn></t:getRepositoryObjectPathResponse>");
 
             Map<String, Object> unresolvedRequest = Map.of(
                     "id", sourceId,
@@ -830,12 +850,88 @@ public final class SelfTest {
     }
 
     private static String idResponse(String operation, String ids) {
-        return "<t:" + operation + "Response><t:" + operation + "Return><t:result><t:ids>" + ids
-                + "</t:ids></t:result></t:" + operation + "Return></t:" + operation + "Response>";
+        return "<t:" + operation + "Response><t:" + operation + "Return>" + ids
+                + "</t:" + operation + "Return></t:" + operation + "Response>";
     }
 
     private static List<String> callIds(ArcSuiteSoapClient client, String operation, Map<String, Object> request) {
         return operation.startsWith("search") ? client.searchIds(request, "synthetic-session") : client.listIds(request, "synthetic-session");
+    }
+
+    static void revisionContractParsing() throws Exception {
+        if (ArcSuiteSoapClient.revisionNumber(1) != 1
+                || ArcSuiteSoapClient.revisionNumber(ArcSuiteSoapClient.MAX_REVISION_NUMBER) != ArcSuiteSoapClient.MAX_REVISION_NUMBER) {
+            throw new AssertionError("revision range endpoints changed");
+        }
+        for (Object invalid : List.of(0, -1, 2147483648L, 4294967297L)) {
+            expectIllegalArgument(() -> ArcSuiteSoapClient.revisionNumber(invalid));
+        }
+
+        AtomicReference<String> response = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/soap", exchange -> {
+            calls.incrementAndGet();
+            exchange.getRequestBody().readAllBytes();
+            byte[] bytes = soapEnvelope(response.get()).getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("content-type", "text/xml; charset=utf-8");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        Path temp = Files.createTempDirectory("arcsuite-revision-contract-");
+        try {
+            AdapterConfig config = new AdapterConfig(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
+                    "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
+                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024);
+            ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
+            String revisionObject = "<t:repositoryObject><t:id>rep:mock:EXAMPLE_CABINET:1001</t:id>"
+                    + "<t:objectClass name=\"document\"/><t:attributes/></t:repositoryObject>";
+
+            response.set("<t:listRepositoryObjectRevisionsResponse><t:listRepositoryObjectRevisionsReturn/></t:listRepositoryObjectRevisionsResponse>");
+            if (!List.of().equals(client.revisions(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "attrIds", List.of(), "options", List.of()), "synthetic-session"))) {
+                throw new AssertionError("valid empty revision history was not preserved");
+            }
+            response.set("<t:listRepositoryObjectRevisionsResponse><t:listRepositoryObjectRevisionsReturn>"
+                    + revisionObject + "</t:listRepositoryObjectRevisionsReturn></t:listRepositoryObjectRevisionsResponse>");
+            if (client.revisions(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "attrIds", List.of(), "options", List.of()), "synthetic-session").size() != 1) {
+                throw new AssertionError("valid revision object was not parsed");
+            }
+            for (String invalid : List.of(
+                    "<t:listRepositoryObjectRevisionsResponse/>",
+                    "<t:listRepositoryObjectRevisionsResponse><t:listRepositoryObjectRevisionsReturn><t:result/></t:listRepositoryObjectRevisionsReturn></t:listRepositoryObjectRevisionsResponse>",
+                    "<t:listRepositoryObjectRevisionsResponse><t:listRepositoryObjectRevisionsReturn><t:repositoryObject><t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass name=\"document\"/></t:repositoryObject></t:listRepositoryObjectRevisionsReturn></t:listRepositoryObjectRevisionsResponse>")) {
+                response.set(invalid);
+                expectAdapterFailure(() -> client.revisions(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "attrIds", List.of(), "options", List.of()), "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
+            }
+
+            Map<String, Object> maxRequest = Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "revisionNumber", ArcSuiteSoapClient.MAX_REVISION_NUMBER, "attrIds", List.of(), "options", List.of());
+            response.set("<t:getRepositoryObjectByRevisionNumberResponse><t:getRepositoryDocumentByRevisionNubmerReturn>"
+                    + "<t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass name=\"document\"/><t:attributes/>"
+                    + "</t:getRepositoryDocumentByRevisionNubmerReturn></t:getRepositoryObjectByRevisionNumberResponse>");
+            Map<String, Object> returned = client.get(maxRequest, "synthetic-session");
+            if (!"rep:mock:EXAMPLE_CABINET:1001".equals(returned.get("id"))) throw new AssertionError("WSDL revision Return was not accepted");
+
+            response.set("<t:getRepositoryObjectByRevisionNumberResponse><t:getRepositoryObjectByRevisionNumberReturn>"
+                    + revisionObject + "</t:getRepositoryObjectByRevisionNumberReturn></t:getRepositoryObjectByRevisionNumberResponse>");
+            expectAdapterFailure(() -> client.get(maxRequest, "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
+            response.set("<t:getRepositoryObjectByRevisionNumberResponse><t:getRepositoryDocumentByRevisionNubmerReturn>"
+                    + "<t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass name=\"document\"/>"
+                    + "</t:getRepositoryDocumentByRevisionNubmerReturn></t:getRepositoryObjectByRevisionNumberResponse>");
+            expectAdapterFailure(() -> client.get(maxRequest, "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
+
+            int callsBeforeOverflow = calls.get();
+            expectIllegalArgument(() -> client.get(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "revisionNumber", 2147483648L, "attrIds", List.of(), "options", List.of()), "synthetic-session"));
+            if (calls.get() != callsBeforeOverflow) throw new AssertionError("out-of-range revision reached SOAP dispatch");
+
+            response.set("<soap:Fault><faultcode>soap:Server</faultcode><faultstring>ARCSUITE_WS-08305028</faultstring></soap:Fault>");
+            expectAdapterFailure(() -> client.get(maxRequest, "synthetic-session"), "ARCSUITE_NOT_AVAILABLE");
+        } finally {
+            server.stop(0);
+            Files.deleteIfExists(temp);
+        }
     }
 
     static void xmlXxeBlocked() {

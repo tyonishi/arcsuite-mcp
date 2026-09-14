@@ -11,7 +11,12 @@ export class PdfExtractor implements ContentExtractor {
     if (request.startPage) args.push("-f", String(request.startPage));
     if (request.endPage) args.push("-l", String(request.endPage));
     args.push(request.filePath, "-");
-    const result = await runProcess("pdftotext", args, { timeoutMs: 120_000, maxStdoutBytes: 64 * 1024 * 1024 });
+    // Bound subprocess materialization near the configured text budget. UTF-8
+    // output can use up to four bytes per character, with a small framing
+    // allowance; the bridge applies the final character bound as well.
+    const maxChars = request.maxExtractedChars ?? 200_000;
+    const maxStdoutBytes = Math.min(64 * 1024 * 1024, maxChars * 4 + 1024);
+    const result = await runProcess("pdftotext", args, { timeoutMs: 120_000, maxStdoutBytes });
     return {
       extractor: this.name,
       text: result.stdout.toString("utf8"),

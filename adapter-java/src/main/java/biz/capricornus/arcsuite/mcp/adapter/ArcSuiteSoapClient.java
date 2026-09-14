@@ -37,6 +37,8 @@ final class ArcSuiteSoapClient {
     static final int HARD_REFERENCE_MAX_CANDIDATES = 1000;
     static final int MAX_INTEGRITY_CERTIFICATES = 64;
     static final int MAX_CERTIFICATE_EVIDENCE_ENTRIES = 64;
+    static final int MIN_REVISION_NUMBER = 1;
+    static final int MAX_REVISION_NUMBER = Integer.MAX_VALUE;
     static final Set<String> READ_ONLY_OPERATIONS = Set.of(
             "getVersionInfo", "getLoginInfo", "login", "logout", "getSessionInfo",
             "getAttributeSchema", "getAttributeSchemas", "getRepositoryObject",
@@ -102,7 +104,7 @@ final class ArcSuiteSoapClient {
 
     List<Map<String,Object>> search(Map<String,Object> req, String sessionId) {
         SoapResponse r=invoke("searchRepositoryObjects",searchBody(req,true),sessionId,true);
-        Element ret=findResponseValue(r.document(),"searchRepositoryObjectsReturn","result");
+        Element ret=requiredOperationReturn(r.document(), "searchRepositoryObjectsResponse", "searchRepositoryObjectsReturn");
         return parseRepositoryObjects(ret);
     }
 
@@ -120,7 +122,7 @@ final class ArcSuiteSoapClient {
         b.append(attrIds(req.get("attrIds")));
         b.append(options(req.get("options")));
         SoapResponse r=invoke("listRepositoryObjects",b.toString(),sessionId,true);
-        Element ret=findResponseValue(r.document(),"listRepositoryObjectsReturn","result");
+        Element ret=requiredOperationReturn(r.document(), "listRepositoryObjectsResponse", "listRepositoryObjectsReturn");
         return parseRepositoryObjects(ret);
     }
 
@@ -139,19 +141,21 @@ final class ArcSuiteSoapClient {
         String id=requiredString(req,"id");
         Object rev=req.get("revisionNumber");
         String op;
+        String returnName;
         StringBuilder b=new StringBuilder();
         b.append(el("id",id));
-        if (rev instanceof Number n) {
+        if (rev != null) {
             op="getRepositoryObjectByRevisionNumber";
-            b.append(el("revisionNumber",String.valueOf(n.intValue())));
+            returnName="getRepositoryDocumentByRevisionNubmerReturn";
+            b.append(el("revisionNumber",String.valueOf(revisionNumber(rev))));
         } else {
             op="getRepositoryObject";
+            returnName="getRepositoryObjectReturn";
             b.append(el("resolveRef",String.valueOf(bool(req,"resolveRef",false))));
         }
         b.append(attrIds(req.get("attrIds"))).append(options(req.get("options")));
         SoapResponse r=invoke(op,b.toString(),sessionId,true);
-        Element ret=findResponseValue(r.document(),op+"Return","result");
-        if(ret==null) throw new AdapterException("ARCSUITE_NOT_AVAILABLE","Repository object not available");
+        Element ret=requiredOperationReturn(r.document(), op+"Response", returnName);
         Map<String,Object> out=parseRepositoryObject(ret);
         Object rawEffectiveId=out.get("id");
         if(!(rawEffectiveId instanceof String effectiveId)||!isRepositoryObjectId(effectiveId)) {
@@ -163,8 +167,8 @@ final class ArcSuiteSoapClient {
         if(bool(req,"includePath",false)) {
             String pathBody=el("id",effectiveId)+attrIds(List.of(Map.of("ns","rep","name","system:name")))+options(List.of());
             SoapResponse pr=invoke("getRepositoryObjectPath",pathBody,sessionId,true);
-            Element pv=findResponseValue(pr.document(),"getRepositoryObjectPathReturn","result");
-            if(pv!=null) applyPath(out,pv);
+            Element pv=requiredOperationReturn(pr.document(), "getRepositoryObjectPathResponse", "getRepositoryObjectPathReturn");
+            applyPath(out,pv);
         }
         return out;
     }
@@ -172,10 +176,12 @@ final class ArcSuiteSoapClient {
     Map<String,Object> getMany(Map<String,Object> req, String sessionId) {
         String body=getRepositoryObjectsBody(req);
         SoapResponse r=invoke("getRepositoryObjects",body,sessionId,true);
-        Element ret=findResponseValue(r.document(),"getRepositoryObjectsReturn","result");
+        Element ret=requiredOperationReturn(r.document(), "getRepositoryObjectsResponse", "getRepositoryObjectsReturn");
+        List<Element> fields=elementChildren(ret);
+        if(fields.size()!=2||!"results".equals(fields.get(0).getLocalName())||!"failures".equals(fields.get(1).getLocalName())) throw responseShapeFailure();
         LinkedHashMap<String,Object> out=new LinkedHashMap<>();
-        out.put("objects",parseRepositoryObjects(ret));
-        out.put("failures",parseFailures(ret));
+        out.put("objects",parseRepositoryObjects(fields.get(0)));
+        out.put("failures",parseFailures(fields.get(1)));
         return out;
     }
 
@@ -304,6 +310,19 @@ final class ArcSuiteSoapClient {
         return result;
     }
 
+    private static Element optionalOperationReturn(Document document, String responseName, String returnName) {
+        if (document == null || document.getDocumentElement() == null
+                || !"Envelope".equals(document.getDocumentElement().getLocalName())) throw integrityShapeFailure();
+        Element body = requiredSingleChild(document.getDocumentElement(), "Body");
+        List<Element> bodyChildren = elementChildren(body);
+        if (bodyChildren.size() != 1 || !responseName.equals(bodyChildren.get(0).getLocalName())) throw integrityShapeFailure();
+        Element operationResponse = bodyChildren.get(0);
+        List<Element> responseChildren = elementChildren(operationResponse);
+        if (responseChildren.isEmpty()) return null;
+        if (responseChildren.size() != 1 || !returnName.equals(responseChildren.get(0).getLocalName())) throw integrityShapeFailure();
+        return responseChildren.get(0);
+    }
+
     private static Element requiredSingleChild(Element parent, String name) {
         Element found = null;
         for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
@@ -394,7 +413,7 @@ final class ArcSuiteSoapClient {
     List<Map<String,Object>> revisions(Map<String,Object> req,String sessionId) {
         String body=el("id",requiredString(req,"id"))+attrIds(req.get("attrIds"))+options(req.get("options"));
         SoapResponse r=invoke("listRepositoryObjectRevisions",body,sessionId,true);
-        Element ret=findResponseValue(r.document(),"listRepositoryObjectRevisionsReturn","result");
+        Element ret=requiredOperationReturn(r.document(), "listRepositoryObjectRevisionsResponse", "listRepositoryObjectRevisionsReturn");
         return parseRepositoryObjects(ret);
     }
 
@@ -402,10 +421,11 @@ final class ArcSuiteSoapClient {
         String requestId=requiredString(req,"id");
         String id=requestId;
         String effectiveId=requestId;
-        Number revision=req.get("revisionNumber") instanceof Number n?n:null;
+        Object rawRevision=req.get("revisionNumber");
+        Integer revision=rawRevision == null ? null : revisionNumber(rawRevision);
         if(revision!=null) {
             Map<String,Object> getReq=new LinkedHashMap<>();
-            getReq.put("id",requestId); getReq.put("revisionNumber",revision.longValue()); getReq.put("resolveRef",false); getReq.put("includePath",false);
+            getReq.put("id",requestId); getReq.put("revisionNumber",revision); getReq.put("resolveRef",false); getReq.put("includePath",false);
             getReq.put("attrIds",List.of()); getReq.put("options",List.of());
             Map<String,Object> revisionObj=get(getReq,sessionId);
             Object rid=revisionObj.get("id");
@@ -422,7 +442,7 @@ final class ArcSuiteSoapClient {
         }
         Map<String,Object> requestedLabel=map(req.get("contentLabel"));
         SoapResponse r=invoke("getRepositoryObjectContentWithOptions",contentRequestBody(req,id),sessionId,true);
-        Element c=findResponseValue(r.document(),"getRepositoryObjectContentWithOptionsReturn","result");
+        Element c=optionalOperationReturn(r.document(), "getRepositoryObjectContentWithOptionsResponse", "getRepositoryObjectContentWithOptionsReturn");
         if(c==null) throw new AdapterException("ARCSUITE_NOT_AVAILABLE","Content not available");
         Map<String,Object> returnedLabel=parseContentLabel(c);
         assertContentLabelMatches(requestedLabel,returnedLabel);
@@ -437,7 +457,7 @@ final class ArcSuiteSoapClient {
         try { Files.write(path,bytes,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE); }
         catch(IOException e){ throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Failed to materialize content",false,null,e); }
         LinkedHashMap<String,Object> out=new LinkedHashMap<>();
-        out.put("id",requestId); out.put("effectiveId",effectiveId); if(revision!=null)out.put("revisionNumber",revision.longValue()); out.put("label",returnedLabel);
+        out.put("id",requestId); out.put("effectiveId",effectiveId); if(revision!=null)out.put("revisionNumber",revision); out.put("label",returnedLabel);
         out.put("fileName",fileName); out.put("contentType",contentType); out.put("sizeBytes",bytes.length); out.put("filePath",path.toString());
         return out;
     }
@@ -646,23 +666,9 @@ final class ArcSuiteSoapClient {
     private static List<String> parseOperationIdArray(Document document, String operation) {
         Element returnValue = requiredOperationReturn(document, operation + "Response", operation + "Return");
         assertNoUnexpectedText(returnValue);
-        List<Element> returnChildren = elementChildren(returnValue);
-        if (returnChildren.size() != 1 || !"result".equals(returnChildren.get(0).getLocalName())) {
-            throw responseShapeFailure();
-        }
-
-        Element result = returnChildren.get(0);
-        assertNoUnexpectedText(result);
-        List<Element> resultChildren = elementChildren(result);
-        if (resultChildren.size() != 1 || !"ids".equals(resultChildren.get(0).getLocalName())) {
-            throw responseShapeFailure();
-        }
-
-        Element ids = resultChildren.get(0);
-        assertNoUnexpectedText(ids);
         List<String> values = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        for (Element child : elementChildren(ids)) {
+        for (Element child : elementChildren(returnValue)) {
             if (!"id".equals(child.getLocalName()) || !elementChildren(child).isEmpty()) throw responseShapeFailure();
             String raw = child.getTextContent();
             if (raw == null || raw.isBlank()) throw responseShapeFailure();
@@ -684,7 +690,16 @@ final class ArcSuiteSoapClient {
         return new AdapterException("ARCSUITE_UPSTREAM_ERROR", "ArcSuite response shape or accounting mismatch");
     }
 
-    private static List<Map<String,Object>> parseRepositoryObjects(Element container){ List<Map<String,Object>> out=new ArrayList<>(); if(container==null)return out; List<Element> els=XmlUtil.descendants(container,"repositoryObject"); if(els.isEmpty()&&"repositoryObject".equals(container.getLocalName()))els=List.of(container); for(Element e:els)out.add(parseRepositoryObject(e)); return out; }
+    private static List<Map<String,Object>> parseRepositoryObjects(Element container) {
+        if (container == null) throw responseShapeFailure();
+        assertNoUnexpectedText(container);
+        List<Map<String,Object>> out = new ArrayList<>();
+        for (Element child : elementChildren(container)) {
+            if (!"repositoryObject".equals(child.getLocalName())) throw responseShapeFailure();
+            out.add(parseRepositoryObject(child));
+        }
+        return List.copyOf(out);
+    }
 
     static List<String> parseHardReferenceIds(Element container,String targetId,int maxResults) {
         if(container==null||!isRepositoryObjectId(targetId)||maxResults<1||maxResults>HARD_REFERENCE_MAX_CANDIDATES) {
@@ -721,26 +736,87 @@ final class ArcSuiteSoapClient {
         return List.copyOf(ids);
     }
 
-    static Map<String,Object> parseRepositoryObject(Element e){LinkedHashMap<String,Object> out=new LinkedHashMap<>();String id=value(e,"id");if(id==null&&"repositoryObject".equals(e.getLocalName()))id=XmlUtil.childText(e,"id");out.put("id",id==null?"":id);
-        Element oc=XmlUtil.child(e,"objectClass");String ocName=oc==null?"":oc.getAttribute("name");out.put("objectClass",ocName==null||ocName.isBlank()?"unknown":ocName);
-        LinkedHashMap<String,Object> attrs=new LinkedHashMap<>();Element aroot=XmlUtil.child(e,"attributes");if(aroot!=null){for(Element a:XmlUtil.children(aroot,"attribute")){String ns=a.getAttribute("ns"),name=a.getAttribute("name");Element av=XmlUtil.child(a,"attributeValue");if(av!=null)attrs.put(ns+":"+name,parseAttributeValue(av));}}out.put("attributes",attrs);return out;}
+    static Map<String,Object> parseRepositoryObject(Element e) {
+        if (e == null || !("repositoryObject".equals(e.getLocalName())
+                || "getRepositoryObjectReturn".equals(e.getLocalName())
+                || "getRepositoryDocumentByRevisionNubmerReturn".equals(e.getLocalName()))) throw responseShapeFailure();
+        assertNoUnexpectedText(e);
+        List<Element> fields = elementChildren(e);
+        if (fields.size() < 3 || !"id".equals(fields.get(0).getLocalName())
+                || !"objectClass".equals(fields.get(1).getLocalName())
+                || !"attributes".equals(fields.get(2).getLocalName())) throw responseShapeFailure();
+        Set<String> optional = Set.of("acl", "defaultAcl", "effectivePrivileges", "referenceId", "disusedLocationId");
+        for (int i = 3; i < fields.size(); i++) if (!optional.contains(fields.get(i).getLocalName())) throw responseShapeFailure();
+        String id = fields.get(0).getTextContent();
+        if (id == null || id.isBlank() || !isRepositoryObjectId(id.trim())) throw responseShapeFailure();
+        Element objectClass = fields.get(1);
+        String objectClassName = objectClass.getAttribute("name");
+        if (objectClassName == null || objectClassName.isBlank()) throw responseShapeFailure();
+        Element attributes = fields.get(2);
+        LinkedHashMap<String,Object> out = new LinkedHashMap<>();
+        out.put("id", id.trim());
+        out.put("objectClass", objectClassName);
+        LinkedHashMap<String,Object> attrs = new LinkedHashMap<>();
+        for (Element attribute : XmlUtil.children(attributes, "attribute")) {
+            String ns = attribute.getAttribute("ns");
+            String name = attribute.getAttribute("name");
+            if (name == null || name.isBlank() || XmlUtil.children(attribute, "attributeValue").size() > 1) throw responseShapeFailure();
+            Element av = XmlUtil.child(attribute, "attributeValue");
+            if (av != null) attrs.put((ns == null ? "" : ns) + ":" + name, parseAttributeValue(av));
+        }
+        for (Node node = attributes.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if (node instanceof Element child && !"attribute".equals(child.getLocalName())) throw responseShapeFailure();
+        }
+        out.put("attributes", attrs);
+        return out;
+    }
     private static Object parseAttributeValue(Element av){String t=XmlUtil.localType(av);LinkedHashMap<String,Object> o=new LinkedHashMap<>();
         try { switch(t){case "StringValue"-> {o.put("type","string");o.put("value",value(av,"string"));} case "IntValue"->{o.put("type","int");o.put("value",Integer.parseInt(value(av,"int")));} case "LongValue"->{long n=Long.parseLong(value(av,"long"));if(n<-9007199254740991L||n>9007199254740991L)throw new IllegalArgumentException("unsafe long");o.put("type","long");o.put("value",n);} case "DoubleValue"->{double n=Double.parseDouble(value(av,"double"));if(!Double.isFinite(n))throw new IllegalArgumentException("non-finite double");o.put("type","double");o.put("value",n);} case "BooleanValue"->{o.put("type","boolean");o.put("value",parseBooleanLexical(value(av,"boolean")));} case "DateTimeValue"->{o.put("type","datetime");o.put("value",value(av,"dateTime"));} case "DateValue"->{o.put("type","date");o.put("value",value(av,"date"));} case "IdValue"->{o.put("type","id");o.put("value",value(av,"id"));} case "I18nStringValue"->{Element i=XmlUtil.child(av,"i18nString");o.put("type","i18n"); if(i!=null){o.put("ns",i.getAttribute("ns"));o.put("name",i.getAttribute("name"));String l=i18nLabel(i);if(l!=null)o.put("label",l);}} case "I18nStringValues"->{o.put("type","i18n[]");List<Object> vs=new ArrayList<>();for(Element i:XmlUtil.children(av,"i18nStrings")){LinkedHashMap<String,Object>x=new LinkedHashMap<>();x.put("ns",i.getAttribute("ns"));x.put("name",i.getAttribute("name"));String l=i18nLabel(i);if(l!=null)x.put("label",l);vs.add(x);}o.put("values",vs);} case "RmsObjectValueRmsObject"->{o.put("type","rmsObject");Element r=XmlUtil.firstDesc(av,"rmsObject");if(r!=null){String dn=value(r,"dn");if(dn!=null)o.put("dn",dn);Element oc=XmlUtil.child(r,"objectClass");String l=oc==null?null:i18nLabel(oc);if(l!=null)o.put("label",l);}} default->{o.put("type","unknown");o.put("rawType",t.isBlank()?"unknown":t);String text=av.getTextContent();if(text!=null&&!text.isBlank())o.put("value",text.trim());} } }
         catch(Exception ex){o.clear();o.put("type","unknown");o.put("rawType",t.isBlank()?"unknown":t);}return o;}
     private static String i18nLabel(Element i){for(Element l:XmlUtil.children(i,"label")){String lang=l.getAttribute("lang");if("ja".equalsIgnoreCase(lang))return l.getTextContent();}Element l=XmlUtil.child(i,"label");return l==null?null:l.getTextContent();}
 
     private static List<Map<String,Object>> parseFailures(Element container){
-        List<Map<String,Object>> out=new ArrayList<>();if(container==null)return out;
-        for(Element failure:XmlUtil.descendants(container,"failure")){
-            LinkedHashMap<String,Object> item=new LinkedHashMap<>();String index=value(failure,"index");
-            try{item.put("index",Integer.parseInt(index));}catch(Exception ignored){continue;}
-            Element exception=XmlUtil.child(failure,"exception");String upstream=exception==null?findArcSuiteCode(failure.getTextContent()):findArcSuiteCode(exception.getTextContent());
-            item.put("code",stableCode(upstream));if(upstream!=null)item.put("upstreamCode",upstream);out.add(item);
+        if (container == null) throw responseShapeFailure();
+        assertNoUnexpectedText(container);
+        List<Map<String,Object>> out=new ArrayList<>();
+        Set<Integer> seen = new HashSet<>();
+        for (Element failure : elementChildren(container)) {
+            if (!"failure".equals(failure.getLocalName())) throw responseShapeFailure();
+            List<Element> fields = elementChildren(failure);
+            if (fields.size() != 2 || !"index".equals(fields.get(0).getLocalName()) || !"exception".equals(fields.get(1).getLocalName())) throw responseShapeFailure();
+            int index;
+            try { index = Integer.parseInt(fields.get(0).getTextContent().trim()); }
+            catch (Exception ignored) { throw responseShapeFailure(); }
+            if (!seen.add(index)) throw responseShapeFailure();
+            String upstream = findArcSuiteCode(fields.get(1).getTextContent());
+            LinkedHashMap<String,Object> item=new LinkedHashMap<>();
+            item.put("index", index);
+            item.put("code", stableCode(upstream));
+            if (upstream != null) item.put("upstreamCode", upstream);
+            out.add(item);
         }
-        return out;
+        return List.copyOf(out);
     }
 
-    @SuppressWarnings("unchecked") private static void applyPath(Map<String,Object> out,Element p){Element objs=XmlUtil.child(p,"objects");List<Object> path=new ArrayList<>();if(objs!=null)for(Element ro:XmlUtil.children(objs,"repositoryObject")){Map<String,Object> parsed=parseRepositoryObject(ro);Map<String,Object> attrs=(Map<String,Object>)parsed.get("attributes");Object nv=attrs.get("rep:system:name");String name=null;if(nv instanceof Map<?,?> vm&&vm.get("value")!=null)name=String.valueOf(vm.get("value"));LinkedHashMap<String,Object>x=new LinkedHashMap<>();x.put("id",parsed.get("id"));if(name!=null)x.put("name",name);x.put("objectClass",parsed.get("objectClass"));path.add(x);}out.put("pathObjects",path);String f=value(p,"fullPath");if(f!=null)out.put("fullPath",Boolean.parseBoolean(f));}
+    @SuppressWarnings("unchecked") private static void applyPath(Map<String,Object> out,Element p){
+        assertNoUnexpectedText(p);
+        List<Element> fields=elementChildren(p);
+        if(fields.size()!=2||!"objects".equals(fields.get(0).getLocalName())||!"fullPath".equals(fields.get(1).getLocalName())) throw responseShapeFailure();
+        List<Object> path=new ArrayList<>();
+        for(Map<String,Object> parsed:parseRepositoryObjects(fields.get(0))){
+            Map<String,Object> attrs=(Map<String,Object>)parsed.get("attributes");
+            Object nv=attrs.get("rep:system:name");
+            String name=null;
+            if(nv instanceof Map<?,?> vm&&vm.get("value")!=null)name=String.valueOf(vm.get("value"));
+            LinkedHashMap<String,Object>x=new LinkedHashMap<>();
+            x.put("id",parsed.get("id"));
+            if(name!=null)x.put("name",name);
+            x.put("objectClass",parsed.get("objectClass"));
+            path.add(x);
+        }
+        out.put("pathObjects",path);
+        out.put("fullPath",parseBooleanLexical(fields.get(1).getTextContent().trim()));
+    }
     static Map<String,Object> parseAttributeSchema(Element s){
         LinkedHashMap<String,Object> o=new LinkedHashMap<>();
         for(String k:List.of("ns","name","dataType","nativeDataType","pattern")){String v=value(s,k);if(v!=null)o.put(k,v);}
@@ -764,9 +840,18 @@ final class ArcSuiteSoapClient {
         if(value<Integer.MIN_VALUE||value>Integer.MAX_VALUE)throw new IllegalArgumentException("int value is out of range");
         return (int)value;
     }
+
+    static int revisionNumber(Object raw) {
+        long value = exactLong(raw);
+        if (value < MIN_REVISION_NUMBER || value > MAX_REVISION_NUMBER) {
+            throw new IllegalArgumentException("revisionNumber is outside the licensed xsd:int public range");
+        }
+        return Math.toIntExact(value);
+    }
+
     private static long exactLong(Object raw){
         if(raw instanceof Byte||raw instanceof Short||raw instanceof Integer||raw instanceof Long)return ((Number)raw).longValue();
-        if(raw instanceof java.math.BigInteger integer&&integer.bitLength()<64)return integer.longValue();
+        if(raw instanceof java.math.BigInteger integer){try{return integer.longValueExact();}catch(ArithmeticException ignored){}}
         if(raw instanceof java.math.BigDecimal decimal){try{return decimal.toBigIntegerExact().longValueExact();}catch(ArithmeticException ignored){}}
         throw new IllegalArgumentException("integer value is required");
     }

@@ -25,11 +25,13 @@ configuration.
 - integration tests cover MCP initialization/discovery, actual `tools/list`
   limits under non-default configuration, synthetic search/read behavior,
   authentication, Origin checks, raw-field rejection, scope-boundary checks,
-  and excluded tool reachability;
+  effective-identity cache/cursor reauthorization, exact batch/path identity,
+  semantic enum privacy, and excluded tool reachability;
 - the Java self-test covers JSON integer preservation, RSA-OAEP encrypted
   credential construction, bounded session retry, strict SOAP ID arrays,
-  effective object/path identity, MTOM parsing, XML entity rejection, and
-  synthetic Hard Reference SOAP shapes.
+  effective object/path identity, WSDL revision response/range contracts,
+  byte-preserving MTOM parsing, XML entity rejection, and synthetic Hard
+  Reference SOAP shapes.
 
 Tests must use synthetic IDs, names, hostnames, and content. A test that needs
 licensed ArcSuite behavior belongs in an environment-dependent qualification

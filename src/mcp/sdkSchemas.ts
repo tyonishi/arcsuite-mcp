@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_REVISION_NUMBER, MIN_REVISION_NUMBER } from "../arcsuite/constants.ts";
 
 const documentId = z.string().min(5).max(2048).regex(/^rep:/);
 const scope = z.string().min(1).max(64).regex(/^[a-z][a-z0-9_]*$/);
@@ -27,6 +28,7 @@ const semanticFilterValue = z.union([
 
 function createToolInputSchemas(limits: ToolSchemaLimits) {
   const limit = z.number().int().min(1).max(limits.searchMaxLimit).optional();
+  const revisionNumber = z.number().int().min(MIN_REVISION_NUMBER).max(MAX_REVISION_NUMBER).optional();
   return {
     arcsuite_describe_capabilities: z.object({}).strict(),
     arcsuite_validate_document_integrity: z.object({
@@ -45,7 +47,7 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
     }).strict(),
     arcsuite_get_document: z.object({
       document_id: documentId,
-      revision_number: z.number().int().min(1).optional(),
+      revision_number: revisionNumber,
       include_path: z.boolean().optional()
     }).strict(),
     arcsuite_get_documents: z.object({
@@ -76,12 +78,12 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
     arcsuite_list_document_revisions: z.object({ document_id: documentId, limit }).strict(),
     arcsuite_get_document_content_info: z.object({
       document_id: documentId,
-      revision_number: z.number().int().min(1).optional(),
+      revision_number: revisionNumber,
       content_label: contentLabel
     }).strict(),
     arcsuite_read_document: z.object({
       document_id: documentId,
-      revision_number: z.number().int().min(1).optional(),
+      revision_number: revisionNumber,
       content_label: contentLabel,
       start_page: z.number().int().min(1).optional(),
       end_page: z.number().int().min(1).optional(),

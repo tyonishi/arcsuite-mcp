@@ -46,6 +46,9 @@ test("content info returns validated metadata when optional snapshot warming fai
     clientProfileId: "client-a",
     scopeId: "scope",
     documentId: content.id,
+    effectiveDocumentId: content.effectiveId,
+    cabinetId: "rep:mock:EXAMPLE_CABINET",
+    rootObjectId: null,
     contentLabel: "system:primary",
     physicalContentLabel: { ns: "rep", name: "system:primary" }
   }, async () => content);

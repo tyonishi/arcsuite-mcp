@@ -11,7 +11,82 @@ import re
 import sys
 import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
+from xml.parsers import expat
+
+
+class _Element:
+    """Small ElementTree-compatible view built by the safe Expat parser."""
+
+    def __init__(self, tag: str, attrib: dict[str, str]):
+        self.tag = tag
+        self.attrib = attrib
+        self.text = None
+        self._children = []
+
+    def __iter__(self):
+        return iter(self._children)
+
+    def iter(self):
+        yield self
+        for child in self._children:
+            yield from child.iter()
+
+
+class _SafeElementTree:
+    """ElementTree-compatible facade with parser-level DTD/entity rejection."""
+
+    @staticmethod
+    def fromstring(data: bytes):
+        root = None
+        stack = []
+        parser = expat.ParserCreate(namespace_separator="}")
+
+        def unsafe(*_args):
+            raise RuntimeError("UNSAFE_XML_DECLARATION")
+
+        parser.StartDoctypeDeclHandler = unsafe
+        parser.EntityDeclHandler = unsafe
+        parser.ExternalEntityRefHandler = unsafe
+        parser.SkippedEntityHandler = unsafe
+        parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+
+        def start(name, attrs):
+            nonlocal root
+            element = _Element(name, dict(attrs))
+            if stack:
+                stack[-1]._children.append(element)
+            elif root is not None:
+                raise RuntimeError("OOXML_XML_INVALID")
+            else:
+                root = element
+            stack.append(element)
+
+        def end(_name):
+            if not stack:
+                raise RuntimeError("OOXML_XML_INVALID")
+            stack.pop()
+
+        def character_data(value):
+            if stack:
+                stack[-1].text = (stack[-1].text or "") + value
+
+        parser.StartElementHandler = start
+        parser.EndElementHandler = end
+        parser.CharacterDataHandler = character_data
+        try:
+            parser.Parse(data, True)
+        except RuntimeError:
+            raise
+        except expat.ExpatError as error:
+            raise RuntimeError("OOXML_XML_INVALID") from error
+        if root is None or stack:
+            raise RuntimeError("OOXML_XML_INVALID")
+        return root
+
+
+# Tests may replace this narrow facade with a synthetic tree, while production
+# always uses the encoding-aware Expat parser above.
+ET = _SafeElementTree
 
 MAX_FILES = 20_000
 MAX_TOTAL_UNCOMPRESSED = 128 * 1024 * 1024
@@ -82,9 +157,6 @@ def read_member(zf, name: str, max_bytes: int) -> bytes:
 
 
 def xml_text_parts(data: bytes):
-    head = data[:65536].upper()
-    if b"<!DOCTYPE" in head or b"<!ENTITY" in head:
-        raise RuntimeError("UNSAFE_XML_DECLARATION")
     root = ET.fromstring(data)
     for elem in root.iter():
         local = elem.tag.rsplit("}", 1)[-1]
@@ -134,8 +206,6 @@ def xlsx(zf, member_limit: int, max_chars: int):
     shared = []
     if "xl/sharedStrings.xml" in zf.namelist():
         data = read_member(zf, "xl/sharedStrings.xml", member_limit)
-        if b"<!DOCTYPE" in data[:65536].upper() or b"<!ENTITY" in data[:65536].upper():
-            raise RuntimeError("UNSAFE_XML_DECLARATION")
         root = ET.fromstring(data)
         for si in root.iter():
             if si.tag.rsplit("}", 1)[-1] == "si":
@@ -147,8 +217,6 @@ def xlsx(zf, member_limit: int, max_chars: int):
         if writer.remaining <= 0:
             break
         data = read_member(zf, sheet, member_limit)
-        if b"<!DOCTYPE" in data[:65536].upper() or b"<!ENTITY" in data[:65536].upper():
-            raise RuntimeError("UNSAFE_XML_DECLARATION")
         root = ET.fromstring(data)
         sheet_has_rows = False
         stop = False

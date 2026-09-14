@@ -108,6 +108,10 @@ v1.2 SHALL NOT allow:
   audit metadata.
 - No cache or relationship traversal may cross client-profile or scope
   boundaries.
+- Physical enum names/localized labels MUST NOT cross the semantic boundary;
+  configured Attribute IDs MUST be resolved by exact namespace and name.
+- JSON/text/XML/OOXML extraction MUST keep output materialization bounded by
+  the configured output budget or an independently reviewed input bound.
 - Incoming Hard Reference cursors are additionally bound to the target object,
   and candidate overflow fails without a partial relationship result.
 

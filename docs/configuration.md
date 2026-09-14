@@ -154,9 +154,11 @@ Aliases must match `[a-z][a-z0-9_]{0,63}`. The registry accepts at most 32
 custom labels per scope and bounds namespace/name lengths, whitespace, control
 characters, duplicate physical mappings, and reserved-alias redefinition.
 The server does not make a startup call to prove that each configured label
-exists. Document or revision membership is checked at runtime from the exact
-`rep:system:contentlabellist` metadata before a content cache miss dispatches
-`getRepositoryObjectContentWithOptions`.
+exists. Before any content cache lookup or content dispatch, document or
+revision membership is checked at runtime from the exact
+`rep:system:contentlabellist` metadata together with current cabinet, root,
+object-type, and effective-identity proof. The selected physical label is
+never a public fallback value.
 
 ### Typed semantic filters
 
@@ -189,8 +191,17 @@ For `I18N_STRING_TYPE` enums, `values` entries use `ns`/`name` and must be
 present in the validated schema's `enumLabels`. For a string-valued enumerated
 attribute (`STRING_TYPE` with `enumerated: true`), use a literal mapping such
 as `active: {value: "ACTIVE"}`; it is sent as `StringValue`. The alias names,
-not physical mappings, are returned to MCP clients. Long integer requests must
+not physical mappings, are returned to MCP clients. Duplicate aliases for the
+same physical enum identity are rejected using the same canonical key for
+I18n (`type + namespace + name`) and string (`type + exact literal`) mappings.
+Unambiguous configured aliases are the only public enum/status values; raw
+physical names and localized labels are omitted. Long integer requests must
 be JavaScript safe integers; unsafe values fail closed.
+
+Public `revision_number` inputs are positive `xsd:int` values from `1` through
+`2147483647`, inclusive. The declarative schemas, actual MCP `tools/list`
+schemas, runtime parser, and Java adapter use this same range; values above it
+are rejected before provider dispatch.
 
 ### Full-text search modes
 
@@ -251,15 +262,18 @@ unbounded follow-up search.
 v1.1 can reuse a short-lived process-local snapshot of normalized extracted
 text. This avoids repeated ArcSuite downloads/extraction for content-info +
 read or successive read chunks. Cache identity includes client profile, scope,
-document, revision, content label, extraction variant, and content hash.
+requested and effective document identity, cabinet/root authority context,
+revision, semantic and physical content label, extraction variant, and content
+hash.
 
 The cache:
 
 - is bounded by TTL, entry count, per-client count, and total UTF-8 bytes;
 - is not persisted;
 - is cleared on normal server shutdown on a best-effort basis;
-- never changes ArcSuite authorization; every cached lookup is profile/scope
-  bound;
+- never changes ArcSuite authorization; every cached lookup is preceded by
+  current profile/scope/cabinet/root/type/revision/content-label proof and an
+  exact comparison with the snapshot authority binding;
 - never writes extracted content to the audit log.
 
 ## Token profiles
