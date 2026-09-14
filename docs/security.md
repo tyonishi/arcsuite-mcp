@@ -21,9 +21,10 @@
   reference identity, and edition data are excluded from MCP output and audit
   metadata.
 - The TypeScript and Java layers enforce a read-only SOAP operation allowlist.
-- ArcSuite challenge/password credentials use the server public key with
-  explicitly parameterized RSA-OAEP (SHA-256 with SHA-256 MGF1); the resulting
-  wire behavior remains subject to live ArcSuite qualification.
+- ArcSuite challenge/password credentials use the server public key with RSA
+  PKCS#1 v1.5 padding (`RSA/ECB/PKCS1Padding`) over UTF-8
+  (`challenge + password`); the resulting wire behavior remains subject to
+  live ArcSuite qualification.
 - Administrator mode is fixed false; privileged-print, ACL, delete, workflow,
   delegation, and arbitrary SOAP operations are absent.
 - Content is size-bounded, character-bounded, extracted by allowlisted
