@@ -23,6 +23,7 @@ vendor/
 vendor-material/
 
 # Local secrets and configuration.
+/docker-compose.yml
 config/scopes.yaml
 config/tokens.json
 config/clients.json
