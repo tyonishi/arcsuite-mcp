@@ -76,11 +76,22 @@ audit output is directed to its writable /tmp tmpfs in this example; choose and
 mount a reviewed persistent destination if the target environment requires
 audit retention.
 
+The default gateway-to-adapter URL is plain HTTP,
+http://arcsuite-adapter:18080, because the Java adapter listener and the
+live-tested topology use HTTP on the private Compose-managed bridge network.
+The adapter port is not published to the host and the internal token remains
+required, but this private-network boundary does not encrypt that hop. If the
+container network cannot be treated as trusted, review TLS/mTLS or another
+protected network boundary for the target environment. TLS/mTLS is not
+configured or claimed as qualified by this generic example.
+
 The gateway waits for the adapter to be started with
 depends_on condition service_started. No unverified health endpoint is invented
-here; application startup validation and /readyz remain authoritative. Validate
-and start with the Compose-compatible command set supported by the target
-platform:
+here; the gateway performs its initial health/schema validation and retries a
+failed startup validation every five seconds while /readyz remains 503. Once
+validation succeeds, the retry is stopped and /readyz becomes authoritative.
+Validate and start with the Compose-compatible command set supported by the
+target platform:
 
     docker compose config
     docker compose up -d --build
