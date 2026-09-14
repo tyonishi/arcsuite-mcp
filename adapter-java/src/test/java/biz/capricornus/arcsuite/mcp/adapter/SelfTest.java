@@ -59,9 +59,8 @@ public final class SelfTest {
             throw new AssertionError("Unexpected credential transformation: " + productionCipher.getAlgorithm());
         }
 
-        var independentCipher = Cipher.getInstance(
-                // lgtm[java/rsa-without-oaep]
-                "RSA/ECB/PKCS1Padding");
+        // lgtm[java/rsa-without-oaep]
+        var independentCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
         independentCipher.init(Cipher.DECRYPT_MODE, pair.getPrivate());
         byte[] plain = independentCipher.doFinal(ciphertext);
         if (!java.util.Arrays.equals(expected, plain)) {

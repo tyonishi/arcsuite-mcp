@@ -12,9 +12,8 @@ import java.util.Base64;
 
 final class Crypto {
     // ArcSuite 4.0 requires this exact PKCS#1 v1.5 credential wire contract.
-    private static final String CREDENTIAL_TRANSFORMATION =
-            // lgtm[java/rsa-without-oaep]
-            "RSA/ECB/PKCS1Padding";
+    // lgtm[java/rsa-without-oaep]
+    private static final String CREDENTIAL_TRANSFORMATION = "RSA/ECB/PKCS1Padding";
 
     private Crypto() {}
 
