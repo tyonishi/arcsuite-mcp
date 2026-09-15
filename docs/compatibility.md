@@ -137,7 +137,13 @@ The WSDL's revision-get response uses the exact
 that operation-specific Return and treats a missing or malformed object as an
 upstream error; an ordinary ArcSuite SOAP not-available fault retains its
 stable not-available classification. MTOM attachments are handled as bytes,
-with only MIME framing CRLF removed at a boundary.
+with only MIME framing CRLF removed at a boundary. The initial MIME boundary is
+accepted at byte offset zero or with exactly one leading CRLF at byte offset two,
+matching an ArcSuite response framing variant observed in a licensed environment.
+LF-only prefixes, multiple leading CRLF pairs, and arbitrary preamble bytes remain
+rejected. Synthetic Java tests cover both the accepted framing and these
+fail-closed cases; the operator must still qualify the behavior against the
+licensed ArcSuite version in use.
 
 ## ArcSuite v1.2 S3 incoming Hard References
 

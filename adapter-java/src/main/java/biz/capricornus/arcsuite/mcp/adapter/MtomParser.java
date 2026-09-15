@@ -34,8 +34,12 @@ final class MtomParser {
     private static List<Part> split(byte[] body, byte[] marker) {
         List<Part> out=new ArrayList<>();
         int first = boundaryAt(body, marker, 0);
-        if (first != 0) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response has an invalid initial boundary");
-        int cursor = marker.length;
+        // Some ArcSuite versions prepend exactly one CRLF before the first MIME
+        // boundary. Do not generalize this to an arbitrary MIME preamble.
+        boolean validInitialBoundary = first == 0
+                || (first == 2 && startsWith(body, 0, (byte) '\r', (byte) '\n'));
+        if (!validInitialBoundary) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response has an invalid initial boundary");
+        int cursor = first + marker.length;
         while (true) {
             if (startsWith(body, cursor, (byte) '-', (byte) '-')) break;
             if (!startsWith(body, cursor, (byte) '\r', (byte) '\n')) {
