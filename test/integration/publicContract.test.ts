@@ -64,9 +64,13 @@ async function listTools(protocolVersion: "2025-03-26" | "2026-07-28") {
     return { status: response.status, result: envelope.result };
   } finally {
     try {
-      runtime.server.close();
-    } finally {
       runtime.stopValidationRetry();
+    } finally {
+      if (runtime.server.listening) {
+        await new Promise<void>((resolveClose) => {
+          runtime.server.close(() => resolveClose());
+        });
+      }
     }
   }
 }

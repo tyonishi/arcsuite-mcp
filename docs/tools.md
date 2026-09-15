@@ -83,7 +83,14 @@ missing or malformed verification attribute, a predicate mismatch, or a
 hydration failure in a search that requires deterministic verification fails the
 whole search call with the existing stable upstream error. Provider-authority
 LIKE/full-text searches retain the established per-ID partial-failure behavior.
-A provider response containing no IDs remains a successful zero-result search.
+A provider response containing no IDs remains a successful zero-result search;
+malformed ID responses fail with the existing upstream error instead of being
+treated as zero results. Configured physical AttributeIds whose wire identity
+is ambiguous are rejected before they can be used for verification.
+
+When an integer predicate is verified against an ArcSuite `INT_TYPE` attribute,
+the hydrated value must also stay within the signed 32-bit range. Out-of-range
+or otherwise malformed authoritative metadata fails closed.
 
 Search continuation cursors retain the original private verification plan on
 the server. The public cursor format and the public result fields do not

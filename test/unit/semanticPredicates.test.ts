@@ -55,6 +55,20 @@ test("numeric and boolean equality require the authoritative type and value", ()
   assert.throws(() => verifySemanticPredicate(approved, attr(approved, { type: "string", value: "true" })), SemanticVerificationError);
 });
 
+test("authoritative INT values must remain within the ArcSuite 32-bit range", () => {
+  const predicate = canonicalizeFilter(scope, "page_count", { operator: "gte", value: 10 }, {
+    ...schema("page_count"),
+    dataType: "INT_TYPE"
+  });
+  assert.doesNotThrow(() => verifySemanticPredicate(predicate, attr(predicate, { type: "int", value: 2_147_483_647 })));
+  for (const value of [-2_147_483_649, 2_147_483_648]) {
+    assert.throws(
+      () => verifySemanticPredicate(predicate, attr(predicate, { type: "int", value })),
+      (error) => error instanceof SemanticVerificationError && error.reason === "malformed_attribute"
+    );
+  }
+});
+
 test("datetime and date comparisons include exact boundaries", () => {
   const after = canonicalizeFilter(scope, "modified_after", { operator: "gte", value: "2026-09-01T00:00:00.123Z" }, schema("modified_after"));
   assert.doesNotThrow(() => verifySemanticPredicate(after, attr(after, { type: "datetime", value: "2026-09-01T00:00:00.123Z" })));

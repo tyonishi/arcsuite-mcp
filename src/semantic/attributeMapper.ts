@@ -117,7 +117,7 @@ function matchesCondition(condition: AdapterSearchCondition, actual: AttributeVa
     return compareText(actual.value, condition.value.value, condition.operator);
   }
   if (condition.value.type === "int" || condition.value.type === "long") {
-    if (actual.type !== condition.value.type || !Number.isSafeInteger(actual.value)) return false;
+    if (actual.type !== condition.value.type || !isAuthoritativeInteger(actual.value, condition.value.type)) return false;
     return compareNumber(actual.value, condition.value.value, condition.operator);
   }
   if (condition.value.type === "double") {
@@ -152,7 +152,7 @@ function hasAuthoritativeShape(expected: AdapterSearchCondition["value"], actual
   if (!actual || typeof actual !== "object") return false;
   if (expected.type === "string") return actual.type === "string" && typeof actual.value === "string";
   if (expected.type === "int" || expected.type === "long") {
-    return actual.type === expected.type && typeof actual.value === "number" && Number.isSafeInteger(actual.value);
+    return actual.type === expected.type && isAuthoritativeInteger(actual.value, expected.type);
   }
   if (expected.type === "double") return actual.type === "double" && typeof actual.value === "number" && Number.isFinite(actual.value);
   if (expected.type === "boolean") return actual.type === "boolean" && typeof actual.value === "boolean";
@@ -162,6 +162,11 @@ function hasAuthoritativeShape(expected: AdapterSearchCondition["value"], actual
     && actual.type === "i18n"
     && typeof actual.ns === "string"
     && typeof actual.name === "string";
+}
+
+function isAuthoritativeInteger(value: unknown, type: "int" | "long"): value is number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) return false;
+  return type === "long" || (value >= -2_147_483_648 && value <= 2_147_483_647);
 }
 
 function compareText(actual: string, expected: string, operator: AdapterSearchCondition["operator"]): boolean {

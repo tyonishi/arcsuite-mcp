@@ -172,6 +172,9 @@ export class ToolRegistry {
               limit: snapshotLimit + 1,
               options: []
             }));
+            if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+              throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "search_ids_shape", false);
+            }
             for (const id of ids) this.assertObjectIdInScope(scope, id);
             page = this.paging.create({
               clientProfileId: profile.clientProfileId,
@@ -918,20 +921,22 @@ export class ToolRegistry {
     const root = scope.arcsuite.root_object_id;
     const options = root ? ["getRepositoryObjects.searchMode", `getRepositoryObjects.searchMode.searchRegion=${root}`] : [];
     const attrIds: typeof scope.default_attr_ids = [];
-    const attrKeys = new Set<string>();
-    for (const attr of scope.default_attr_ids) {
-      const key = attrKey(attr);
-      if (attrKeys.has(key)) continue;
+    const attrIdentities = new Map<string, string>();
+    const addAttribute = (attr: { ns: string; name: string }): void => {
+      const wireKey = attrKey(attr);
+      const identity = JSON.stringify([attr.ns, attr.name]);
+      const existing = attrIdentities.get(wireKey);
+      if (existing !== undefined && existing !== identity) {
+        throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "ambiguous_attribute_identity", false);
+      }
+      if (existing !== undefined) return;
+      attrIdentities.set(wireKey, identity);
       attrIds.push({ ...attr });
-      attrKeys.add(key);
-    }
+    };
+    for (const attr of scope.default_attr_ids) addAttribute(attr);
     for (const predicate of verificationPlan ?? []) {
       if (predicate.verification !== "deterministic") continue;
-      const attr = predicate.condition.attrId;
-      if (!attrKeys.has(attrKey(attr))) {
-        attrIds.push({ ...attr });
-        attrKeys.add(attrKey(attr));
-      }
+      addAttribute(predicate.condition.attrId);
     }
     this.recordSoapOperation(operations, "getRepositoryObjects");
     const batch = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.getMany({

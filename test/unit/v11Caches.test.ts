@@ -45,7 +45,7 @@ test("paging cursor tampering and duplicate ID snapshots fail closed", () => {
     kind: "search",
     ids: ["rep:a:1", "rep:a:1"],
     pageSize: 1,
-    context: { includePath: false }
+    context: { includePath: false, searchVerificationPlan: [] }
   }));
 });
 

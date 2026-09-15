@@ -198,6 +198,23 @@ test("provider failures remain distinct from successful zero results", async () 
   rt.stopValidationRetry();
 });
 
+test("malformed provider ID results fail closed instead of becoming zero results", async () => {
+  for (const value of ["", null, {}, [42]]) {
+    const rt = await runtime();
+    try {
+      rt.adapter.searchIds = async () => value as any;
+      await assert.rejects(
+        () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "provider-term" }),
+        (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "search_ids_shape"
+      );
+      const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").at(-1)!);
+      assert.equal(audit.search_outcome, "provider_failure");
+    } finally {
+      rt.stopValidationRetry();
+    }
+  }
+});
+
 test("provider-originated forbidden search failures are audited as provider failures", async () => {
   const rt = await runtime();
   try {
