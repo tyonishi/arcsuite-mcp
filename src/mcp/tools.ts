@@ -1220,8 +1220,9 @@ function parseReadArgs(args: Record<string, unknown>, config: AppConfig) {
   const cursor = optionalString(args.cursor, "cursor", 4096);
   const startPage = optionalInt(args.start_page, "start_page", 1, MAX_PAGE_NUMBER);
   const endPage = optionalInt(args.end_page, "end_page", 1, MAX_PAGE_NUMBER);
-  if (cursor && startPage !== undefined) throw new TypeError("cursor and start_page cannot both be specified");
-  if (cursor && endPage !== undefined) throw new TypeError("cursor and end_page cannot both be specified");
+  if (cursor !== undefined && !cursor.length) throw new TypeError("cursor must not be empty");
+  if (cursor !== undefined && startPage !== undefined) throw new TypeError("cursor and start_page cannot both be specified");
+  if (cursor !== undefined && endPage !== undefined) throw new TypeError("cursor and end_page cannot both be specified");
   if (endPage !== undefined && startPage === undefined) throw new TypeError("end_page requires start_page");
   if (endPage !== undefined && startPage !== undefined && endPage < startPage) throw new TypeError("end_page must be >= start_page");
   const maxChars = args.max_chars === undefined ? config.readDefaultMaxChars : intValue(args.max_chars, "max_chars", 1000, config.readMaxChars);

@@ -494,6 +494,10 @@ test("read cursors bind to preview, preserve it when omitted, and reject cross-l
     (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT" && error?.category === "content_label_cursor_mismatch"
   );
   await assert.rejects(
+    () => rt.tools.call(p, "arcsuite_read_document", { document_id: DOCUMENT_A, cursor: "", start_page: 1, max_chars: 1000 }),
+    (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+  );
+  await assert.rejects(
     () => rt.tools.call({ ...p, clientProfileId: "other-profile" }, "arcsuite_read_document", { document_id: DOCUMENT_A, cursor: first.next_cursor, max_chars: 1000 }),
     (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
   );

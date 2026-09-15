@@ -474,7 +474,7 @@ final class ArcSuiteSoapClient {
         Map<String,Object> revisionObj=get(getReq,sessionId);
         Object rid=revisionObj.get("id");
         if(!(rid instanceof String s)||!revisionMetadataIdentityMatches(effectiveId,s,revision)
-                || !revisionAttributeMatches(revisionObj, revision)) {
+                || !revisionAttributeMatchesIfPresent(revisionObj, revision)) {
             throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Revision content identity did not match the proven effective identity");
         }
         Map<String,Object> requestedLabel=map(req.get("contentLabel"));

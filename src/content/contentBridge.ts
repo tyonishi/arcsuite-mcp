@@ -349,6 +349,7 @@ export function normalizeExtractedText(text: string, maxChars = Number.MAX_SAFE_
   if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error("EXTRACTED_TEXT_LIMIT_INVALID");
   const output: string[] = [];
   let outputLength = 0;
+  let started = false;
   const append = (value: string) => {
     if (outputLength >= maxChars) return false;
     const remaining = maxChars - outputLength;
@@ -363,6 +364,7 @@ export function normalizeExtractedText(text: string, maxChars = Number.MAX_SAFE_
     const code = text.charCodeAt(index);
     if (code === 13 || code === 10) {
       if (code === 13 && text.charCodeAt(index + 1) === 10) index += 1;
+      if (!started) continue;
       while (output.length && (output[output.length - 1].endsWith(" ") || output[output.length - 1].endsWith("\t"))) {
         const last = output.pop()!;
         outputLength -= 1;
@@ -377,7 +379,10 @@ export function normalizeExtractedText(text: string, maxChars = Number.MAX_SAFE_
       continue;
     }
     if (code === 0 || (code >= 1 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127) continue;
-    if (!append(text[index])) break;
+    const character = text[index];
+    if (!started && /\s/u.test(character)) continue;
+    if (!append(character)) break;
+    started = true;
   }
   return output.join("").trim();
 }
