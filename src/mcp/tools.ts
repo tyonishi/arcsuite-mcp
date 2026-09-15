@@ -188,7 +188,9 @@ export class ToolRegistry {
           const pageData = await this.fetchObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations, verificationPlan);
           objectIds = pageData.results.map((item) => item.document_id);
           resultCount = pageData.results.length;
-          searchOutcome = pageData.results.length ? "matches" : "zero";
+          searchOutcome = pageData.failures.length && pageData.results.length === 0
+            ? "hydration_failure"
+            : pageData.results.length ? "matches" : "zero";
           data = {
             scope: parsed.scope,
             count: pageData.results.length,

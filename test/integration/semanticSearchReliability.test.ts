@@ -205,6 +205,23 @@ test("full-text-only searches retain per-ID hydration failures", async () => {
   rt.stopValidationRetry();
 });
 
+test("all provider hydration failures are distinct from a successful zero result", async () => {
+  const rt = await runtime();
+  const failedId = "rep:mock:EXAMPLE_CABINET:synthetic-2";
+  installSearch(rt.adapter, [failedId], [], [{ index: 0, code: "ARCSUITE_NOT_AVAILABLE" }]);
+  const result: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: "provider-indexed-term",
+    text_search_mode: "stemming"
+  })).structuredContent;
+  assert.equal(result.count, 0);
+  assert.deepEqual(result.failures, [{ index: 0, document_id: failedId, code: "ARCSUITE_NOT_AVAILABLE" }]);
+  const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").at(-1)!);
+  assert.equal(audit.result_code, "OK");
+  assert.equal(audit.search_outcome, "hydration_failure");
+  rt.stopValidationRetry();
+});
+
 test("provider empty IDs remain a successful zero result", async () => {
   const rt = await runtime();
   let hydrated = false;
