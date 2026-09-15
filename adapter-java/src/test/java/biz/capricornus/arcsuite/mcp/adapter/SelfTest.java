@@ -673,9 +673,9 @@ public final class SelfTest {
     static void hardReferenceResponseParsing() {
         String responseXml = "<listRepositoryObjectHardReferencesResponse xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\">"
                 + "<listRepositoryObjectHardReferencesReturn>"
-                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id><editionKey><attribute ns=\"rep\" name=\"edition\"/></editionKey></referenceId></repositoryObject>"
-                + "<repositoryObject><id>rep:example:hardref-002</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+                + "<repositoryObject><id>rep:example:hardref-002</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
                 + "</listRepositoryObjectHardReferencesReturn></listRepositoryObjectHardReferencesResponse>";
         var document = XmlUtil.parse(responseXml);
@@ -688,15 +688,18 @@ public final class SelfTest {
 
     static void hardReferenceIdentityFailures() {
         assertHardReferenceParseFailure("<return><repositoryObject><id>rep:example:hardref-001</id>"
+                + "<objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+                + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>", 2, "ARCSUITE_UPSTREAM_ERROR");
+        assertHardReferenceParseFailure("<return><repositoryObject><id>rep:example:hardref-001</id>"
                 + "<referenceId><id>rep:example:other</id></referenceId></repositoryObject></return>", 2, "ARCSUITE_UPSTREAM_ERROR");
         assertHardReferenceParseFailure("<return><repositoryObject><id>rep:example:hardref-001</id></repositoryObject></return>",
                 2, "ARCSUITE_UPSTREAM_ERROR");
         assertHardReferenceParseFailure("<return><repositoryObject><id>not-a-repository-id</id>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>", 2, "ARCSUITE_UPSTREAM_ERROR");
 
-        String duplicateXml = "<return xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+        String duplicateXml = "<return xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
-                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>";
         expectAdapterFailure(() -> ArcSuiteSoapClient.parseHardReferenceIds(
                 XmlUtil.parse(duplicateXml).getDocumentElement(),
@@ -704,11 +707,11 @@ public final class SelfTest {
     }
 
     static void hardReferenceOverflowFailsClosed() {
-        String overflowXml = "<return xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+        String overflowXml = "<return xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
-                + "<repositoryObject><id>rep:example:hardref-002</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+                + "<repositoryObject><id>rep:example:hardref-002</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
-                + "<repositoryObject><id>rep:example:hardref-003</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+                + "<repositoryObject><id>rep:example:hardref-003</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>";
         expectAdapterFailure(() -> ArcSuiteSoapClient.parseHardReferenceIds(
                 XmlUtil.parse(overflowXml).getDocumentElement(),

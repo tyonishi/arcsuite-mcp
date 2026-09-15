@@ -15,6 +15,9 @@
   returned by search, list, get, and revision operations. Returned object IDs
   and path IDs are checked against the selected cabinet, and configured root
   membership is revalidated before results are exposed.
+- Hard Reference relationship records are admitted only with the native
+  `rep/system:hardReference` class; this operation-specific check is separate
+  from the ordinary document-scope object-type allowlist.
 - Semantic enum values and top-level status never fall back to ArcSuite
   physical names or localized labels. Configured Attribute IDs are looked up
   by exact namespace and name, and duplicate physical enum mappings are

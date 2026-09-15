@@ -683,7 +683,10 @@ export class ToolRegistry {
     candidate: AdapterRepositoryObject,
     operations: string[]
   ): Promise<AuthorizedHardReference | undefined> {
-    if (!this.scopes.isAllowedObjectType(scope, candidate.objectClass)) return undefined;
+    // Relationship records have their own ArcSuite class contract. They are
+    // not ordinary document results and must not be filtered by the scope's
+    // document object-type allowlist.
+    if (!isHardReferenceObject(candidate)) return undefined;
     this.recordSoapOperation(operations, "getRepositoryObject");
     this.recordSoapOperation(operations, "getRepositoryObjectPath");
     let pathObject: AdapterRepositoryObject;
@@ -704,10 +707,9 @@ export class ToolRegistry {
     if (!isRepositoryObject(pathObject) || pathObject.id !== candidate.id) {
       throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_identity", false);
     }
-    if (pathObject.objectClass !== candidate.objectClass) {
+    if (!isHardReferenceObject(pathObject) || pathObject.objectClass !== candidate.objectClass) {
       throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_class", false);
     }
-    if (!this.scopes.isAllowedObjectType(scope, pathObject.objectClass)) return undefined;
     if (!isPathWithinCabinet(scope, pathObject.pathObjects)) return undefined;
     const root = scope.arcsuite.root_object_id;
     if (root && pathObject.id !== root && !pathObject.pathObjects?.some((part) => part.id === root)) return undefined;
@@ -1301,6 +1303,11 @@ function isRepositoryObject(value: unknown): value is AdapterRepositoryObject {
     }
   }
   return true;
+}
+
+function isHardReferenceObject(object: AdapterRepositoryObject): boolean {
+  return object.objectClass === "hardReference"
+    && semanticObjectClass(object.nativeObjectClass) === "hardReference";
 }
 
 function semanticObjectClass(value: unknown): string | undefined {

@@ -87,7 +87,7 @@ test("incoming hard-reference tool returns only safe semantic relationship metad
   assert.deepEqual(data.results.map((item: any) => item.relationship), ["hard_reference_incoming", "hard_reference_incoming"]);
   assert.deepEqual(data.results.map((item: any) => item.name), ["Example incoming reference 001", "Example incoming reference 002"]);
   assert.ok(data.results[0].path.includes("Example folder"));
-  assert.equal(data.results[0].object_class, "reference");
+  assert.equal(data.results[0].object_class, "hardReference");
 
   const serialized = JSON.stringify(data);
   for (const privateValue of [...referenceIds, ...hiddenCandidateIds, "rep:mock:EXAMPLE_CABINET:folder-a", "referenceId", "editionKey", "pathObjects", "getRepositoryObjects.searchMode", "listRepositoryObjectHardReferences"]) {
@@ -107,6 +107,15 @@ test("incoming hard-reference tool returns only safe semantic relationship metad
   assert.equal(JSON.stringify(audit).includes("hardref-001"), false);
   assert.equal(JSON.stringify(audit).includes("hardref-003"), false);
   assert.equal(JSON.stringify(audit).includes("folder-a"), false);
+});
+
+test("Hard Reference candidates require the native hardReference class independently of document scope types", async () => {
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  installCandidates(adapter, [hiddenCandidateIds[2]]);
+  const data: any = (await rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId })).structuredContent;
+  assert.equal(data.count, 0);
+  assert.deepEqual(data.results, []);
 });
 
 test("an authorized target with no incoming Hard References returns an empty page", async () => {

@@ -806,6 +806,9 @@ final class ArcSuiteSoapClient {
         Set<String> seen=new HashSet<>();
         for(Element object:objects) {
             Map<String,Object> parsed = parseRepositoryObject(object);
+            if (!"hardReference".equals(parsed.get("objectClass"))) {
+                throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Hard Reference response contained a non-hard-reference object");
+            }
             String objectId = String.valueOf(parsed.get("id"));
             List<Element> referenceIds=typesChildren(object,"referenceId");
             if(referenceIds.size()!=1) {

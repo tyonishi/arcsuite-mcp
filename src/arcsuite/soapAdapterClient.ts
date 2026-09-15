@@ -181,10 +181,10 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
     syntheticTarget.attributes["rep:user:example_document_number"] = { type: "string", value: "TARGET-001" };
     this.contentFixtures = new Map([[syntheticTarget.id, syntheticTarget]]);
     this.hardReferenceObjects = [
-      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-001", "Example incoming reference 001", "folder-a", "reference"),
-      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-002", "Example incoming reference 002", "folder-a", "reference"),
-      mockHardReference("rep:mock:OTHER_CABINET:hardref-003", "Hidden cross-cabinet reference", undefined, "reference"),
-      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-outside-root", "Hidden outside-root reference", "folder-b", "reference"),
+      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-001", "Example incoming reference 001", "folder-a", "hardReference"),
+      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-002", "Example incoming reference 002", "folder-a", "hardReference"),
+      mockHardReference("rep:mock:OTHER_CABINET:hardref-003", "Hidden cross-cabinet reference", undefined, "hardReference"),
+      mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-outside-root", "Hidden outside-root reference", "folder-b", "hardReference"),
       mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-disallowed", "Hidden disallowed reference", "folder-a", "restricted-reference")
     ];
   }
