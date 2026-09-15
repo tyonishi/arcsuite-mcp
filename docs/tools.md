@@ -14,7 +14,7 @@ authority.
 | Tool | Required input | Result |
 | --- | --- | --- |
 | `arcsuite_describe_capabilities` | none | Safe profile-aware scope/filter/object-type discovery; never physical ArcSuite IDs |
-| `arcsuite_search_documents` | `scope` plus `query` or configured `filters`; or `scope` + `cursor` | Bounded semantic document page, partial failures, and optional continuation cursor |
+| `arcsuite_search_documents` | `scope` plus `query` or configured `filters`; or `scope` + `cursor` | Bounded semantic document page, deterministic verification, provider-authoritative partial failures, and optional continuation cursor |
 | `arcsuite_get_document` | `document_id` | Metadata, status, revisions, content labels, optional path and optional configured `open_url` |
 | `arcsuite_get_documents` | `scope`, `document_ids` | Bounded batch metadata with explicit per-input failures |
 | `arcsuite_list_folder` | `scope`; optional proven `folder_id`, or `scope` + `cursor` | Bounded child document/folder page and optional continuation cursor |
@@ -67,6 +67,34 @@ the authenticated profile:
 
 The response deliberately omits cabinet IDs, roots, service DNs, and physical
 Attribute IDs.
+
+## Semantic search reliability
+
+Structured semantic filters are canonicalized once inside the gateway. The same
+canonical predicate supplies the ArcSuite search condition and, for predicates
+whose meaning can be reproduced exactly, a post-condition check against the
+authoritative hydrated attribute value. Physical AttributeIds added solely for
+verification are never exposed. Their values continue to follow the existing
+configured semantic normalization rules.
+
+String `like` and full-text matching remain ArcSuite provider authority. The
+gateway does not guess wildcard, collation, locale, or stemming behavior. A
+missing or malformed verification attribute, a predicate mismatch, or a
+hydration failure in a search that requires deterministic verification fails the
+whole search call with the existing stable upstream error. Provider-authority
+LIKE/full-text searches retain the established per-ID partial-failure behavior.
+A provider response containing no IDs remains a successful zero-result search;
+malformed ID responses fail with the existing upstream error instead of being
+treated as zero results. Configured physical AttributeIds whose wire identity
+is ambiguous are rejected before they can be used for verification.
+
+When an integer predicate is verified against an ArcSuite `INT_TYPE` attribute,
+the hydrated value must also stay within the signed 32-bit range. Out-of-range
+or otherwise malformed authoritative metadata fails closed.
+
+Search continuation cursors retain the original private verification plan on
+the server. The public cursor format and the public result fields do not
+change, and a continuation cannot redefine the original filters.
 
 An `integrity` capability appears only for a scope with integrity enabled.
 `evidence` reflects its separate evidence opt-in. Discovery never names SOAP
@@ -212,9 +240,10 @@ scope and cursor:
 Do not repeat or alter query/filter/folder/page-size parameters on a
 continuation request. Paging cursors are signed, expire, and are bound to the
 client profile, semantic scope, result kind, snapshot, page size, and offset.
-The server stores only a bounded ID snapshot. `snapshot_limited=true` means the
-bounded snapshot itself hit its configured maximum; no additional pages beyond
-that snapshot are promised.
+The server stores a bounded ID snapshot plus a private immutable verification
+plan for semantic searches. `snapshot_limited=true` means the bounded snapshot
+itself hit its configured maximum; no additional pages beyond that snapshot are
+promised. The plan is never placed in the cursor or returned to the caller.
 
 ## Batch metadata
 
@@ -239,6 +268,12 @@ attached path are required to retain the same requested repository identity;
 path hydration uses reference resolution disabled and rejects an ID or object
 class mismatch. Missing or inconsistent batch coverage fails closed rather than
 silently dropping objects.
+
+Searches requiring deterministic semantic post-verification fail atomically
+when any candidate cannot be hydrated and verified. Provider-authority
+LIKE/full-text searches retain the established per-ID partial-failure behavior.
+The explicit per-input partial-failure behavior described here also remains for
+`arcsuite_get_documents` and the other batch-style reads.
 
 ## Content labels and read reuse
 

@@ -53,6 +53,16 @@ test("scope YAML and semantic filters map without exposing physical fields", () 
   assert.equal(JSON.stringify(withConfiguredAliases).includes("EXAMPLE_PREVIEW"), false);
 });
 
+test("ambiguous physical AttributeIds fail scope validation", () => {
+  const registry = ScopeRegistry.load(resolve("config/scopes.mock.yaml"));
+  const data = structuredClone(registry.data) as any;
+  data.scopes.example_documents.semantic_attributes.conflicting_page_count = {
+    ...data.scopes.example_documents.semantic_attributes.page_count,
+    attr_id: { ns: "rep:user", name: "page_count" }
+  };
+  assert.throws(() => new ScopeRegistry(data), /Ambiguous physical AttributeId/);
+});
+
 test("enum normalization returns configured aliases and rejects unknown physical values", () => {
   const enumAttributes = {
     lifecycle: {

@@ -125,11 +125,16 @@ export class ScopeRegistry {
         throw new Error(`Scope ${name} requires non-empty allowed_object_types`);
       }
       if (!scope.default_attr_ids?.length) throw new Error(`Scope ${name} requires default_attr_ids`);
-      for (const attr of scope.default_attr_ids) assertAttrId(attr, `${name}.default_attr_ids`);
+      const physicalAttributeKeys = new Map<string, AttributeId>();
+      for (const attr of scope.default_attr_ids) {
+        assertAttrId(attr, `${name}.default_attr_ids`);
+        assertUnambiguousAttributeId(attr, physicalAttributeKeys, `${name}.default_attr_ids`);
+      }
       for (const [semanticName, cfg] of Object.entries(scope.semantic_attributes ?? {})) {
         if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error(`Semantic attribute ${name}.${semanticName} must be an object`);
         if (!/^[a-z][a-z0-9_]{0,63}$/.test(semanticName)) throw new Error(`Invalid semantic attribute name: ${name}.${semanticName}`);
         assertAttrId(cfg.attr_id, `${name}.semantic_attributes.${semanticName}`);
+        assertUnambiguousAttributeId(cfg.attr_id, physicalAttributeKeys, `${name}.semantic_attributes.${semanticName}`);
         if (!Object.hasOwn(SEMANTIC_OPERATOR_MATRIX, cfg.type)) throw new Error(`Unsupported semantic type ${String(cfg.type)} for ${name}.${semanticName}`);
         if (!Array.isArray(cfg.operators) || !cfg.operators.length) throw new Error(`Semantic attribute ${name}.${semanticName} requires operators`);
         if (new Set(cfg.operators).size !== cfg.operators.length) throw new Error(`Semantic attribute ${name}.${semanticName} has duplicate operators`);
@@ -322,6 +327,15 @@ function assertAttrId(attr: AttributeId, label: string): void {
   if (!attr || typeof attr.ns !== "string" || typeof attr.name !== "string" || !attr.name) {
     throw new Error(`Invalid AttributeId in ${label}`);
   }
+}
+
+function assertUnambiguousAttributeId(attr: AttributeId, seen: Map<string, AttributeId>, label: string): void {
+  const wireKey = `${attr.ns}:${attr.name}`;
+  const previous = seen.get(wireKey);
+  if (previous && (previous.ns !== attr.ns || previous.name !== attr.name)) {
+    throw new Error(`Ambiguous physical AttributeId in ${label}`);
+  }
+  if (!previous) seen.set(wireKey, { ...attr });
 }
 
 function safeConfigString(value: unknown, maxLength: number): value is string {
