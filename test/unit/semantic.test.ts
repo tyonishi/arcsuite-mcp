@@ -6,6 +6,8 @@ import { normalizeDocument } from "../../src/semantic/responseNormalizer.ts";
 import { ScopeRegistry } from "../../src/semantic/scopeRegistry.ts";
 import { toolInputSchemas } from "../../src/mcp/sdkSchemas.ts";
 
+const DOCUMENT_NATIVE_CLASS = { ns: "rep", name: "system:document" };
+
 test("scope YAML and semantic filters map without exposing physical fields", () => {
   const registry = ScopeRegistry.load(resolve("config/scopes.mock.yaml"));
   const scope = registry.get("example_documents");
@@ -21,6 +23,7 @@ test("scope YAML and semantic filters map without exposing physical fields", () 
   const normalized = normalizeDocument({
     id: "rep:mock:EXAMPLE_CABINET:1001",
     objectClass: "document",
+    nativeObjectClass: DOCUMENT_NATIVE_CLASS,
     attributes: {
       "rep:system:name": { type: "string", value: "DOC-000001_example.txt" },
       "rep:user:example_document_number": { type: "string", value: "DOC-000001" },
@@ -34,6 +37,7 @@ test("scope YAML and semantic filters map without exposing physical fields", () 
   const withConfiguredAliases = normalizeDocument({
     id: "rep:mock:EXAMPLE_CABINET:1001",
     objectClass: "document",
+    nativeObjectClass: DOCUMENT_NATIVE_CLASS,
     attributes: {
       "rep:system:contentlabellist": {
         type: "i18n[]",
@@ -61,6 +65,7 @@ test("enum normalization returns configured aliases and rejects unknown physical
   const base = {
     id: "rep:mock:EXAMPLE_CABINET:1001",
     objectClass: "document",
+    nativeObjectClass: DOCUMENT_NATIVE_CLASS,
     attributes: {
       "rep:user:lifecycle": { type: "i18n", ns: "rep", name: "ACTIVE", label: "有効" } as const
     }
@@ -124,12 +129,14 @@ test("configured semantic AttributeIds use exact namespace without name fallback
   const wrongNamespace = normalizeDocument({
     id: "rep:mock:EXAMPLE_CABINET:1001",
     objectClass: "document",
+    nativeObjectClass: DOCUMENT_NATIVE_CLASS,
     attributes: { "rep:state": { type: "string", value: "WRONG_NAMESPACE" } }
   }, config);
   assert.equal(wrongNamespace.semantic_attributes?.state, null);
   const exact = normalizeDocument({
     id: "rep:mock:EXAMPLE_CABINET:1001",
     objectClass: "document",
+    nativeObjectClass: DOCUMENT_NATIVE_CLASS,
     attributes: {
       "rep:state": { type: "string", value: "WRONG_NAMESPACE" },
       "user:state": { type: "string", value: "EXACT_NAMESPACE" }
@@ -373,6 +380,7 @@ test("scope object-type allowlist rejects unexpected adapter classes", () => {
   assert.equal(registry.isAllowedObjectType(scope, "document"), true);
   assert.equal(registry.isAllowedObjectType(scope, "folder"), true);
   assert.equal(registry.isAllowedObjectType(scope, "cabinet"), false);
+  assert.equal(registry.isAllowedObjectType(scope, "unknown"), false);
   assert.equal(registry.isAllowedObjectType(scope, undefined), false);
 });
 

@@ -56,3 +56,10 @@ test("text normalization handles large whitespace runs with linear scanner seman
   const scaled = normalizeExtractedText(`${" \t".repeat(40_000)}tail`);
   assert.equal(scaled, "tail");
 });
+
+test("text normalization enforces the extraction budget while scanning", () => {
+  const normalized = normalizeExtractedText(`${"x".repeat(1_000_000)}\n${"y".repeat(1_000_000)}`, 128);
+  assert.equal(normalized.length, 128);
+  assert.equal(normalized, "x".repeat(128));
+  assert.equal(normalizeExtractedText(`${" ".repeat(128)}x`, 128), "x");
+});

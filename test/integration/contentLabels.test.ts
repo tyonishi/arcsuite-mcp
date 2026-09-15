@@ -227,6 +227,46 @@ test("membership is checked with namespace and exact revision metadata before co
   assert.equal(contentCalls, 0);
 });
 
+test("explicit revision content resolves the requested reference before deriving the wire identity", async () => {
+  const { rt } = await runtime();
+  const adapter: any = rt.adapter;
+  const referenceId = "rep:mock:EXAMPLE_CABINET:reference-001";
+  const originalGet = adapter.get.bind(adapter);
+  const originalContent = adapter.content.bind(adapter);
+  const revisionGets: any[] = [];
+  adapter.get = async (request: any) => {
+    revisionGets.push({ id: request.id, revisionNumber: request.revisionNumber, resolveRef: request.resolveRef });
+    if (request.id === referenceId && request.revisionNumber !== undefined) {
+      throw new Error("requested reference identity was reused for revision lookup");
+    }
+    if (request.id === referenceId && request.resolveRef) {
+      const resolved = await originalGet({ ...request, id: DOCUMENT_A, revisionNumber: undefined });
+      return { ...resolved, id: DOCUMENT_A };
+    }
+    return originalGet(request);
+  };
+  const contentRequests: any[] = [];
+  adapter.content = async (request: any) => {
+    contentRequests.push({ ...request });
+    return originalContent(request);
+  };
+
+  const result: any = (await rt.tools.call(profile(), "arcsuite_read_document", {
+    document_id: referenceId,
+    revision_number: 3,
+    max_chars: 1000
+  })).structuredContent;
+
+  assert.match(result.content, /Synthetic ArcSuite document/);
+  assert.equal(contentRequests.length, 1);
+  assert.equal(contentRequests[0].requestedId, referenceId);
+  assert.equal(contentRequests[0].effectiveId, DOCUMENT_A);
+  assert.equal(contentRequests[0].revisionNumber, 3);
+  assert.equal(contentRequests[0].contentWireId, `${DOCUMENT_A}:3`);
+  assert.ok(revisionGets.some((request) => request.id === DOCUMENT_A && request.revisionNumber === 3 && request.resolveRef === false));
+  assert.equal(revisionGets.some((request) => request.id === referenceId && request.revisionNumber === 3), false);
+});
+
 test("resolved effective identity and its own root path authorize content", async () => {
   const rootId = "rep:mock:EXAMPLE_CABINET:root-001";
   const sourceId = DOCUMENT_A;
@@ -316,18 +356,23 @@ test("current revision proof changes the content cache authority", async () => {
   const originalContent = adapter.content.bind(adapter);
   let revision = 3;
   let contentCalls = 0;
+  const contentRequests: any[] = [];
   adapter.get = async (request: any) => {
     const object = await originalGet(request);
     if (request.id === DOCUMENT_A) {
-      object.attributes["rep:system:revisionnumber"] = { type: "int", value: revision };
+      object.attributes["rep:system:revisionnumber"] = { type: "int", value: request.revisionNumber ?? revision };
       object.attributes["rep:system:currentrevisionnumber"] = { type: "int", value: revision };
     }
     return object;
   };
   adapter.content = async (request: any) => {
     contentCalls += 1;
+    contentRequests.push({ ...request });
+    // Simulate the current revision changing after the gateway proof but
+    // before the content dispatch. The dispatch must retain the proven A:N.
+    if (request.revisionNumber === 3) revision = 4;
     const result = await originalContent(request);
-    const text = `revision-${revision}`;
+    const text = `revision-${request.revisionNumber}`;
     await writeFile(result.filePath, text, "utf8");
     return { ...result, revisionNumber: request.revisionNumber, sizeBytes: Buffer.byteLength(text) };
   };
@@ -335,12 +380,33 @@ test("current revision proof changes the content cache authority", async () => {
   const first: any = (await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 })).structuredContent;
   assert.equal(first.content, "revision-3");
   assert.equal(contentCalls, 1);
+  assert.equal(contentRequests[0].effectiveId, DOCUMENT_A);
+  assert.equal(contentRequests[0].revisionNumber, 3);
+  assert.equal(contentRequests[0].contentWireId, `${DOCUMENT_A}:3`);
 
-  revision = 4;
   const second: any = (await rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 })).structuredContent;
   assert.equal(second.content, "revision-4");
   assert.equal(second.cached, false);
   assert.equal(contentCalls, 2, "a current-revision change must not reuse the old snapshot");
+  assert.equal(contentRequests[1].effectiveId, DOCUMENT_A);
+  assert.equal(contentRequests[1].revisionNumber, 4);
+  assert.equal(contentRequests[1].contentWireId, `${DOCUMENT_A}:4`);
+});
+
+test("mock content does not synthesize an unproven effective target", async () => {
+  const { rt } = await runtime();
+  const adapter: any = rt.adapter;
+  const originalGet = adapter.get.bind(adapter);
+  const missingEffectiveId = "rep:mock:EXAMPLE_CABINET:missing-effective";
+  adapter.get = async (request: any) => {
+    const object = await originalGet(request);
+    return request.resolveRef ? { ...object, id: missingEffectiveId } : object;
+  };
+
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_read_document", { document_id: DOCUMENT_A, max_chars: 1000 }),
+    (error: any) => error?.stableCode === "ARCSUITE_NOT_AVAILABLE"
+  );
 });
 
 test("cached content is not served after the current effective object leaves the configured root", async () => {
@@ -426,6 +492,10 @@ test("read cursors bind to preview, preserve it when omitted, and reject cross-l
   await assert.rejects(
     () => rt.tools.call(p, "arcsuite_read_document", { document_id: DOCUMENT_A, content_label: "system:primary", cursor: first.next_cursor, max_chars: 1000 }),
     (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT" && error?.category === "content_label_cursor_mismatch"
+  );
+  await assert.rejects(
+    () => rt.tools.call(p, "arcsuite_read_document", { document_id: DOCUMENT_A, cursor: "", start_page: 1, max_chars: 1000 }),
+    (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
   );
   await assert.rejects(
     () => rt.tools.call({ ...p, clientProfileId: "other-profile" }, "arcsuite_read_document", { document_id: DOCUMENT_A, cursor: first.next_cursor, max_chars: 1000 }),

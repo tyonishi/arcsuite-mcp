@@ -263,7 +263,7 @@ export class ScopeRegistry {
   }
 
   isAllowedObjectType(scope: SemanticScope, objectClass: unknown): boolean {
-    return typeof objectClass === "string" && scope.allowed_object_types.includes(objectClass);
+    return typeof objectClass === "string" && objectClass !== "unknown" && scope.allowed_object_types.includes(objectClass);
   }
 
   async validateAgainstAdapter(adapter: ArcSuiteAdapterClient, clientProfileId: string): Promise<void> {

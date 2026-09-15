@@ -2,6 +2,8 @@ export type AttributeId = { ns: string; name: string };
 
 export type PhysicalContentLabel = { ns: string; name: string };
 
+export type NativeObjectClass = { ns: string; name: string };
+
 export type AttributeValue =
   | { type: "string"; value: string }
   | { type: "int"; value: number }
@@ -19,8 +21,10 @@ export type AttributeValue =
 export type AdapterRepositoryObject = {
   id: string;
   objectClass: string;
+  /** Qualified native class returned by the adapter, never exposed by MCP. */
+  nativeObjectClass: NativeObjectClass;
   attributes: Record<string, AttributeValue>;
-  pathObjects?: Array<{ id: string; name?: string; objectClass?: string }>;
+  pathObjects?: Array<{ id: string; name?: string; objectClass?: string; nativeObjectClass?: NativeObjectClass }>;
   fullPath?: boolean;
 };
 
@@ -137,20 +141,30 @@ export type AdapterRevisionsRequest = {
 
 export type AdapterContentRequest = {
   clientProfileId: string;
-  id: string;
-  revisionNumber?: number;
+  /** Caller-selected identity. It is retained for response binding only. */
+  requestedId: string;
+  /** Authorized effective base identity, before revision qualification. */
+  effectiveId: string;
+  /** Positive revision proven by the gateway before content dispatch. */
+  revisionNumber: number;
+  /** Exact revision-qualified identity that must be used by the content SOAP call. */
+  contentWireId: string;
   contentLabel: PhysicalContentLabel;
   options: string[];
   traceId: string;
 };
 
 export type AdapterContentResult = {
+  /** Caller-selected identity echoed by the adapter. */
   id: string;
-  revisionNumber?: number;
+  /** Revision represented by the content wire identity. */
+  revisionNumber: number;
   /** Exact physical label returned by ArcSuite; never exposed directly by MCP. */
   label: PhysicalContentLabel;
   /** Effective object identity after adapter-side reference/revision resolution. */
   effectiveId: string;
+  /** Exact object identity used by the content SOAP request, including revision identity. */
+  wireId: string;
   fileName: string;
   contentType: string;
   sizeBytes: number;

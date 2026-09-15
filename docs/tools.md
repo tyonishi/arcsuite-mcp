@@ -93,9 +93,15 @@ The result reports the requested target ID and one-hop incoming relationships.
 Entries may contain a safe name, path labels, object class, status, modified
 time, and configured semantic attributes. They omit the Hard Reference object's
 ID, raw reference identity, edition data, physical path IDs, raw attributes,
-and deep links. Cross-cabinet, outside-root, and disallowed-class candidates
-are silently filtered before paging, so they do not affect the public count or
-truncation indicator. Candidate collection defaults to 200 (or the lower
+and deep links. Cross-cabinet and outside-root Hard Reference candidates, plus
+`NOT_AVAILABLE` or `FORBIDDEN` hydration failures, are silently filtered before
+paging, so they do not affect the public count or truncation indicator. A
+candidate or path object whose class is not the native
+`rep/system:hardReference` contract fails the call with
+`ARCSUITE_UPSTREAM_ERROR` (`hard_reference_class`). Public relationship entries
+retain the established semantic `object_class: "reference"` compatibility
+alias; this does not expose or weaken the internal `hardReference` authority.
+Candidate collection defaults to 200 (or the lower
 snapshot capacity) and is capped at 1,000. If ArcSuite returns more
 candidates than that bound, the whole call fails with
 `ARCSUITE_LIMIT_EXCEEDED`; no partial result is returned.

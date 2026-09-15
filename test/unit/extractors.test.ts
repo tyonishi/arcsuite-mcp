@@ -10,7 +10,7 @@ import { JsonExtractor } from "../../src/content/extractors/json.ts";
 
 function runPython(code: string, args: string[] = []): Promise<void> {
   return new Promise((resolve, reject) => {
-    const p = spawn("python3", ["-c", code, ...args]);
+    const p = spawn(process.platform === "win32" ? "python" : "python3", ["-c", code, ...args]);
     let err = ""; p.stderr.on("data", d => err += d.toString());
     p.on("exit", c => c === 0 ? resolve() : reject(new Error(err || `python exit ${c}`)));
   });

@@ -12,14 +12,17 @@ function bridge(root: string, maxContentBytes = 1024, maxExtractedChars = 10, ca
 }
 
 function context(content: { id: string; effectiveId: string; label: { ns: string; name: string } }, revisionNumber?: number): ContentCacheContext {
+  const provenRevisionNumber = revisionNumber ?? 1;
   return {
     clientProfileId: "client-a",
     scopeId: "scope",
     documentId: content.id,
     effectiveDocumentId: content.effectiveId,
+    wireDocumentId: `${content.effectiveId}:${provenRevisionNumber}`,
     cabinetId: "rep:mock:EXAMPLE_CABINET",
     rootObjectId: null,
-    revisionNumber,
+    requestedRevisionNumber: revisionNumber,
+    provenRevisionNumber,
     contentLabel: "system:primary",
     physicalContentLabel: content.label
   };
@@ -29,7 +32,7 @@ test("content bridge enforces byte bounds and removes rejected temp files", asyn
   const root = await mkdtemp(join(tmpdir(), "content-bounds-"));
   const path = join(root, "large.txt");
   await writeFile(path, "0123456789");
-  const content = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", fileName: "large.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: path };
+  const content = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", wireId: "rep:mock:EXAMPLE_CABINET:1:1", revisionNumber: 1, fileName: "large.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: path };
   assert.equal(bridge(root, 5).info(content).extractable, false);
   await assert.rejects(() => bridge(root, 5).read(content, { traceId: "trace", documentId: content.id, maxChars: 100 }, context(content)), /CONTENT_SIZE_LIMIT/);
   await assert.rejects(() => readFile(path));
@@ -39,7 +42,7 @@ test("content bridge bounds extracted text and fails unsupported formats safely"
   const root = await mkdtemp(join(tmpdir(), "content-extract-"));
   const textPath = join(root, "sample.txt");
   await writeFile(textPath, "abcdefghij");
-  const textContent = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", fileName: "sample.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: textPath };
+  const textContent = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", wireId: "rep:mock:EXAMPLE_CABINET:1:1", revisionNumber: 1, fileName: "sample.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: textPath };
   const result = await bridge(root, 1024, 5).read(textContent, { traceId: "trace", documentId: textContent.id, maxChars: 100 }, context(textContent));
   assert.equal(result.content, "abcde");
   assert.deepEqual(result.warnings, ["EXTRACTED_TEXT_LIMIT"]);
@@ -54,7 +57,7 @@ test("content bridge bounds extracted text and fails unsupported formats safely"
 test("direct content reads bind cursor creation and continuation to current authority", async () => {
   const root = await mkdtemp(join(tmpdir(), "content-cursor-authority-"));
   const path = join(root, "sample.txt");
-  const content = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", fileName: "sample.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: path };
+  const content = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", wireId: "rep:mock:EXAMPLE_CABINET:1:1", revisionNumber: 1, fileName: "sample.txt", contentType: "text/plain", sizeBytes: 10, label: { ns: "rep", name: "system:primary" }, filePath: path };
   const authority = context(content);
   const b = bridge(root, 1024, 100);
   await writeFile(path, "abcdefghij");
@@ -72,14 +75,16 @@ test("content info returns validated metadata when optional snapshot warming fai
   const root = await mkdtemp(join(tmpdir(), "content-info-warm-"));
   const path = join(root, "invalid.json");
   await writeFile(path, "not valid json");
-  const content = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", fileName: "invalid.json", contentType: "application/json", sizeBytes: 14, label: { ns: "rep", name: "system:primary" }, filePath: path };
+  const content = { id: "rep:mock:EXAMPLE_CABINET:1", effectiveId: "rep:mock:EXAMPLE_CABINET:1", wireId: "rep:mock:EXAMPLE_CABINET:1:1", revisionNumber: 1, fileName: "invalid.json", contentType: "application/json", sizeBytes: 14, label: { ns: "rep", name: "system:primary" }, filePath: path };
   const result = await bridge(root, 1024, 100, new ContentSnapshotCache(600, 10, 5, 1024)).infoCachedOrLoad({
     clientProfileId: "client-a",
     scopeId: "scope",
     documentId: content.id,
     effectiveDocumentId: content.effectiveId,
+    wireDocumentId: `${content.effectiveId}:1`,
     cabinetId: "rep:mock:EXAMPLE_CABINET",
     rootObjectId: null,
+    provenRevisionNumber: 1,
     contentLabel: "system:primary",
     physicalContentLabel: { ns: "rep", name: "system:primary" }
   }, async () => content);

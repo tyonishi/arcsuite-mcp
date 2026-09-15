@@ -355,7 +355,7 @@ test("tool results cannot bypass object-type or cabinet scope", async () => {
   const rt = await runtime();
   const adapter = rt.adapter as any;
   adapter.searchIds = async () => ["rep:mock:EXAMPLE_CABINET:unexpected"];
-  adapter.getMany = async () => ({ objects: [{ id: "rep:mock:EXAMPLE_CABINET:unexpected", objectClass: "cabinet", attributes: {} }], failures: [] });
+  adapter.getMany = async () => ({ objects: [{ id: "rep:mock:EXAMPLE_CABINET:unexpected", objectClass: "cabinet", nativeObjectClass: { ns: "rep", name: "system:cabinet" }, attributes: {} }], failures: [] });
   await assert.rejects(
     () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "synthetic" }),
     (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "object_type_not_allowed"
@@ -367,11 +367,29 @@ test("tool results cannot bypass object-type or cabinet scope", async () => {
     () => rt2.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "synthetic" }),
     (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "cabinet_scope"
   );
+
+  const nativeIdentityCases = [
+    { nativeObjectClass: { ns: "wrong", name: "system:document" }, objectClass: "document", category: "repository_object_shape" },
+    { nativeObjectClass: { name: "system:document" }, objectClass: "document", category: "repository_object_shape" },
+    { nativeObjectClass: { ns: "rep", name: "system:futureDocument" }, objectClass: "unknown", category: "object_type_not_allowed" }
+  ];
+  for (const [index, item] of nativeIdentityCases.entries()) {
+    const candidateId = `rep:mock:EXAMPLE_CABINET:native-identity-${index}`;
+    adapter.searchIds = async () => [candidateId];
+    adapter.getMany = async () => ({
+      objects: [{ id: candidateId, objectClass: item.objectClass, nativeObjectClass: item.nativeObjectClass, attributes: {} }],
+      failures: []
+    });
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "synthetic" }),
+      (error: any) => (error?.category === item.category)
+    );
+  }
 });
 
 test("batch results fail closed when success and failure coverage is inconsistent", async () => {
   const ids = ["rep:mock:EXAMPLE_CABINET:1001", "rep:mock:EXAMPLE_CABINET:missing"];
-  const object = { id: ids[0], objectClass: "document", attributes: {} };
+  const object = { id: ids[0], objectClass: "document", nativeObjectClass: { ns: "rep", name: "system:document" }, attributes: {} };
   const cases = [
     { category: "batch_identity", result: { objects: [object, object], failures: [] } },
     { category: "batch_identity", result: { objects: [object], failures: [{ index: 1, code: "ARCSUITE_NOT_AVAILABLE" }, { index: 1, code: "ARCSUITE_NOT_AVAILABLE" }] } },
@@ -394,14 +412,15 @@ test("batch path hydration cannot attach a resolved target path to reference met
   const requestedId = "rep:mock:EXAMPLE_CABINET:reference-001";
   const targetId = "rep:mock:EXAMPLE_CABINET:document-002";
   adapter.getMany = async () => ({
-    objects: [{ id: requestedId, objectClass: "reference", attributes: { "rep:system:name": { type: "string", value: "Reference R" } } }],
+    objects: [{ id: requestedId, objectClass: "reference", nativeObjectClass: { ns: "rep", name: "system:reference" }, attributes: { "rep:system:name": { type: "string", value: "Reference R" } } }],
     failures: []
   });
   adapter.get = async (request: any) => ({
     id: targetId,
     objectClass: "reference",
+    nativeObjectClass: { ns: "rep", name: "system:reference" },
     attributes: { "rep:system:name": { type: "string", value: "Target T" } },
-    pathObjects: [{ id: "rep:mock:EXAMPLE_CABINET:folder-target", name: "Target folder", objectClass: "folder" }],
+    pathObjects: [{ id: "rep:mock:EXAMPLE_CABINET:folder-target", name: "Target folder", objectClass: "folder", nativeObjectClass: { ns: "rep", name: "system:folder" } }],
     fullPath: true
   });
   await assert.rejects(
@@ -447,12 +466,13 @@ scopes:
 `);
   const rt = await runtime(scopeFile);
   (rt.adapter as any).searchIds = async () => ["rep:mock:EXAMPLE_CABINET:1002"];
-  (rt.adapter as any).getMany = async () => ({ objects: [{ id: "rep:mock:EXAMPLE_CABINET:1002", objectClass: "document", attributes: {} }], failures: [] });
+  (rt.adapter as any).getMany = async () => ({ objects: [{ id: "rep:mock:EXAMPLE_CABINET:1002", objectClass: "document", nativeObjectClass: { ns: "rep", name: "system:document" }, attributes: {} }], failures: [] });
   (rt.adapter as any).get = async () => ({
     id: "rep:mock:EXAMPLE_CABINET:1002",
     objectClass: "document",
+    nativeObjectClass: { ns: "rep", name: "system:document" },
     attributes: {},
-    pathObjects: [{ id: "rep:mock:EXAMPLE_CABINET:other-folder", objectClass: "folder" }]
+    pathObjects: [{ id: "rep:mock:EXAMPLE_CABINET:other-folder", objectClass: "folder", nativeObjectClass: { ns: "rep", name: "system:folder" } }]
   });
   await assert.rejects(
     () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "synthetic" }),
