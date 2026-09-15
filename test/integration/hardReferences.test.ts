@@ -87,17 +87,18 @@ test("incoming hard-reference tool returns only safe semantic relationship metad
   assert.deepEqual(data.results.map((item: any) => item.relationship), ["hard_reference_incoming", "hard_reference_incoming"]);
   assert.deepEqual(data.results.map((item: any) => item.name), ["Example incoming reference 001", "Example incoming reference 002"]);
   assert.ok(data.results[0].path.includes("Example folder"));
-  assert.equal(data.results[0].object_class, "hardReference");
+  assert.equal(data.results[0].object_class, "reference");
 
   const serialized = JSON.stringify(data);
   for (const privateValue of [...referenceIds, ...hiddenCandidateIds, "rep:mock:EXAMPLE_CABINET:folder-a", "referenceId", "editionKey", "pathObjects", "getRepositoryObjects.searchMode", "listRepositoryObjectHardReferences"]) {
     assert.equal(serialized.includes(privateValue), false, `${privateValue} must remain private`);
   }
   for (const entry of data.results) {
-    for (const privateKey of ["id", "document_id", "hard_reference_id", "reference_id", "edition_key", "attributes", "open_url"]) {
+    for (const privateKey of ["id", "document_id", "hard_reference_id", "reference_id", "edition_key", "attributes", "native_object_class", "open_url"]) {
       assert.equal(Object.hasOwn(entry, privateKey), false, `${privateKey} must not be exposed`);
     }
   }
+  assert.equal(serialized.includes("system:hardReference"), false, "native Hard Reference identity must remain private");
 
   const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim());
   assert.deepEqual(audit.object_ids, [targetId]);
@@ -113,9 +114,47 @@ test("Hard Reference candidates require the native hardReference class independe
   const rt = await runtime();
   const adapter: any = rt.adapter;
   installCandidates(adapter, [hiddenCandidateIds[2]]);
-  const data: any = (await rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId })).structuredContent;
-  assert.equal(data.count, 0);
-  assert.deepEqual(data.results, []);
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "hard_reference_class"
+  );
+});
+
+test("Hard Reference batch hydration rejects a class change as an upstream contract error", async () => {
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  installCandidates(adapter, [referenceIds[0]]);
+  const originalGetMany = adapter.getMany.bind(adapter);
+  adapter.getMany = async (request: any) => {
+    const result = await originalGetMany(request);
+    result.objects = result.objects.map((object: any) => object.id === referenceIds[0]
+      ? { ...object, objectClass: "reference", nativeObjectClass: { ns: "rep", name: "system:reference" } }
+      : object);
+    return result;
+  };
+
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "hard_reference_class"
+  );
+});
+
+test("Hard Reference path hydration rejects a class change as an upstream contract error", async () => {
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  installCandidates(adapter, [referenceIds[0]]);
+  const originalGet = adapter.get.bind(adapter);
+  adapter.get = async (request: any) => {
+    const object = await originalGet(request);
+    return request.id === referenceIds[0] && request.includePath
+      ? { ...object, objectClass: "reference", nativeObjectClass: { ns: "rep", name: "system:reference" } }
+      : object;
+  };
+
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "hard_reference_class"
+  );
 });
 
 test("an authorized target with no incoming Hard References returns an empty page", async () => {
@@ -179,10 +218,10 @@ test("profile and scope must both enable hard-reference reads", async () => {
   assert.equal(dispatched, false);
 });
 
-test("cabinet, root, and object-type filtering happens before paging without hidden counts", async () => {
+test("cabinet and root filtering happens before paging without hidden counts", async () => {
   const rt = await runtime(await rootScopedConfig());
   const adapter: any = rt.adapter;
-  installCandidates(adapter, [...referenceIds, ...hiddenCandidateIds]);
+  installCandidates(adapter, [...referenceIds, hiddenCandidateIds[0], hiddenCandidateIds[1]]);
   const data: any = (await rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId })).structuredContent;
 
   assert.equal(data.count, 2);
@@ -202,7 +241,7 @@ test("Hard Reference metadata and path hydration never resolve the reference", a
   const originalGetMany = adapter.getMany.bind(adapter);
   adapter.get = async (request: any) => { getRequests.push(request); return originalGet(request); };
   adapter.getMany = async (request: any) => { getManyRequests.push(request); return originalGetMany(request); };
-  installCandidates(adapter, [...referenceIds, ...hiddenCandidateIds]);
+  installCandidates(adapter, [...referenceIds, hiddenCandidateIds[0], hiddenCandidateIds[1]]);
 
   await rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId });
   assert.ok(getRequests.length >= 3);

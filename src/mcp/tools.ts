@@ -686,7 +686,9 @@ export class ToolRegistry {
     // Relationship records have their own ArcSuite class contract. They are
     // not ordinary document results and must not be filtered by the scope's
     // document object-type allowlist.
-    if (!isHardReferenceObject(candidate)) return undefined;
+    if (!isHardReferenceObject(candidate)) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_class", false);
+    }
     this.recordSoapOperation(operations, "getRepositoryObject");
     this.recordSoapOperation(operations, "getRepositoryObjectPath");
     let pathObject: AdapterRepositoryObject;
@@ -708,7 +710,7 @@ export class ToolRegistry {
       throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_identity", false);
     }
     if (!isHardReferenceObject(pathObject) || pathObject.objectClass !== candidate.objectClass) {
-      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_class", false);
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_class", false);
     }
     if (!isPathWithinCabinet(scope, pathObject.pathObjects)) return undefined;
     const root = scope.arcsuite.root_object_id;
@@ -1361,7 +1363,9 @@ function isInvisibleHardReference(error: unknown): boolean {
 function hardReferencePublicResult(document: NormalizedDocument): Record<string, unknown> {
   const result: Record<string, unknown> = {
     relationship: "hard_reference_incoming",
-    object_class: document.object_class
+    // Preserve the established public semantic value. The internal document
+    // remains hardReference and its native class is never exposed.
+    object_class: "reference"
   };
   if (document.name !== undefined) result.name = document.name;
   if (document.path !== undefined) result.path = [...document.path];

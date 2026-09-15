@@ -256,8 +256,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
       ? [
           "rep:mock:EXAMPLE_CABINET:hardref-001",
           "rep:mock:EXAMPLE_CABINET:hardref-002",
-          "rep:mock:OTHER_CABINET:hardref-003",
-          "rep:mock:EXAMPLE_CABINET:hardref-disallowed"
+          "rep:mock:OTHER_CABINET:hardref-003"
         ]
       : [];
     if (ids.length > request.maxResults) throw new ArcSuiteAdapterError("ARCSUITE_LIMIT_EXCEEDED", "Hard Reference candidates exceed configured bound");

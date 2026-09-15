@@ -8,6 +8,12 @@ behavior.
 
 - Historical design target: self-hosted Dify 1.14.2.
 - Live Dify qualification: not performed for this sanitized public tree.
+- `DIFY_TOOLS_LIST_COMPATIBILITY`: `EVIDENCE_NOT_AVAILABLE`; source review
+  confirms the read tool uses an `anyOf` schema, but does not prove that the
+  target Dify MCP plugin interprets that shape correctly.
+- `DIFY_RUNTIME_SMOKE_TEST`: `PENDING_BEFORE_MERGE`; run the target Dify
+  profile through `tools/list` and a bounded read-tool call before merge or
+  deployment.
 - Recommended transport: Dify's MCP plugin configured for standards-based
   Streamable HTTP at `/mcp`.
 - Legacy SSE-only plugin behavior: not part of the core endpoint. Upgrade or
