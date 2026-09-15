@@ -37,10 +37,16 @@ scopes:
     search:
       full_text_modes: [none]
 
-    # Optional v1.1 convenience. The server validates this as an absolute HTTPS
-    # URL with exactly one {document_id} placeholder in the path/query and no credentials.
+    # Optional v1.1 convenience. HTTPS is the default. The server validates an
+    # absolute URL with exactly one {document_id} or {arcsuite_object_id}
+    # placeholder in the path/query and no credentials. The host/template remain
+    # operator configuration and callers cannot override them.
     # ui:
     #   document_url_template: "https://arcsuite.example.invalid/open?id={document_id}"
+    # For a trusted internal HTTP-only UI, set both fields explicitly for this
+    # scope. HTTP is not made secure by this option.
+    #   allow_http: true
+    #   document_url_template: "http://arcsuite-internal.example.invalid/ArcSuite/docspace/sdk/open.do?id={arcsuite_object_id}&enc=UTF-8"
 
     allowed_object_types:
       - document

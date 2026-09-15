@@ -219,24 +219,58 @@ provided.
 
 ### Optional document deep link
 
-A scope may include a trusted ArcSuite UI URL template:
+A scope may include an operator-controlled ArcSuite UI URL template. HTTPS is
+the default and does not require any additional setting:
 
 ```yaml
 ui:
   document_url_template: "https://arcsuite.example.invalid/open?id={document_id}"
 ```
 
+`{document_id}` is the legacy placeholder and is replaced with the complete
+semantic MCP document ID, including its `rep:` prefix. The value is encoded as
+one URL component before substitution. For ArcSuite UI routes that require the
+native object ID, use `{arcsuite_object_id}` instead:
+
+```yaml
+ui:
+  document_url_template: "https://arcsuite.example.invalid/ArcSuite/docspace/sdk/open.do?id={arcsuite_object_id}&enc=UTF-8"
+```
+
+For a trusted internal deployment whose UI is intentionally HTTP-only, HTTP
+must be explicitly enabled for that scope:
+
+```yaml
+ui:
+  allow_http: true
+  document_url_template: "http://arcsuite-internal.example.invalid/ArcSuite/docspace/sdk/open.do?id={arcsuite_object_id}&enc=UTF-8"
+```
+
+`ui.allow_http` defaults to `false`; setting it to `true` permits HTTP only for
+that scope's configured UI deep link. It is not a global transport switch and
+does not affect the SOAP adapter endpoint. Do not reuse `ARCSUITE_ALLOW_HTTP`
+for this setting. HTTP should be limited to a trusted internal deployment; this
+option does not make HTTP secure.
+
 The template is operator configuration, not a tool argument. It must:
 
-- use absolute HTTPS;
-- contain exactly one `{document_id}` placeholder;
-- place `{document_id}` only in the URL path or query, never in the authority
-  (hostname or port);
+- use an absolute HTTP or HTTPS URL;
+- use HTTPS unless `ui.allow_http: true` is explicitly set;
+- contain exactly one supported placeholder: either `{document_id}` or
+  `{arcsuite_object_id}`, but not both or a duplicate;
+- place the selected placeholder only in the URL path or query, never in the
+  authority (hostname, username/password, or port);
 - contain no username/password or URL fragment;
 - keep the generated URL on the configured origin.
 
 When enabled, normalized metadata may include `open_url`. The implementation
-URL-encodes the object ID and never embeds ArcSuite credentials or Session IDs.
+URL-encodes the selected object ID and never embeds ArcSuite credentials or
+Session IDs. A native-ID template is omitted when the runtime ID is not a
+valid `rep:`-prefixed semantic ID. The link is a navigation helper, not an
+authorization decision, and configuring it does not bypass ArcSuite
+authentication. MCP callers cannot override the template or its host. Keep
+operator-private hosts and identifiers in ignored/private scope configuration;
+do not place them in the public example or documentation.
 
 ## Paging snapshot cache
 

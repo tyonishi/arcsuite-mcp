@@ -28,6 +28,10 @@
   capability discovery, bounded ID-snapshot paging for search/folder results,
   bounded batch metadata reads, short-lived extracted-content snapshot reuse,
   content-info/read reuse, and optional trusted ArcSuite UI deep links.
+- Extended optional UI deep links with explicit per-scope HTTP opt-in and an
+  `{arcsuite_object_id}` placeholder that removes only the leading `rep:` from
+  a valid semantic document ID; existing HTTPS and `{document_id}` behavior
+  remains unchanged.
 - Implemented the v1.2 S1 Typed Search Foundation: schema-validated string,
   integer, number, boolean, date, datetime, and enum predicates; safe enum
   alias mapping; expanded AttributeSchema metadata; and explicitly configured

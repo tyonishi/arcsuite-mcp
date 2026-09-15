@@ -399,8 +399,8 @@ test("scope registry rejects overlapping enabled cabinet mappings", () => {
   }), /overlapping cabinet mappings/);
 });
 
-test("scope registry rejects document ID placeholders in URL authorities", () => {
-  const scope = {
+test("scope registry validates safe UI deep-link templates and placeholder semantics", () => {
+  const baseScope = {
     description: "Synthetic linked scope",
     enabled: true,
     arcsuite: {
@@ -413,10 +413,84 @@ test("scope registry rejects document ID placeholders in URL authorities", () =>
     default_attr_ids: [{ ns: "rep", name: "system:name" }],
     semantic_attributes: {}
   };
-  for (const template of ["https://{document_id}.example.invalid/open", "https://example.invalid:{document_id}/open"]) {
-    assert.throws(() => new ScopeRegistry({ version: 1, scopes: { linked_scope: { ...scope, ui: { document_url_template: template } } } }), /document_url_template/);
+
+  const registryFor = (ui: unknown) => new ScopeRegistry({
+    version: 1,
+    scopes: { linked_scope: { ...baseScope, ...(ui === undefined ? {} : { ui }) } }
+  } as any);
+  const documentId = "rep:ExampleRepo:EXAMPLE_CABINET:12345";
+
+  const legacyRegistry = registryFor({ document_url_template: "https://arcsuite.example.invalid/open?id={document_id}" });
+  const legacyScope = legacyRegistry.get("linked_scope");
+  assert.equal(
+    legacyRegistry.documentUrl(legacyScope, documentId),
+    "https://arcsuite.example.invalid/open?id=rep%3AExampleRepo%3AEXAMPLE_CABINET%3A12345"
+  );
+
+  const nativeRegistry = registryFor({ document_url_template: "https://arcsuite.example.invalid/open?id={arcsuite_object_id}" });
+  const nativeScope = nativeRegistry.get("linked_scope");
+  const nativeUrl = nativeRegistry.documentUrl(nativeScope, documentId);
+  assert.equal(nativeUrl, "https://arcsuite.example.invalid/open?id=ExampleRepo%3AEXAMPLE_CABINET%3A12345");
+  assert.equal(nativeUrl?.includes("rep%3A"), false);
+  assert.equal(nativeRegistry.documentUrl(nativeScope, "ExampleRepo:EXAMPLE_CABINET:12345"), undefined);
+  assert.equal(nativeRegistry.documentUrl(nativeScope, "rep:"), undefined);
+  assert.equal(nativeRegistry.describe(["linked_scope"])[0].ui_deep_link, true);
+  assert.equal(JSON.stringify(nativeRegistry.describe(["linked_scope"])).includes("document_url_template"), false);
+  assert.equal(JSON.stringify(nativeRegistry.describe(["linked_scope"])).includes("arcsuite.example.invalid"), false);
+
+  const httpNativeRegistry = registryFor({
+    allow_http: true,
+    document_url_template: "http://arcsuite-internal.example.invalid/ArcSuite/docspace/sdk/open.do?id={arcsuite_object_id}&enc=UTF-8"
+  });
+  const httpNativeUrl = httpNativeRegistry.documentUrl(httpNativeRegistry.get("linked_scope"), documentId);
+  assert.equal(httpNativeUrl, "http://arcsuite-internal.example.invalid/ArcSuite/docspace/sdk/open.do?id=ExampleRepo%3AEXAMPLE_CABINET%3A12345&enc=UTF-8");
+
+  const httpLegacyRegistry = registryFor({ allow_http: true, document_url_template: "http://arcsuite-internal.example.invalid/open?id={document_id}" });
+  assert.equal(
+    httpLegacyRegistry.documentUrl(httpLegacyRegistry.get("linked_scope"), documentId),
+    "http://arcsuite-internal.example.invalid/open?id=rep%3AExampleRepo%3AEXAMPLE_CABINET%3A12345"
+  );
+
+  for (const allowHttp of [undefined, false]) {
+    assert.throws(() => registryFor({ allow_http: allowHttp, document_url_template: "http://arcsuite.example.invalid/open?id={document_id}" }), /must use https/i);
   }
-  const registry = new ScopeRegistry({ version: 1, scopes: { linked_scope: { ...scope, ui: { document_url_template: "https://example.invalid/open?id={document_id}" } } } });
-  const invalidScope = { ...scope, ui: { document_url_template: "https://{document_id}.example.invalid/open" } };
-  assert.equal(registry.documentUrl(invalidScope, "rep:mock:EXAMPLE_CABINET:1"), undefined);
+  assert.doesNotThrow(() => registryFor({ allow_http: false, document_url_template: "https://arcsuite.example.invalid/open?id={document_id}" }));
+  assert.throws(() => registryFor({ allow_http: "true", document_url_template: "https://arcsuite.example.invalid/open?id={document_id}" }), /allow_http.*boolean/i);
+  assert.throws(() => registryFor({ allow_http: true, document_url_template: "ftp://arcsuite.example.invalid/open?id={document_id}" }), /http or https/i);
+
+  for (const template of [
+    "https://arcsuite.example.invalid/open",
+    "https://arcsuite.example.invalid/open?id={document_id}{document_id}",
+    "https://arcsuite.example.invalid/open?id={arcsuite_object_id}{arcsuite_object_id}",
+    "https://arcsuite.example.invalid/open?id={document_id}&native={arcsuite_object_id}",
+    "https://arcsuite.example.invalid/open?id={unknown_placeholder}"
+  ]) {
+    assert.throws(() => registryFor({ document_url_template: template }), /document_url_template/);
+  }
+
+  for (const placeholder of ["document_id", "arcsuite_object_id"]) {
+    for (const template of [
+      `https://{${placeholder}}.example.invalid/open`,
+      `https://arcsuite.example.invalid:{${placeholder}}/open`
+    ]) {
+      assert.throws(() => registryFor({ document_url_template: template }), /document_url_template/);
+    }
+  }
+
+  for (const template of [
+    "https://user:password@arcsuite.example.invalid/open?id={document_id}",
+    "https://arcsuite.example.invalid/open?id={document_id}#fragment",
+    "/open?id={document_id}",
+    "not-a-url?id={document_id}"
+  ]) {
+    assert.throws(() => registryFor({ document_url_template: template }), /document_url_template/);
+  }
+
+  const pathRegistry = registryFor({ document_url_template: "https://arcsuite.example.invalid/ArcSuite/open/{document_id}?fixed=1" });
+  const pathUrl = pathRegistry.documentUrl(pathRegistry.get("linked_scope"), "rep:ExampleRepo:EXAMPLE_CABINET:/?");
+  assert.equal(new URL(pathUrl as string).origin, "https://arcsuite.example.invalid");
+  assert.equal(pathUrl?.includes("rep%3AExampleRepo%3AEXAMPLE_CABINET%3A%2F%3F"), true);
+
+  const invalidScope = { ...baseScope, ui: { document_url_template: "https://{document_id}.example.invalid/open" } } as any;
+  assert.equal(legacyRegistry.documentUrl(invalidScope, documentId), undefined);
 });

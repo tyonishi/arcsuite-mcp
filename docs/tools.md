@@ -294,12 +294,41 @@ appear in normal tool output or these errors.
 
 ## Optional ArcSuite UI deep links
 
-An operator may configure a trusted HTTPS `document_url_template` in a scope.
-When configured, document metadata can include `open_url`. The template must
-contain exactly one `{document_id}` placeholder in the path or query, cannot
-include credentials, and is validated server-side. MCP callers cannot supply
-or override the host, template, or credentials. If an optional template is
-invalid at decoration time, the server omits `open_url`.
+An operator may configure a server-side `document_url_template` in a scope.
+HTTPS remains the default:
+
+```yaml
+ui:
+  document_url_template: "https://arcsuite.example.invalid/open?id={document_id}"
+```
+
+The legacy `{document_id}` placeholder uses the complete semantic MCP document
+ID, including `rep:`. The `{arcsuite_object_id}` placeholder removes only that
+exact leading `rep:` from a valid semantic ID before applying the same URL
+component encoding:
+
+```yaml
+ui:
+  document_url_template: "https://arcsuite.example.invalid/ArcSuite/docspace/sdk/open.do?id={arcsuite_object_id}&enc=UTF-8"
+```
+
+HTTP is allowed only with an explicit per-scope opt-in:
+
+```yaml
+ui:
+  allow_http: true
+  document_url_template: "http://arcsuite-internal.example.invalid/ArcSuite/docspace/sdk/open.do?id={arcsuite_object_id}&enc=UTF-8"
+```
+
+The template must be an absolute HTTP(S) URL with exactly one supported
+placeholder, with the placeholder outside the URL authority. Duplicate or
+unknown placeholders, credentials, fragments, and origin changes are rejected
+or omitted fail-closed. `allow_http` is not a global switch and does not make
+HTTP secure; it is separate from the `ARCSUITE_ALLOW_HTTP` SOAP transport
+setting. `open_url` is only a navigation helper; it is not authorization
+and does not bypass ArcSuite authentication. MCP callers cannot provide or
+override the template, host, scheme, or credentials. Private hosts and
+identifiers belong only in ignored/operator-private configuration.
 
 ## Stable error behavior
 

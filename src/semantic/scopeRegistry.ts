@@ -48,6 +48,7 @@ export type SemanticScope = {
     full_text_modes?: FullTextSearchMode[];
   };
   ui?: {
+    allow_http?: boolean;
     document_url_template?: string;
   };
   allowed_object_types: string[];
@@ -118,8 +119,7 @@ export class ScopeRegistry {
       validateIntegrityConfiguration(scope.integrity, name);
       validateSearchConfiguration(scope.search, name);
       if (scope.ui !== undefined) {
-        if (!scope.ui || typeof scope.ui !== "object" || Array.isArray(scope.ui)) throw new Error(`Scope ${name} ui must be an object`);
-        if (scope.ui.document_url_template !== undefined) validateDocumentUrlTemplate(scope.ui.document_url_template, name);
+        validateUiConfiguration(scope.ui, name);
       }
       if (!Array.isArray(scope.allowed_object_types) || !scope.allowed_object_types.length || scope.allowed_object_types.some((value) => !safeConfigString(value, 128))) {
         throw new Error(`Scope ${name} requires non-empty allowed_object_types`);
@@ -233,11 +233,16 @@ export class ScopeRegistry {
   documentUrl(scope: SemanticScope, objectId: string): string | undefined {
     const template = scope.ui?.document_url_template;
     if (!template) return undefined;
+    const templateInfo = inspectDocumentUrlTemplate(template, scope.ui?.allow_http);
+    if (!templateInfo.ok || !isSemanticDocumentId(objectId)) return undefined;
+    const replacementSource = templateInfo.placeholder === "{document_id}"
+      ? objectId
+      : objectId.slice("rep:".length);
+    if (!replacementSource) return undefined;
     try {
-      const replaced = template.replace("{document_id}", encodeURIComponent(objectId));
+      const replaced = template.replace(templateInfo.placeholder, encodeURIComponent(replacementSource));
       const parsed = new URL(replaced);
-      const templateUrl = new URL(template.replace("{document_id}", "example"));
-      if (parsed.origin !== templateUrl.origin || parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) return undefined;
+      if (parsed.origin !== templateInfo.origin || parsed.protocol !== templateInfo.protocol || parsed.username || parsed.password || parsed.hash) return undefined;
       return parsed.toString();
     } catch {
       return undefined;
@@ -367,6 +372,17 @@ function validateIntegrityConfiguration(integrity: SemanticScope["integrity"], s
   }
 }
 
+function validateUiConfiguration(ui: SemanticScope["ui"], scopeId: string): void {
+  if (!ui || typeof ui !== "object" || Array.isArray(ui)) throw new Error(`Scope ${scopeId} ui must be an object`);
+  for (const key of Object.keys(ui)) {
+    if (key !== "allow_http" && key !== "document_url_template") throw new Error(`Scope ${scopeId} has unknown ui key ${key}`);
+  }
+  if (ui.allow_http !== undefined && typeof ui.allow_http !== "boolean") {
+    throw new Error(`Scope ${scopeId} ui.allow_http must be a boolean`);
+  }
+  if (ui.document_url_template !== undefined) validateDocumentUrlTemplate(ui.document_url_template, ui.allow_http, scopeId);
+}
+
 function fullTextModes(scope: SemanticScope): FullTextSearchMode[] {
   return [...(scope.search?.full_text_modes ?? ["none"])] as FullTextSearchMode[];
 }
@@ -450,17 +466,70 @@ function validateStringEnumLiteral(value: string, cfg: SemanticAttributeConfig, 
   return undefined;
 }
 
-function validateDocumentUrlTemplate(value: unknown, scopeId: string): asserts value is string {
-  if (typeof value !== "string" || value.length < 1 || value.length > 2048) throw new Error(`Scope ${scopeId} has invalid document_url_template`);
-  if ((value.match(/\{document_id\}/g) ?? []).length !== 1 || /\{[^}]+\}/.test(value.replace("{document_id}", ""))) {
-    throw new Error(`Scope ${scopeId} document_url_template must contain exactly one {document_id} placeholder`);
+type DocumentUrlPlaceholder = "{document_id}" | "{arcsuite_object_id}";
+
+type DocumentUrlTemplateInspection =
+  | { ok: true; placeholder: DocumentUrlPlaceholder; origin: string; protocol: "http:" | "https:" }
+  | { ok: false; reason: string };
+
+const DOCUMENT_URL_PLACEHOLDER_MARKERS = [
+  "arcsuite-document-placeholder-a.invalid",
+  "arcsuite-document-placeholder-b.invalid"
+] as const;
+
+function validateDocumentUrlTemplate(value: unknown, allowHttp: unknown, scopeId: string): asserts value is string {
+  const inspected = inspectDocumentUrlTemplate(value, allowHttp);
+  if (!inspected.ok) throw new Error(`Scope ${scopeId} document_url_template ${inspected.reason}`);
+}
+
+function inspectDocumentUrlTemplate(value: unknown, allowHttp: unknown): DocumentUrlTemplateInspection {
+  if (typeof value !== "string" || value.length < 1 || value.length > 2048) {
+    return { ok: false, reason: "must be a non-empty string of at most 2048 characters" };
   }
-  let parsed: URL;
-  try { parsed = new URL(value.replace("{document_id}", "example")); }
-  catch { throw new Error(`Scope ${scopeId} document_url_template must be an absolute URL`); }
-  if (parsed.protocol !== "https:") throw new Error(`Scope ${scopeId} document_url_template must use https`);
-  if (parsed.username || parsed.password) throw new Error(`Scope ${scopeId} document_url_template must not contain credentials`);
-  if (parsed.hash) throw new Error(`Scope ${scopeId} document_url_template must not contain a fragment`);
-  const authority = /^\s*https:\/\/([^/?#]*)/i.exec(value)?.[1];
-  if (authority?.includes("{document_id}")) throw new Error(`Scope ${scopeId} document_url_template must keep {document_id} out of the URL authority`);
+  if (allowHttp !== undefined && typeof allowHttp !== "boolean") {
+    return { ok: false, reason: "requires ui.allow_http to be a boolean" };
+  }
+
+  const placeholders = value.match(/\{[^{}]*\}/g) ?? [];
+  const placeholder = placeholders.length === 1 && isDocumentUrlPlaceholder(placeholders[0]) ? placeholders[0] : undefined;
+  const remainder = placeholder ? value.replace(placeholder, "") : value;
+  if (!placeholder || remainder.includes("{") || remainder.includes("}")) {
+    return { ok: false, reason: "must contain exactly one supported object-ID placeholder and no unknown placeholders" };
+  }
+
+  let parsedA: URL;
+  let parsedB: URL;
+  try {
+    parsedA = new URL(value.replace(placeholder, DOCUMENT_URL_PLACEHOLDER_MARKERS[0]));
+    parsedB = new URL(value.replace(placeholder, DOCUMENT_URL_PLACEHOLDER_MARKERS[1]));
+  } catch {
+    return { ok: false, reason: "must be an absolute URL" };
+  }
+  if (parsedA.protocol !== parsedB.protocol || (parsedA.protocol !== "http:" && parsedA.protocol !== "https:")) {
+    return { ok: false, reason: "must use http or https" };
+  }
+  if (parsedA.origin === "null" || parsedB.origin === "null") {
+    return { ok: false, reason: "must be an absolute URL" };
+  }
+  if (parsedA.protocol === "http:" && allowHttp !== true) {
+    return { ok: false, reason: "must use https unless ui.allow_http is true" };
+  }
+  if (parsedA.username || parsedA.password || parsedA.hash || parsedB.username || parsedB.password || parsedB.hash) {
+    return { ok: false, reason: "must not contain credentials or a URL fragment" };
+  }
+  if (parsedA.hostname !== parsedB.hostname || parsedA.port !== parsedB.port
+    || parsedA.username !== parsedB.username || parsedA.password !== parsedB.password) {
+    return { ok: false, reason: "must keep the object-ID placeholder out of the URL authority" };
+  }
+
+  return { ok: true, placeholder, origin: parsedA.origin, protocol: parsedA.protocol };
+}
+
+function isDocumentUrlPlaceholder(value: string): value is DocumentUrlPlaceholder {
+  return value === "{document_id}" || value === "{arcsuite_object_id}";
+}
+
+function isSemanticDocumentId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 5 && value.length <= 2048
+    && /^rep:[^\s\u0000-\u001f\u007f]+$/.test(value);
 }
