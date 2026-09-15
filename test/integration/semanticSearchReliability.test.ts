@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildRuntime } from "../../src/server.ts";
+import { ArcSuiteAdapterError } from "../../src/arcsuite/errors.ts";
 import type { AdapterGetManyResult, AdapterRepositoryObject } from "../../src/arcsuite/types.ts";
 
 async function runtime(scopeFile = resolve("config/scopes.mock.yaml"), overrides: Record<string, string> = {}) {
@@ -166,6 +167,28 @@ test("deterministic searches fail atomically when any candidate cannot be hydrat
   rt.stopValidationRetry();
 });
 
+test("malformed batch failure codes fail closed before public output", async () => {
+  const id = "rep:mock:EXAMPLE_CABINET:synthetic-2";
+  for (const failure of [
+    { index: 0 },
+    { index: 0, code: undefined },
+    { index: 0, code: "" },
+    { index: 0, code: " \t" },
+    { index: 0, code: 0 }
+  ] as any[]) {
+    const rt = await runtime();
+    try {
+      installSearch(rt.adapter, [id], [], [failure]);
+      await assert.rejects(
+        () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "provider-indexed-term" }),
+        (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "batch_failure_code"
+      );
+    } finally {
+      rt.stopValidationRetry();
+    }
+  }
+});
+
 test("provider failures remain distinct from successful zero results", async () => {
   const rt = await runtime();
   rt.adapter.searchIds = async () => { throw new Error("synthetic provider fault"); };
@@ -173,6 +196,38 @@ test("provider failures remain distinct from successful zero results", async () 
   const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").at(-1)!);
   assert.equal(audit.search_outcome, "provider_failure");
   rt.stopValidationRetry();
+});
+
+test("provider-originated forbidden search failures are audited as provider failures", async () => {
+  const rt = await runtime();
+  try {
+    rt.adapter.searchIds = async () => {
+      throw new ArcSuiteAdapterError("ARCSUITE_FORBIDDEN", "synthetic provider refusal");
+    };
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "provider-term" }),
+      (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN"
+    );
+    const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").at(-1)!);
+    assert.equal(audit.search_outcome, "provider_failure");
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("caller-side forbidden search scope has no provider outcome", async () => {
+  const rt = await runtime();
+  try {
+    await assert.rejects(
+      () => rt.tools.call({ ...profile(), allowedScopes: [] }, "arcsuite_search_documents", { scope: "example_documents", query: "provider-term" }),
+      (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN"
+    );
+    const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").at(-1)!);
+    assert.equal(Object.hasOwn(audit, "search_outcome"), false);
+    assert.deepEqual(audit.soap_operations, []);
+  } finally {
+    rt.stopValidationRetry();
+  }
 });
 
 test("LIKE-only searches retain per-ID hydration failures", async () => {

@@ -156,6 +156,7 @@ export class ToolRegistry {
             const attrConditions = verificationPlan.map((predicate) => predicate.condition);
             const words = parsed.query ? tokenizeQuery(parsed.query) : [];
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
+            this.recordSoapOperation(soapOperations, "searchRepositoryObjectIds");
             const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
               clientProfileId: profile.clientProfileId,
               attributeConditions: attrConditions,
@@ -171,7 +172,6 @@ export class ToolRegistry {
               limit: snapshotLimit + 1,
               options: []
             }));
-            soapOperations.push("searchRepositoryObjectIds");
             for (const id of ids) this.assertObjectIdInScope(scope, id);
             page = this.paging.create({
               clientProfileId: profile.clientProfileId,
@@ -524,7 +524,8 @@ export class ToolRegistry {
       resultCode = mapped.stableCode;
       if (name === "arcsuite_search_documents") {
         if (error instanceof SearchOutcomeError) searchOutcome = error.outcome;
-        else if (mapped.stableCode !== "ARCSUITE_INVALID_ARGUMENT" && mapped.stableCode !== "ARCSUITE_FORBIDDEN") searchOutcome = "provider_failure";
+        else if (mapped.stableCode !== "ARCSUITE_INVALID_ARGUMENT"
+          && (mapped.stableCode !== "ARCSUITE_FORBIDDEN" || soapOperations.length > 0)) searchOutcome = "provider_failure";
       }
       throw mapped;
     } finally {
@@ -932,6 +933,7 @@ export class ToolRegistry {
         attrKeys.add(attrKey(attr));
       }
     }
+    this.recordSoapOperation(operations, "getRepositoryObjects");
     const batch = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.getMany({
       clientProfileId: profile.clientProfileId,
       ids,
@@ -941,7 +943,6 @@ export class ToolRegistry {
       attrIds,
       options
     }));
-    if (!operations.includes("getRepositoryObjects")) operations.push("getRepositoryObjects");
     if (!batch || !Array.isArray(batch.objects) || !Array.isArray(batch.failures)) {
       throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_shape", false);
     }
@@ -960,6 +961,9 @@ export class ToolRegistry {
     for (const failure of batch.failures) {
       if (!failure || typeof failure !== "object" || !Number.isSafeInteger(failure.index) || failure.index < 0 || failure.index >= ids.length) {
         throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_index", false);
+      }
+      if (typeof failure.code !== "string" || !failure.code.trim()) {
+        throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_code", false);
       }
       if (coveredIndexes.has(failure.index)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
       coveredIndexes.add(failure.index);

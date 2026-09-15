@@ -40,29 +40,35 @@ async function listTools(protocolVersion: "2025-03-26" | "2026-07-28") {
     MCP_ALLOWED_HOSTNAMES: "127.0.0.1,localhost",
     MCP_ALLOWED_ORIGIN_HOSTNAMES: "127.0.0.1,localhost"
   });
-  await new Promise<void>((resolveListen) => runtime.server.listen(0, "127.0.0.1", resolveListen));
-  const address = runtime.server.address();
-  if (!address || typeof address === "string") throw new Error("server address unavailable");
-  const params = protocolVersion === "2026-07-28"
-    ? { _meta: { "io.modelcontextprotocol/protocolVersion": protocolVersion, "io.modelcontextprotocol/clientCapabilities": {}, "io.modelcontextprotocol/clientInfo": { name: "fixture", version: "1" } } }
-    : {};
-  const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
-    method: "POST",
-    headers: {
-      authorization: "Bearer test-token",
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      "mcp-protocol-version": protocolVersion,
-      "mcp-method": "tools/list"
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params })
-  });
-  const body = await response.text();
-  runtime.server.close();
-  runtime.stopValidationRetry();
-  const dataLine = body.split("\n").find((line) => line.startsWith("data:"));
-  const envelope = JSON.parse(dataLine ? dataLine.slice(5) : body) as { result: any };
-  return { status: response.status, result: envelope.result };
+  try {
+    await new Promise<void>((resolveListen) => runtime.server.listen(0, "127.0.0.1", resolveListen));
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") throw new Error("server address unavailable");
+    const params = protocolVersion === "2026-07-28"
+      ? { _meta: { "io.modelcontextprotocol/protocolVersion": protocolVersion, "io.modelcontextprotocol/clientCapabilities": {}, "io.modelcontextprotocol/clientInfo": { name: "fixture", version: "1" } } }
+      : {};
+    const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": protocolVersion,
+        "mcp-method": "tools/list"
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params })
+    });
+    const body = await response.text();
+    const dataLine = body.split("\n").find((line) => line.startsWith("data:"));
+    const envelope = JSON.parse(dataLine ? dataLine.slice(5) : body) as { result: any };
+    return { status: response.status, result: envelope.result };
+  } finally {
+    try {
+      runtime.server.close();
+    } finally {
+      runtime.stopValidationRetry();
+    }
+  }
 }
 
 for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
