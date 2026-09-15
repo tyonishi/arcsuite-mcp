@@ -105,6 +105,7 @@ public final class SelfTest {
         String boundary="test-boundary";
         byte[] root = ("--"+boundary+"\r\nContent-Type: application/xop+xml; charset=UTF-8; type=\"text/xml\"\r\nContent-ID: <root>\r\n\r\n<Envelope><data><xop:Include xmlns:xop=\"http://www.w3.org/2004/08/xop/include\" href=\"cid:bin\"/></data></Envelope>\r\n--"+boundary+"\r\nContent-Type: application/octet-stream\r\nContent-ID: <bin>\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1);
         byte[] suffix = ("\r\n--"+boundary+"--\r\n").getBytes(StandardCharsets.ISO_8859_1);
+        String contentType = "multipart/related; boundary=\""+boundary+"\"";
         for (byte[] payload : List.of(
                 new byte[0], "ABC123".getBytes(StandardCharsets.ISO_8859_1),
                 new byte[]{'A','B','C','\n'}, new byte[]{'A','B','C','\r'},
@@ -115,8 +116,30 @@ public final class SelfTest {
             bytes.writeBytes(root);
             bytes.writeBytes(payload);
             bytes.writeBytes(suffix);
-            MtomMessage m=MtomParser.parse("multipart/related; boundary=\""+boundary+"\"",bytes.toByteArray());
+            MtomMessage m=MtomParser.parse(contentType,bytes.toByteArray());
             if(!java.util.Arrays.equals(payload, m.attachments().get("bin"))) throw new AssertionError("MTOM payload changed: " + java.util.Arrays.toString(payload));
+        }
+
+        ByteArrayOutputStream leadingCrlf = new ByteArrayOutputStream();
+        leadingCrlf.writeBytes("\r\n".getBytes(StandardCharsets.ISO_8859_1));
+        leadingCrlf.writeBytes(root);
+        leadingCrlf.writeBytes("leading-crlf".getBytes(StandardCharsets.ISO_8859_1));
+        leadingCrlf.writeBytes(suffix);
+        MtomMessage parsedLeadingCrlf = MtomParser.parse(contentType, leadingCrlf.toByteArray());
+        if (!java.util.Arrays.equals("leading-crlf".getBytes(StandardCharsets.ISO_8859_1), parsedLeadingCrlf.attachments().get("bin"))) {
+            throw new AssertionError("Exactly one leading CRLF was not accepted");
+        }
+
+        for (byte[] invalidPrefix : List.of(
+                "\n".getBytes(StandardCharsets.ISO_8859_1),
+                "\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1),
+                "synthetic-preamble\r\n".getBytes(StandardCharsets.ISO_8859_1))) {
+            ByteArrayOutputStream invalid = new ByteArrayOutputStream();
+            invalid.writeBytes(invalidPrefix);
+            invalid.writeBytes(root);
+            invalid.writeBytes("invalid-prefix".getBytes(StandardCharsets.ISO_8859_1));
+            invalid.writeBytes(suffix);
+            expectAdapterFailure(() -> MtomParser.parse(contentType, invalid.toByteArray()), "ARCSUITE_UPSTREAM_ERROR");
         }
     }
 

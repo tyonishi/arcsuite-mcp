@@ -71,6 +71,9 @@
   wire contract; the corresponding `java/rsa-without-oaep` CodeQL findings
   remain visible as an intentional ArcSuite compatibility exception for
   security review.
+- Accepted exactly one leading CRLF before the initial MTOM boundary in the
+  Java adapter while continuing to reject arbitrary preamble bytes; added
+  synthetic regression coverage for accepted and rejected framing variants.
 - Remediated staged wildcard-regex unescaping and nested XML entity-decoding
   findings.
 
