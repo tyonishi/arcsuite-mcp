@@ -122,6 +122,7 @@ export class HttpArcSuiteAdapterClient implements ArcSuiteAdapterClient {
 
 export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   private readonly docs: AdapterRepositoryObject[];
+  private readonly contentFixtures: Map<string, AdapterRepositoryObject>;
   private readonly hardReferenceObjects: AdapterRepositoryObject[];
   private readonly sharedDir: string;
 
@@ -133,6 +134,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
       {
         id: "rep:mock:EXAMPLE_CABINET:1001",
         objectClass: "document",
+        nativeObjectClass: { ns: "rep", name: "system:document" },
         attributes: {
           "rep:system:name": { type: "string", value: "DOC-000001_example.pdf" },
           "rep:user:example_document_number": { type: "string", value: "DOC-000001" },
@@ -150,14 +152,15 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
           ] }
         },
         pathObjects: [
-          { id: "rep:mock:EXAMPLE_CABINET:folder-a", name: "Example folder", objectClass: "folder" },
-          { id: "rep:mock:EXAMPLE_CABINET", name: "Example cabinet", objectClass: "cabinet" }
+          { id: "rep:mock:EXAMPLE_CABINET:folder-a", name: "Example folder", objectClass: "folder", nativeObjectClass: { ns: "rep", name: "system:folder" } },
+          { id: "rep:mock:EXAMPLE_CABINET", name: "Example cabinet", objectClass: "cabinet", nativeObjectClass: { ns: "rep", name: "system:cabinet" } }
         ],
         fullPath: true
       },
       {
         id: "rep:mock:EXAMPLE_CABINET:1002",
         objectClass: "document",
+        nativeObjectClass: { ns: "rep", name: "system:document" },
         attributes: {
           "rep:system:name": { type: "string", value: "DOC-000002_example.txt" },
           "rep:user:example_document_number": { type: "string", value: "DOC-000002" },
@@ -172,6 +175,11 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
         }
       }
     ];
+    const syntheticTarget = structuredClone(this.docs[0]);
+    syntheticTarget.id = "rep:mock:EXAMPLE_CABINET:target-001";
+    syntheticTarget.attributes["rep:system:name"] = { type: "string", value: "TARGET-001_example.pdf" };
+    syntheticTarget.attributes["rep:user:example_document_number"] = { type: "string", value: "TARGET-001" };
+    this.contentFixtures = new Map([[syntheticTarget.id, syntheticTarget]]);
     this.hardReferenceObjects = [
       mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-001", "Example incoming reference 001", "folder-a", "reference"),
       mockHardReference("rep:mock:EXAMPLE_CABINET:hardref-002", "Example incoming reference 002", "folder-a", "reference"),
@@ -212,10 +220,12 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   }
 
   async get(request: AdapterGetRequest): Promise<AdapterRepositoryObject> {
-    const doc = [...this.docs, ...this.hardReferenceObjects].find((d) => d.id === request.id);
+    const doc = [...this.docs, ...this.hardReferenceObjects].find((d) => d.id === request.id)
+      ?? (request.revisionNumber !== undefined ? this.contentFixtures.get(request.id) : undefined);
     if (!doc) throw new ArcSuiteAdapterError("ARCSUITE_NOT_AVAILABLE", "Object not available");
     const copy = structuredClone(doc);
     if (request.revisionNumber !== undefined) {
+      copy.id = `${doc.id}:${request.revisionNumber}`;
       copy.attributes["rep:system:revisionnumber"] = { type: "int", value: request.revisionNumber };
     }
     if (!request.includePath) delete copy.pathObjects;
@@ -291,15 +301,19 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
   }
 
   async content(request: AdapterContentRequest): Promise<AdapterContentResult> {
-    const document = await this.get({
+    const expectedWireId = `${request.effectiveId}:${request.revisionNumber}`;
+    if (request.contentWireId !== expectedWireId) throw new ArcSuiteAdapterError("ARCSUITE_UPSTREAM_ERROR", "Content wire identity mismatch");
+    let document: AdapterRepositoryObject;
+    document = await this.get({
       clientProfileId: request.clientProfileId,
-      id: request.id,
+      id: request.effectiveId,
       revisionNumber: request.revisionNumber,
-      resolveRef: true,
+      resolveRef: false,
       includePath: false,
       attrIds: [],
       options: []
     });
+    if (document.id !== request.contentWireId) throw new ArcSuiteAdapterError("ARCSUITE_UPSTREAM_ERROR", "Content wire identity mismatch");
     const labels = document.attributes["rep:system:contentlabellist"];
     if (labels?.type !== "i18n[]" || !labels.values.some((label) => label.ns === request.contentLabel.ns && label.name === request.contentLabel.name)) {
       throw new ArcSuiteAdapterError("ARCSUITE_NOT_AVAILABLE", "Content label not available");
@@ -307,13 +321,14 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
     const preview = request.contentLabel.ns === "rep" && request.contentLabel.name === "user:EXAMPLE_PREVIEW";
     const path = join(this.sharedDir, `${request.traceId}.txt`);
     const text = preview
-      ? `Synthetic ArcSuite preview content\nDocument ID: ${request.id}\nThis text is provided for local MCP testing.\n${"Preview-only line.\n".repeat(160)}`
-      : `Synthetic ArcSuite document\nDocument ID: ${request.id}\nThis text is provided for local MCP testing.\n`;
+      ? `Synthetic ArcSuite preview content\nDocument ID: ${request.requestedId}\nThis text is provided for local MCP testing.\n${"Preview-only line.\n".repeat(160)}`
+      : `Synthetic ArcSuite document\nDocument ID: ${request.requestedId}\nThis text is provided for local MCP testing.\n`;
     writeFileSync(path, text, "utf8");
     const label: PhysicalContentLabel = { ns: request.contentLabel.ns, name: request.contentLabel.name };
     return {
-      id: request.id,
-      effectiveId: document.id,
+      id: request.requestedId,
+      effectiveId: request.effectiveId,
+      wireId: request.contentWireId,
       revisionNumber: request.revisionNumber,
       label,
       fileName: preview ? "mock-document-preview.txt" : "mock-document.txt",
@@ -370,15 +385,18 @@ function mockSchema(attrId: { ns: string; name: string }) {
 
 function mockHardReference(id: string, name: string, parentFolder: string | undefined, objectClass: string): AdapterRepositoryObject {
   const cabinetId = id.startsWith("rep:mock:OTHER_CABINET:") ? "rep:mock:OTHER_CABINET" : "rep:mock:EXAMPLE_CABINET";
+  const knownObjectClasses = new Set(["cabinet", "drawer", "folder", "document", "externalDocument", "dynamicExternalDocument", "reference", "hardReference"]);
+  const semanticObjectClass = knownObjectClasses.has(objectClass) ? objectClass : "unknown";
   const pathObjects = parentFolder
     ? [
-        { id: `${cabinetId}:${parentFolder}`, name: parentFolder === "folder-a" ? "Example folder" : "Outside folder", objectClass: "folder" },
-        { id: cabinetId, name: "Example cabinet", objectClass: "cabinet" }
+        { id: `${cabinetId}:${parentFolder}`, name: parentFolder === "folder-a" ? "Example folder" : "Outside folder", objectClass: "folder", nativeObjectClass: { ns: "rep", name: "system:folder" } },
+        { id: cabinetId, name: "Example cabinet", objectClass: "cabinet", nativeObjectClass: { ns: "rep", name: "system:cabinet" } }
       ]
-    : [{ id: cabinetId, name: "Example cabinet", objectClass: "cabinet" }];
+    : [{ id: cabinetId, name: "Example cabinet", objectClass: "cabinet", nativeObjectClass: { ns: "rep", name: "system:cabinet" } }];
   return {
     id,
-    objectClass,
+    objectClass: semanticObjectClass,
+    nativeObjectClass: { ns: "rep", name: `system:${objectClass}` },
     attributes: {
       "rep:system:name": { type: "string", value: name },
       "rep:system:modifiedon": { type: "datetime", value: "2026-09-05T03:00:00Z" },

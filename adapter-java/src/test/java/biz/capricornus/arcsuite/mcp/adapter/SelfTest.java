@@ -30,6 +30,8 @@ public final class SelfTest {
         hardReferenceContractShapes();
         documentIntegrityContractShapes();
         contentLabelWireShapes();
+        objectClassContractShapes();
+        contentRequestContract();
         typedAttributeValueShapes();
         attributeSchemaMetadataParsing();
         responseIdParsing();
@@ -189,13 +191,13 @@ public final class SelfTest {
             if (pathRequest) {
                 pathCalls.incrementAndGet();
                 var parsed = XmlUtil.parse(request);
-                pathRequestId.set(XmlUtil.firstDesc(parsed.getDocumentElement(), "id").getTextContent());
+                pathRequestId.set(XmlUtil.firstDesc(parsed.getDocumentElement(), ArcSuiteSoapClient.TYPES_NS, "id").getTextContent());
                 response = soapEnvelope(pathResponse.get());
             } else {
                 String id = returnedObjectId.get();
                 String identity = id == null ? "" : "<t:id>" + XmlUtil.esc(id) + "</t:id>";
                 response = soapEnvelope("<t:getRepositoryObjectResponse><t:getRepositoryObjectReturn>" + identity
-                        + "<t:objectClass name=\"document\"/><t:attributes/></t:getRepositoryObjectReturn></t:getRepositoryObjectResponse>");
+                        + "<t:objectClass ns=\"rep\" name=\"system:document\"/><t:attributes/></t:getRepositoryObjectReturn></t:getRepositoryObjectResponse>");
             }
             byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("content-type", "text/xml; charset=utf-8");
@@ -253,7 +255,7 @@ public final class SelfTest {
     }
 
     private static String soapEnvelope(String body) {
-        return "<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\"" + ArcSuiteSoapClient.BASE_NS + "\"><soap:Body>" + body + "</soap:Body></soap:Envelope>";
+        return "<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><soap:Body>" + body + "</soap:Body></soap:Envelope>";
     }
 
     static void sessionRetryAttemptBounds() throws Exception {
@@ -288,9 +290,12 @@ public final class SelfTest {
                 int attempt = businessCalls.incrementAndGet();
                 if (attempt <= expiredAttempts) {
                     status = 500;
-                    response = soapEnvelope("<soap:Fault><faultcode>soap:Server</faultcode><faultstring>ARCSUITE_WS-08302001</faultstring></soap:Fault>");
+                    response = attempt == 1
+                            ? soapEnvelope("<soap:Fault><faultcode>soap:Server</faultcode><faultstring>Processing failed</faultstring>"
+                                    + "<detail><t:ProcessingException><t:code>ARCSUITE_WS-08302001</t:code></t:ProcessingException></detail></soap:Fault>")
+                            : soapEnvelope("<soap:Fault><faultcode>soap:Server</faultcode><faultstring>ARCSUITE_WS-08302001</faultstring></soap:Fault>");
                 } else {
-                    response = soapEnvelope("<t:getRepositoryObjectResponse><t:getRepositoryObjectReturn><t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass name=\"document\"/><t:attributes/></t:getRepositoryObjectReturn></t:getRepositoryObjectResponse>");
+                    response = soapEnvelope("<t:getRepositoryObjectResponse><t:getRepositoryObjectReturn><t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass ns=\"rep\" name=\"system:document\"/><t:attributes/></t:getRepositoryObjectReturn></t:getRepositoryObjectResponse>");
                 }
             } else {
                 response = soapEnvelope("<t:logoutResponse/>");
@@ -422,23 +427,40 @@ public final class SelfTest {
     static void integrityValidationResponseParsing() {
         String success = validationResponse(
                 "<t:results><t:certValidElements>"
-                        + "<t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:result>true</t:result><t:signer>synthetic signer</t:signer></t:results>"
-                        + "<t:results xsi:type=\"t:PAdESValidateResult\"><t:certId>18</t:certId><t:result>false</t:result>"
-                        + "<t:exception><t:code>ARCSUITE_WS-08305101</t:code><t:message>synthetic private exception</t:message></t:exception>"
-                        + "<t:timestampDate>2026-09-13T00:00:00Z</t:timestampDate></t:results>"
+                        + "<t:results xsi:type=\"types:XAdESValidateResult\"><t:certId>17</t:certId><t:result>true</t:result><t:signer>synthetic signer</t:signer></t:results>"
+                        + "<t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>18</t:certId><t:result>false</t:result><t:signer>synthetic signer</t:signer><t:timestampDate>2026-09-15T00:00:00Z</t:timestampDate></t:results>"
+                        + "<t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>19</t:certId><t:result>true</t:result>"
+                        + "<t:exception><t:code>ARCSUITE_WS-08305101</t:code><t:message>synthetic private exception</t:message></t:exception><t:signer>synthetic signer</t:signer></t:results>"
+                        + "<t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>20</t:certId><t:result>false</t:result>"
+                        + "<t:exception><t:code>ARCSUITE_WS-08305102</t:code></t:exception><t:signer>synthetic signer</t:signer><t:timestampDate>2026-09-15T00:00:00Z</t:timestampDate></t:results>"
+                        + "<t:results xsi:type=\"t:PAdESValidateResult\"><t:certId>21</t:certId><t:result>true</t:result><t:timestampDate>2026-09-15T00:00:00Z</t:timestampDate></t:results>"
+                        + "<t:results xsi:type=\"t:PAdESValidateResult\"><t:certId>22</t:certId><t:result>false</t:result>"
+                        + "<t:exception><t:code>ARCSUITE_WS-08305103</t:code></t:exception><t:timestampDate>2026-09-15T00:00:00Z</t:timestampDate></t:results>"
+                        + "<t:results xsi:type=\"t:DocumentTimestampValidateResult\"><t:certId>23</t:certId><t:result>true</t:result><t:timestampDate>2026-09-15T00:00:00Z</t:timestampDate></t:results>"
+                        + "<t:results xsi:type=\"t:DocumentTimestampValidateResult\"><t:certId>24</t:certId><t:result>false</t:result>"
+                        + "<t:exception><t:code>ARCSUITE_WS-08305104</t:code></t:exception><t:timestampDate>2026-09-15T00:00:00Z</t:timestampDate></t:results>"
                         + "</t:certValidElements></t:results>",
                 "");
         Map<String, Object> parsed = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(success));
         Object rawCertificates = parsed.get("certificates");
-        if (!(rawCertificates instanceof List<?> certificates) || certificates.size() != 2) {
-            throw new AssertionError("Expected two validation elements: " + parsed);
+        if (!(rawCertificates instanceof List<?> certificates) || certificates.size() != 8) {
+            throw new AssertionError("Expected eight validation elements: " + parsed);
         }
         Map<?, ?> first = (Map<?, ?>) certificates.get(0);
-        Map<?, ?> second = (Map<?, ?>) certificates.get(1);
         if (!Integer.valueOf(17).equals(first.get("certId")) || !Boolean.TRUE.equals(first.get("result"))
                 || !Boolean.FALSE.equals(first.get("exceptionPresent"))) throw new AssertionError("Unexpected first certificate result: " + first);
+        Map<?, ?> second = (Map<?, ?>) certificates.get(1);
+        Map<?, ?> fourth = (Map<?, ?>) certificates.get(3);
+        Map<?, ?> fifth = (Map<?, ?>) certificates.get(4);
+        Map<?, ?> eighth = (Map<?, ?>) certificates.get(7);
         if (!Integer.valueOf(18).equals(second.get("certId")) || !Boolean.FALSE.equals(second.get("result"))
-                || !Boolean.TRUE.equals(second.get("exceptionPresent"))) throw new AssertionError("Unexpected second certificate result: " + second);
+                || !Boolean.FALSE.equals(second.get("exceptionPresent"))) throw new AssertionError("Unexpected second certificate result: " + second);
+        if (!Integer.valueOf(20).equals(fourth.get("certId")) || !Boolean.FALSE.equals(fourth.get("result"))
+                || !Boolean.TRUE.equals(fourth.get("exceptionPresent"))) throw new AssertionError("Unexpected XAdES exception result: " + fourth);
+        if (!Integer.valueOf(21).equals(fifth.get("certId")) || !Boolean.TRUE.equals(fifth.get("result"))
+                || !Boolean.FALSE.equals(fifth.get("exceptionPresent"))) throw new AssertionError("Unexpected PAdES result: " + fifth);
+        if (!Integer.valueOf(24).equals(eighth.get("certId")) || !Boolean.FALSE.equals(eighth.get("result"))
+                || !Boolean.TRUE.equals(eighth.get("exceptionPresent"))) throw new AssertionError("Unexpected document timestamp result: " + eighth);
         String sanitized = Json.stringify(parsed);
         if (sanitized.contains("synthetic private exception") || sanitized.contains("ARCSUITE_WS-08305101")
                 || sanitized.contains("synthetic signer") || sanitized.contains("timestampDate")) {
@@ -469,12 +491,39 @@ public final class SelfTest {
         assertIntegrityResponseFailure(validationResponse(
                 "<t:results><t:certValidElements><t:results><t:result>true</t:result><t:certId>17</t:certId></t:results></t:certValidElements></t:results>",
                 ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"t:UnknownValidateResult\"><t:certId>17</t:certId><t:result>true</t:result><t:signer>unexpected</t:signer></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:exception/><t:result>true</t:result></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"wrong:XAdESValidateResult\" xmlns:wrong=\"urn:wrong\"><t:certId>17</t:certId><t:result>true</t:result><t:signer>x</t:signer></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:result>true</t:result></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:result>true</t:result><t:signer>x</t:signer><t:exception/></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results><t:certId>17</t:certId><t:result>true</t:result><t:signer>x</t:signer></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:result>true</t:result><t:signer>x</t:signer><t:unexpected/></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:result>true</t:result><t:unexpected/><t:signer>x</t:signer></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:certId>18</t:certId><t:result>true</t:result><t:signer>x</t:signer></t:results></t:certValidElements></t:results>",
+                ""), "ARCSUITE_UPSTREAM_ERROR");
         assertIntegrityResponseFailure("<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS
                 + "\"><soap:Body><unexpectedResponse/></soap:Body></soap:Envelope>", "ARCSUITE_UPSTREAM_ERROR");
 
         StringBuilder tooMany = new StringBuilder("<t:results><t:certValidElements>");
-        for (int i = 0; i < 65; i++) tooMany.append("<t:results><t:certId>").append(i + 1)
-                .append("</t:certId><t:result>true</t:result></t:results>");
+        for (int i = 0; i < 65; i++) tooMany.append("<t:results xsi:type=\"t:PAdESValidateResult\"><t:certId>").append(i + 1)
+                .append("</t:certId><t:result>true</t:result><t:timestampDate>2026-09-15T00:00:00Z</t:timestampDate></t:results>");
         tooMany.append("</t:certValidElements></t:results>");
         assertIntegrityResponseFailure(validationResponse(tooMany.toString(), ""), "ARCSUITE_LIMIT_EXCEEDED");
     }
@@ -525,6 +574,7 @@ public final class SelfTest {
 
     private static String validationResponse(String resultEntries, String failureEntries) {
         return "<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\"" + ArcSuiteSoapClient.TYPES_NS
+                + "\" xmlns:types=\"" + ArcSuiteSoapClient.TYPES_NS
                 + "\" xmlns:xsi=\"" + ArcSuiteSoapClient.XSI_NS + "\"><soap:Body><t:validateCertificateResponse>"
                 + "<t:validateCertificateReturn><t:results>" + resultEntries + "</t:results><t:failures>" + failureEntries
                 + "</t:failures></t:validateCertificateReturn></t:validateCertificateResponse></soap:Body></soap:Envelope>";
@@ -565,11 +615,12 @@ public final class SelfTest {
     static void assertHardReferenceSoapEnvelope(Map<String, Object> request) throws Exception {
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         var requestEnvelope = new StringBuilder();
+        var responseBody = new AtomicReference<>(
+                "<t:listRepositoryObjectHardReferencesResponse><t:listRepositoryObjectHardReferencesReturn/></t:listRepositoryObjectHardReferencesResponse>");
         server.createContext("/", exchange -> {
             requestEnvelope.append(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             byte[] response = ("<soap:Envelope xmlns:soap=\"" + ArcSuiteSoapClient.SOAP_NS + "\" xmlns:t=\""
-                    + ArcSuiteSoapClient.TYPES_NS + "\"><soap:Body><t:listRepositoryObjectHardReferencesResponse>"
-                    + "<t:listRepositoryObjectHardReferencesReturn/></t:listRepositoryObjectHardReferencesResponse>"
+                    + ArcSuiteSoapClient.TYPES_NS + "\"><soap:Body>" + responseBody.get()
                     + "</soap:Body></soap:Envelope>").getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/xml; charset=utf-8");
             exchange.sendResponseHeaders(200, response.length);
@@ -584,6 +635,16 @@ public final class SelfTest {
                     1500, 1700, 4, "ja", "4.0.0.0", Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024);
             var result = new ArcSuiteSoapClient(config).hardReferences(request, "synthetic-session");
             if (!List.of().equals(result.get("ids"))) throw new AssertionError("Empty Hard Reference response was not preserved");
+            ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
+            for (String invalidResponse : List.of(
+                    "<bad:listRepositoryObjectHardReferencesResponse xmlns:bad=\"urn:wrong\"><bad:listRepositoryObjectHardReferencesReturn/></bad:listRepositoryObjectHardReferencesResponse>",
+                    "<t:listRepositoryObjectHardReferencesResponse><t:result/></t:listRepositoryObjectHardReferencesResponse>",
+                    "<t:listRepositoryObjectHardReferencesResponse><t:listRepositoryObjectHardReferencesReturn/><t:extra/></t:listRepositoryObjectHardReferencesResponse>",
+                    "<t:listRepositoryObjectHardReferencesResponse><t:listRepositoryObjectHardReferencesReturn><bad:repositoryObject xmlns:bad=\"urn:wrong\"/></t:listRepositoryObjectHardReferencesReturn></t:listRepositoryObjectHardReferencesResponse>",
+                    "<t:listRepositoryObjectHardReferencesResponse><t:listRepositoryObjectHardReferencesReturn>unexpected</t:listRepositoryObjectHardReferencesReturn></t:listRepositoryObjectHardReferencesResponse>")) {
+                responseBody.set(invalidResponse);
+                expectAdapterFailure(() -> client.hardReferences(request, "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
+            }
             String operationWrapper = "<t:listRepositoryObjectHardReferences><t:id>rep:example:target</t:id>"
                     + "<t:attrIds/><t:options>referenceId</t:options></t:listRepositoryObjectHardReferences>";
             if (!requestEnvelope.toString().contains(operationWrapper)) {
@@ -610,15 +671,15 @@ public final class SelfTest {
     }
 
     static void hardReferenceResponseParsing() {
-        String responseXml = "<listRepositoryObjectHardReferencesResponse xmlns=\"urn:synthetic\">"
+        String responseXml = "<listRepositoryObjectHardReferencesResponse xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\">"
                 + "<listRepositoryObjectHardReferencesReturn>"
-                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass name=\"reference\"/>"
+                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id><editionKey><attribute ns=\"rep\" name=\"edition\"/></editionKey></referenceId></repositoryObject>"
-                + "<repositoryObject><id>rep:example:hardref-002</id><objectClass name=\"reference\"/>"
+                + "<repositoryObject><id>rep:example:hardref-002</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
                 + "</listRepositoryObjectHardReferencesReturn></listRepositoryObjectHardReferencesResponse>";
         var document = XmlUtil.parse(responseXml);
-        var returned = XmlUtil.firstDesc(document.getDocumentElement(), "listRepositoryObjectHardReferencesReturn");
+        var returned = XmlUtil.firstDesc(document.getDocumentElement(), ArcSuiteSoapClient.TYPES_NS, "listRepositoryObjectHardReferencesReturn");
         List<String> ids = ArcSuiteSoapClient.parseHardReferenceIds(returned, "rep:example:target", 2);
         if (!List.of("rep:example:hardref-001", "rep:example:hardref-002").equals(ids)) {
             throw new AssertionError("Hard Reference RepositoryObject IDs were not parsed in order: " + ids);
@@ -633,9 +694,9 @@ public final class SelfTest {
         assertHardReferenceParseFailure("<return><repositoryObject><id>not-a-repository-id</id>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>", 2, "ARCSUITE_UPSTREAM_ERROR");
 
-        String duplicateXml = "<return><repositoryObject><id>rep:example:hardref-001</id>"
+        String duplicateXml = "<return xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
-                + "<repositoryObject><id>rep:example:hardref-001</id>"
+                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>";
         expectAdapterFailure(() -> ArcSuiteSoapClient.parseHardReferenceIds(
                 XmlUtil.parse(duplicateXml).getDocumentElement(),
@@ -643,11 +704,11 @@ public final class SelfTest {
     }
 
     static void hardReferenceOverflowFailsClosed() {
-        String overflowXml = "<return><repositoryObject><id>rep:example:hardref-001</id>"
+        String overflowXml = "<return xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
-                + "<repositoryObject><id>rep:example:hardref-002</id>"
+                + "<repositoryObject><id>rep:example:hardref-002</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
-                + "<repositoryObject><id>rep:example:hardref-003</id>"
+                + "<repositoryObject><id>rep:example:hardref-003</id><objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>";
         expectAdapterFailure(() -> ArcSuiteSoapClient.parseHardReferenceIds(
                 XmlUtil.parse(overflowXml).getDocumentElement(),
@@ -655,8 +716,9 @@ public final class SelfTest {
     }
 
     static void assertHardReferenceParseFailure(String xml, int maxResults, String expectedCode) {
+        String responseXml = xml.replace("<return>", "<return xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\">");
         expectAdapterFailure(() -> ArcSuiteSoapClient.parseHardReferenceIds(
-                XmlUtil.parse(xml).getDocumentElement(), "rep:example:target", maxResults), expectedCode);
+                XmlUtil.parse(responseXml).getDocumentElement(), "rep:example:target", maxResults), expectedCode);
     }
 
     static void expectAdapterFailure(Runnable operation, String expectedCode) {
@@ -679,12 +741,12 @@ public final class SelfTest {
         Map<String, Object> request = Map.of(
                 "id", "rep:example:document",
                 "contentLabel", Map.of("ns", "rep", "name", "user:EXAMPLE_PREVIEW"),
-                "options", List.of("resolveRef", "errorOnOfflineContent")
+                "options", List.of("errorOnOfflineContent")
         );
         String body = ArcSuiteSoapClient.contentRequestBody(request, "rep:example:document");
         String expected = "<t:id>rep:example:document</t:id>"
                 + "<t:contentLabels><t:i18nString ns=\"rep\" name=\"user:EXAMPLE_PREVIEW\"/></t:contentLabels>"
-                + "<t:options>resolveRef</t:options><t:options>errorOnOfflineContent</t:options>";
+                + "<t:options>errorOnOfflineContent</t:options>";
         if (!expected.equals(body)) throw new AssertionError("Unexpected content-label request body: " + body);
         if (body.contains("<t:label>") || body.contains("<t:string>")) throw new AssertionError("Unexpected content-label wire shape");
         try {
@@ -696,7 +758,7 @@ public final class SelfTest {
             throw new AssertionError("content options must be server-controlled");
         } catch (IllegalArgumentException expectedFailure) {}
 
-        var content = XmlUtil.parse("<content xmlns=\"urn:synthetic\"><label ns=\"rep\" name=\"user:EXAMPLE_PREVIEW\"/></content>").getDocumentElement();
+        var content = XmlUtil.parse("<content xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><label ns=\"rep\" name=\"user:EXAMPLE_PREVIEW\"/></content>").getDocumentElement();
         if (!Map.of("ns", "rep", "name", "user:EXAMPLE_PREVIEW").equals(ArcSuiteSoapClient.parseContentLabel(content))) {
             throw new AssertionError("Content.label was not parsed as an exact I18nString");
         }
@@ -709,10 +771,10 @@ public final class SelfTest {
             if (!"ARCSUITE_UPSTREAM_ERROR".equals(expectedFailure.code)) throw expectedFailure;
         }
 
-        String objectXml = "<repositoryObject xmlns=\"urn:synthetic\">"
-                + "<id>rep:example:document</id><objectClass name=\"document\"/>"
+        String objectXml = "<repositoryObject xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\">"
+                + "<id>rep:example:document</id><objectClass ns=\"rep\" name=\"system:document\"/>"
                 + "<attributes><attribute ns=\"rep\" name=\"system:contentlabellist\">"
-                + "<attributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"I18nStringValues\">"
+                + "<attributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"t:I18nStringValues\" xmlns:t=\"" + ArcSuiteSoapClient.TYPES_NS + "\">"
                 + "<i18nStrings ns=\"rep\" name=\"system:primary\"/>"
                 + "<i18nStrings ns=\"rep\" name=\"user:EXAMPLE_PREVIEW\"/>"
                 + "</attributeValue></attribute></attributes></repositoryObject>";
@@ -722,6 +784,87 @@ public final class SelfTest {
                 || !(valueMap.get("values") instanceof List<?> list) || list.size() != 2
                 || !Map.of("ns", "rep", "name", "user:EXAMPLE_PREVIEW").equals(list.get(1))) {
             throw new AssertionError("content label list was not parsed with namespace and name");
+        }
+    }
+
+    static void objectClassContractShapes() {
+        String valid = "<repositoryObject xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><id>rep:example:document-001</id>"
+                + "<objectClass ns=\"rep\" name=\"system:document\"/><attributes/></repositoryObject>";
+        Map<String, Object> parsed = ArcSuiteSoapClient.parseRepositoryObject(XmlUtil.parse(valid).getDocumentElement());
+        if (!"document".equals(parsed.get("objectClass"))
+                || !Map.of("ns", "rep", "name", "system:document").equals(parsed.get("nativeObjectClass"))) {
+            throw new AssertionError("Native object class identity was not preserved: " + parsed);
+        }
+        for (String invalidClass : List.of(
+                "<objectClass ns=\"wrong\" name=\"system:document\"/>",
+                "<objectClass name=\"system:document\"/>")) {
+            String xml = "<repositoryObject xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><id>rep:example:document-001</id>"
+                    + invalidClass + "<attributes/></repositoryObject>";
+            expectAdapterFailure(() -> ArcSuiteSoapClient.parseRepositoryObject(XmlUtil.parse(xml).getDocumentElement()), "ARCSUITE_UPSTREAM_ERROR");
+        }
+        String unknown = "<repositoryObject xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><id>rep:example:document-001</id>"
+                + "<objectClass ns=\"rep\" name=\"system:futureDocument\"/><attributes/></repositoryObject>";
+        Map<String, Object> unknownParsed = ArcSuiteSoapClient.parseRepositoryObject(XmlUtil.parse(unknown).getDocumentElement());
+        if (!"unknown".equals(unknownParsed.get("objectClass"))
+                || !Map.of("ns", "rep", "name", "system:futureDocument").equals(unknownParsed.get("nativeObjectClass"))) {
+            throw new AssertionError("Unknown native object class was not isolated as unknown: " + unknownParsed);
+        }
+    }
+
+    static void contentRequestContract() throws Exception {
+        String requestedId = "rep:example:reference-001";
+        String effectiveId = "rep:example:document-001";
+        Map<String, Object> request = new LinkedHashMap<>(Map.of(
+                "clientProfileId", "synthetic-client",
+                "requestedId", requestedId,
+                "effectiveId", effectiveId,
+                "revisionNumber", 3,
+                "contentWireId", effectiveId + ":3",
+                "contentLabel", Map.of("ns", "rep", "name", "system:primary"),
+                "options", List.of("errorOnOfflineContent"),
+                "traceId", "synthetic-trace"));
+        Map<String, Object> prepared = AdapterService.prepareContentRequest(request);
+        if (!requestedId.equals(prepared.get("requestedId"))
+                || !effectiveId.equals(prepared.get("effectiveId"))
+                || !Integer.valueOf(3).equals(prepared.get("revisionNumber"))
+                || !(effectiveId + ":3").equals(prepared.get("contentWireId"))) {
+            throw new AssertionError("Content request identities were not preserved: " + prepared);
+        }
+
+        Map<String, Object> wrongWire = new LinkedHashMap<>(request);
+        wrongWire.put("contentWireId", effectiveId + ":4");
+        expectIllegalArgument(() -> AdapterService.prepareContentRequest(wrongWire));
+        Map<String, Object> forbiddenOption = new LinkedHashMap<>(request);
+        forbiddenOption.put("options", List.of("resolveRef"));
+        expectIllegalArgument(() -> AdapterService.prepareContentRequest(forbiddenOption));
+        Map<String, Object> extraField = new LinkedHashMap<>(request);
+        extraField.put("id", requestedId);
+        expectIllegalArgument(() -> AdapterService.prepareContentRequest(extraField));
+
+        AtomicInteger dispatches = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/soap", exchange -> {
+            dispatches.incrementAndGet();
+            exchange.sendResponseHeaders(500, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            AdapterConfig config = new AdapterConfig(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
+                    "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
+                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0",
+                    Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024);
+            ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
+            try (SessionManager sessions = new SessionManager(config, client)) {
+                AdapterService service = new AdapterService(client, sessions);
+                Map<String, Object> invalid = new LinkedHashMap<>(request);
+                invalid.put("contentWireId", effectiveId + ":4");
+                expectIllegalArgument(() -> service.content(invalid));
+            }
+            if (dispatches.get() != 0) throw new AssertionError("Invalid content identity reached SOAP dispatch");
+        } finally {
+            server.stop(0);
         }
     }
 
@@ -807,7 +950,7 @@ public final class SelfTest {
     }
 
     static void attributeSchemaMetadataParsing() {
-        String xml = "<attributeSchema xmlns=\"urn:synthetic\">"
+        String xml = "<attributeSchema xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\">"
                 + "<ns>rep</ns><name>page_count</name><dataType>LONG_TYPE</dataType>"
                 + "<nativeDataType>long</nativeDataType><multiValued>false</multiValued><required>true</required>"
                 + "<enumerated>true</enumerated><modifiable>false</modifiable><searchable>true</searchable><sortable>true</sortable>"
@@ -928,7 +1071,7 @@ public final class SelfTest {
                     Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024);
             ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
             String revisionObject = "<t:repositoryObject><t:id>rep:mock:EXAMPLE_CABINET:1001</t:id>"
-                    + "<t:objectClass name=\"document\"/><t:attributes/></t:repositoryObject>";
+                    + "<t:objectClass ns=\"rep\" name=\"system:document\"/><t:attributes/></t:repositoryObject>";
 
             response.set("<t:listRepositoryObjectRevisionsResponse><t:listRepositoryObjectRevisionsReturn/></t:listRepositoryObjectRevisionsResponse>");
             if (!List.of().equals(client.revisions(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "attrIds", List.of(), "options", List.of()), "synthetic-session"))) {
@@ -939,20 +1082,23 @@ public final class SelfTest {
             if (client.revisions(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "attrIds", List.of(), "options", List.of()), "synthetic-session").size() != 1) {
                 throw new AssertionError("valid revision object was not parsed");
             }
+            response.set("<w:listRepositoryObjectRevisionsResponse xmlns:w=\"urn:wrong\"><w:listRepositoryObjectRevisionsReturn/></w:listRepositoryObjectRevisionsResponse>");
+            expectAdapterFailure(() -> client.revisions(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "attrIds", List.of(), "options", List.of()), "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
             for (String invalid : List.of(
                     "<t:listRepositoryObjectRevisionsResponse/>",
                     "<t:listRepositoryObjectRevisionsResponse><t:listRepositoryObjectRevisionsReturn><t:result/></t:listRepositoryObjectRevisionsReturn></t:listRepositoryObjectRevisionsResponse>",
-                    "<t:listRepositoryObjectRevisionsResponse><t:listRepositoryObjectRevisionsReturn><t:repositoryObject><t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass name=\"document\"/></t:repositoryObject></t:listRepositoryObjectRevisionsReturn></t:listRepositoryObjectRevisionsResponse>")) {
+                    "<t:listRepositoryObjectRevisionsResponse><t:listRepositoryObjectRevisionsReturn><t:repositoryObject><t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass ns=\"rep\" name=\"system:document\"/></t:repositoryObject></t:listRepositoryObjectRevisionsReturn></t:listRepositoryObjectRevisionsResponse>")) {
                 response.set(invalid);
                 expectAdapterFailure(() -> client.revisions(Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "attrIds", List.of(), "options", List.of()), "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
             }
 
             Map<String, Object> maxRequest = Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "revisionNumber", ArcSuiteSoapClient.MAX_REVISION_NUMBER, "attrIds", List.of(), "options", List.of());
             response.set("<t:getRepositoryObjectByRevisionNumberResponse><t:getRepositoryDocumentByRevisionNubmerReturn>"
-                    + "<t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass name=\"document\"/><t:attributes/>"
+                    + "<t:id>rep:mock:EXAMPLE_CABINET:1001:2147483647</t:id><t:objectClass ns=\"rep\" name=\"system:document\"/><t:attributes/>"
                     + "</t:getRepositoryDocumentByRevisionNubmerReturn></t:getRepositoryObjectByRevisionNumberResponse>");
             Map<String, Object> returned = client.get(maxRequest, "synthetic-session");
-            if (!"rep:mock:EXAMPLE_CABINET:1001".equals(returned.get("id"))) throw new AssertionError("WSDL revision Return was not accepted");
+            if (!"rep:mock:EXAMPLE_CABINET:1001:2147483647".equals(returned.get("id"))
+                    || !"rep:mock:EXAMPLE_CABINET:1001".equals(returned.get("effectiveId"))) throw new AssertionError("WSDL revision Return was not accepted");
 
             String mismatchedRevisionObject = revisionObject.replace("1001", "9999");
             response.set("<t:getRepositoryObjectByRevisionNumberResponse><t:getRepositoryDocumentByRevisionNubmerReturn>"
@@ -965,7 +1111,7 @@ public final class SelfTest {
                     + revisionObject + "</t:getRepositoryObjectByRevisionNumberReturn></t:getRepositoryObjectByRevisionNumberResponse>");
             expectAdapterFailure(() -> client.get(maxRequest, "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
             response.set("<t:getRepositoryObjectByRevisionNumberResponse><t:getRepositoryDocumentByRevisionNubmerReturn>"
-                    + "<t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass name=\"document\"/>"
+                    + "<t:id>rep:mock:EXAMPLE_CABINET:1001</t:id><t:objectClass ns=\"rep\" name=\"system:document\"/>"
                     + "</t:getRepositoryDocumentByRevisionNubmerReturn></t:getRepositoryObjectByRevisionNumberResponse>");
             expectAdapterFailure(() -> client.get(maxRequest, "synthetic-session"), "ARCSUITE_UPSTREAM_ERROR");
 

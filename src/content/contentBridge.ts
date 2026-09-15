@@ -88,6 +88,7 @@ export class ContentBridge {
     const cached = this.cache?.get({ ...context, variant: "full" });
     if (cached) return infoFromSnapshot(cached.label, cached, true);
     const content = await load();
+    this.assertContentAuthority(content, context);
     const basic = this.info(content, context.contentLabel);
     if (!basic.extractable) {
       await this.discard(content);
@@ -117,14 +118,10 @@ export class ContentBridge {
   async read(content: AdapterContentResult, options: ReadContentOptions, context: ContentCacheContext): Promise<ReadContentResult> {
     const cursorPayload = options.cursor ? this.cursors.parse(options.cursor) : undefined;
     const contentLabel = options.contentLabel ?? context.contentLabel;
-    if (context.documentId !== options.documentId || context.revisionNumber !== options.revisionNumber || context.contentLabel !== contentLabel) {
+    if (context.documentId !== options.documentId || context.requestedRevisionNumber !== options.revisionNumber || context.contentLabel !== contentLabel) {
       throw new Error("CONTENT_AUTHORITY_MISMATCH");
     }
-    if (content.id !== context.documentId || content.effectiveId !== context.effectiveDocumentId
-      || content.revisionNumber !== context.revisionNumber
-      || content.label.ns !== context.physicalContentLabel.ns || content.label.name !== context.physicalContentLabel.name) {
-      throw new Error("CONTENT_AUTHORITY_MISMATCH");
-    }
+    this.assertContentAuthority(content, context);
     validateCursorIdentity(
       cursorPayload,
       options.documentId,
@@ -162,6 +159,7 @@ export class ContentBridge {
     const cacheHit = Boolean(snapshot);
     if (!snapshot) {
       const content = await load();
+      this.assertContentAuthority(content, context);
       snapshot = await this.extractSnapshot(content, startPage, endPage, undefined, context.contentLabel);
       this.cache?.put(cacheContext, snapshot);
     }
@@ -201,7 +199,7 @@ export class ContentBridge {
         maxExtractedChars: this.maxExtractedChars
       };
       const extracted = await extractor.extract(request);
-      const normalized = normalizeExtractedText(extracted.text).slice(0, this.maxExtractedChars);
+      const normalized = normalizeExtractedText(extracted.text, this.maxExtractedChars);
       const warnings = [...extracted.warnings];
       if (extracted.text.length > this.maxExtractedChars && !warnings.includes("EXTRACTED_TEXT_LIMIT")) warnings.push("EXTRACTED_TEXT_LIMIT");
       const hash = `sha256:${createHash("sha256").update(normalized, "utf8").digest("hex")}`;
@@ -218,6 +216,17 @@ export class ContentBridge {
       };
     } finally {
       await unlink(safePath).catch(() => undefined);
+    }
+  }
+
+  private assertContentAuthority(content: AdapterContentResult, context: ContentCacheContext): void {
+    if (content.id !== context.documentId
+      || content.effectiveId !== context.effectiveDocumentId
+      || content.wireId !== context.wireDocumentId
+      || content.revisionNumber !== context.provenRevisionNumber
+      || content.label.ns !== context.physicalContentLabel.ns
+      || content.label.name !== context.physicalContentLabel.name) {
+      throw new Error("CONTENT_AUTHORITY_MISMATCH");
     }
   }
 
@@ -312,7 +321,9 @@ function contentAuthorityInput(context: ContentCacheContext) {
     scopeId: context.scopeId,
     requestedDocumentId: context.documentId,
     effectiveDocumentId: context.effectiveDocumentId,
-    revisionNumber: context.revisionNumber,
+    wireDocumentId: context.wireDocumentId,
+    requestedRevisionNumber: context.requestedRevisionNumber,
+    provenRevisionNumber: context.provenRevisionNumber,
     contentLabel: context.contentLabel,
     physicalContentLabel: context.physicalContentLabel,
     cabinetId: context.cabinetId,
@@ -332,20 +343,41 @@ function infoFromSnapshot(label: string, snapshot: ContentSnapshot, cached: bool
   };
 }
 
-export function normalizeExtractedText(text: string): string {
+export function normalizeExtractedText(text: string, maxChars = Number.MAX_SAFE_INTEGER): string {
   // A single pass keeps normalization O(n), including adversarial runs of
   // spaces/tabs before line boundaries.
+  if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error("EXTRACTED_TEXT_LIMIT_INVALID");
   const output: string[] = [];
+  let outputLength = 0;
+  const append = (value: string) => {
+    if (outputLength >= maxChars) return false;
+    const remaining = maxChars - outputLength;
+    const part = value.length <= remaining ? value : value.slice(0, remaining);
+    if (part) {
+      output.push(part);
+      outputLength += part.length;
+    }
+    return outputLength < maxChars;
+  };
   for (let index = 0; index < text.length; index += 1) {
     const code = text.charCodeAt(index);
     if (code === 13 || code === 10) {
       if (code === 13 && text.charCodeAt(index + 1) === 10) index += 1;
-      while (output.length && (output[output.length - 1] === " " || output[output.length - 1] === "\t")) output.pop();
-      output.push("\n");
+      while (output.length && (output[output.length - 1].endsWith(" ") || output[output.length - 1].endsWith("\t"))) {
+        const last = output.pop()!;
+        outputLength -= 1;
+        const trimmed = last.slice(0, -1);
+        if (trimmed) {
+          output.push(trimmed);
+          outputLength += trimmed.length;
+          break;
+        }
+      }
+      if (!append("\n")) break;
       continue;
     }
     if (code === 0 || (code >= 1 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127) continue;
-    output.push(text[index]);
+    if (!append(text[index])) break;
   }
   return output.join("").trim();
 }

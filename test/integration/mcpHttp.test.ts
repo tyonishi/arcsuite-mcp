@@ -91,8 +91,16 @@ test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
   assert.deepEqual(list.json.result.tools.map((tool: { name: string }) => tool.name).sort(), expectedNames);
   for (const name of ["arcsuite_get_document", "arcsuite_get_document_content_info", "arcsuite_read_document"]) {
     const tool: any = list.json.result.tools.find((item: any) => item.name === name);
-    assert.equal(tool.inputSchema.properties.revision_number.minimum, 1);
-    assert.equal(tool.inputSchema.properties.revision_number.maximum, 2147483647);
+    if (name === "arcsuite_read_document") {
+      assert.equal(tool.inputSchema.anyOf.length, 4);
+      assert.ok(tool.inputSchema.anyOf.every((branch: any) => branch.properties.revision_number.minimum === 1
+        && branch.properties.revision_number.maximum === 2147483647));
+      const pageBranches = tool.inputSchema.anyOf.filter((branch: any) => branch.properties.start_page?.type === "integer" || branch.properties.end_page?.type === "integer");
+      assert.ok(pageBranches.every((branch: any) => (branch.properties.start_page ?? branch.properties.end_page).maximum === 1_000_000));
+    } else {
+      assert.equal(tool.inputSchema.properties.revision_number.minimum, 1);
+      assert.equal(tool.inputSchema.properties.revision_number.maximum, 2147483647);
+    }
   }
 });
 
@@ -181,7 +189,28 @@ test("tools/list advertises effective request limits and rejects over-limit call
   assert.equal(byName("arcsuite_list_folder").inputSchema.properties.limit.maximum, 5);
   assert.equal(byName("arcsuite_list_document_revisions").inputSchema.properties.limit.maximum, 5);
   assert.ok(byName("arcsuite_list_hard_references").inputSchema.anyOf.every((branch: any) => branch.properties.limit?.maximum === 5 || branch.properties.limit?.not));
-  assert.equal(byName("arcsuite_read_document").inputSchema.properties.max_chars.maximum, 2000);
+  const readSchema = byName("arcsuite_read_document").inputSchema;
+  assert.ok(readSchema.anyOf.every((branch: any) => branch.properties.max_chars.maximum === 2000));
+  assert.ok(readSchema.anyOf.filter((branch: any) => branch.properties.start_page?.type === "integer" || branch.properties.end_page?.type === "integer")
+    .every((branch: any) => (branch.properties.start_page ?? branch.properties.end_page).maximum === 1_000_000));
+  assert.ok(readSchema.anyOf.every((branch: any) => branch.properties.revision_number.minimum === 1
+    && branch.properties.revision_number.maximum === 2147483647));
+  const forbiddenPageKeys = (branch: any): string[] => {
+    if (Array.isArray(branch.not?.anyOf)) return branch.not.anyOf.flatMap((item: any) => item.required ?? []).sort();
+    if (Array.isArray(branch.not?.required)) return [...branch.not.required].sort();
+    return ["start_page", "end_page", "cursor"].filter((key) => branch.properties?.[key]?.not !== undefined).sort();
+  };
+  const expectedForbiddenPageKeys = [
+    ["cursor"],
+    ["cursor", "end_page"],
+    ["end_page", "start_page"],
+    ["cursor", "end_page", "start_page"]
+  ].sort((a, b) => a.join().localeCompare(b.join()));
+  const sortForbiddenPageKeys = (value: string[][]) => value.sort((a, b) => a.join().localeCompare(b.join()));
+  assert.deepEqual(sortForbiddenPageKeys(readSchema.anyOf.map(forbiddenPageKeys)), expectedForbiddenPageKeys);
+  const manualReadSchema: any = rt.tools.list(rt.config.tokenProfiles[0]).find((tool) => tool.name === "arcsuite_read_document");
+  assert.deepEqual(sortForbiddenPageKeys(manualReadSchema.inputSchema.anyOf.map(forbiddenPageKeys)), expectedForbiddenPageKeys);
+  assert.ok(readSchema.anyOf.some((branch: any) => branch.required.includes("start_page") && branch.required.includes("end_page")));
   const revisionDefinition: any = rt.tools.list(rt.config.tokenProfiles[0]).find((tool) => tool.name === "arcsuite_list_document_revisions");
   assert.equal(revisionDefinition.inputSchema.properties.limit.default, 4);
 
@@ -203,6 +232,15 @@ test("tools/list advertises effective request limits and rejects over-limit call
   const invoke = (id: number, name: string, args: Record<string, unknown>) => rpc(base, {
     jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args }
   });
+
+  for (const arguments_ of [
+    { document_id: "rep:mock:EXAMPLE_CABINET:1001", cursor: "opaque", start_page: 1 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1001", end_page: 2 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1001", start_page: 3, end_page: 2 }
+  ]) {
+    const rejected = await invoke(1, "arcsuite_read_document", arguments_);
+    assert.ok(rejected.json.error || rejected.json.result?.isError, JSON.stringify(rejected.json));
+  }
 
   const accepted = await Promise.all([
     invoke(2, "arcsuite_search_documents", { scope: "example_documents", query: "DOC", limit: 5 }),
@@ -244,7 +282,11 @@ test("tools/list advertises effective request limits and rejects over-limit call
         "rep:mock:EXAMPLE_CABINET:1004"
       ]
     }),
-    invoke(13, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", max_chars: 2001 })
+    invoke(13, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", max_chars: 2001 }),
+    invoke(15, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", start_page: 1, end_page: 2, cursor: "opaque" }),
+    invoke(16, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", end_page: 2 }),
+    invoke(17, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", start_page: 1_000_001 }),
+    invoke(18, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", cursor: "opaque", start_page: 1 })
   ]);
   assert.ok(rejected.every((response) => response.json.error || response.json.result?.isError));
   assert.equal(runtimeCalls.length, callsBeforeOverLimit, "invalid tool input must not reach ToolRegistry.call");

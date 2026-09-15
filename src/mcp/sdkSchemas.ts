@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MAX_REVISION_NUMBER, MIN_REVISION_NUMBER } from "../arcsuite/constants.ts";
+import { MAX_PAGE_NUMBER, MAX_REVISION_NUMBER, MIN_REVISION_NUMBER } from "../arcsuite/constants.ts";
 
 const documentId = z.string().min(5).max(2048).regex(/^rep:/);
 const scope = z.string().min(1).max(64).regex(/^[a-z][a-z0-9_]*$/);
@@ -81,15 +81,44 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
       revision_number: revisionNumber,
       content_label: contentLabel
     }).strict(),
-    arcsuite_read_document: z.object({
-      document_id: documentId,
-      revision_number: revisionNumber,
-      content_label: contentLabel,
-      start_page: z.number().int().min(1).optional(),
-      end_page: z.number().int().min(1).optional(),
-      cursor: z.string().max(4096).optional(),
-      max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
-    }).strict()
+    arcsuite_read_document: z.union([
+      z.object({
+        document_id: documentId,
+        revision_number: revisionNumber,
+        content_label: contentLabel,
+        start_page: z.never().optional(),
+        end_page: z.never().optional(),
+        cursor: z.never().optional(),
+        max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
+      }).strict(),
+      z.object({
+        document_id: documentId,
+        revision_number: revisionNumber,
+        content_label: contentLabel,
+        start_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
+        end_page: z.never().optional(),
+        cursor: z.never().optional(),
+        max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
+      }).strict(),
+      z.object({
+        document_id: documentId,
+        revision_number: revisionNumber,
+        content_label: contentLabel,
+        start_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
+        end_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
+        cursor: z.never().optional(),
+        max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
+      }).strict().refine((value) => value.end_page >= value.start_page, { message: "end_page must be >= start_page" }),
+      z.object({
+        document_id: documentId,
+        revision_number: revisionNumber,
+        content_label: contentLabel,
+        start_page: z.never().optional(),
+        end_page: z.never().optional(),
+        cursor: z.string().min(1).max(4096),
+        max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
+      }).strict()
+    ])
   } as const;
 }
 

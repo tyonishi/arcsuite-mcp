@@ -6,9 +6,14 @@ export type ContentCacheContext = {
   documentId: string;
   /** Current effective identity proven by the gateway before cache access. */
   effectiveDocumentId: string;
+  /** Exact revision-qualified identity used for content retrieval. */
+  wireDocumentId: string;
   cabinetId: string;
   rootObjectId: string | null;
-  revisionNumber?: number;
+  /** Revision explicitly requested by the MCP caller, if any. */
+  requestedRevisionNumber?: number;
+  /** Revision proven by metadata and bound to wireDocumentId. */
+  provenRevisionNumber: number;
   contentLabel: string;
   physicalContentLabel: PhysicalContentLabel;
   variant?: string;
@@ -130,9 +135,11 @@ function locatorKey(context: ContentCacheContext): string {
     context.scopeId,
     context.documentId,
     context.effectiveDocumentId,
+    context.wireDocumentId,
     context.cabinetId,
     context.rootObjectId,
-    context.revisionNumber ?? "current",
+    context.provenRevisionNumber,
+    context.requestedRevisionNumber ?? "current-request",
     context.contentLabel,
     context.physicalContentLabel.ns,
     context.physicalContentLabel.name,

@@ -71,7 +71,51 @@ final class AdapterService {
         return Map.of("clientProfileId",p,"id",id);
     }
     Object revisions(Map<String,Object> body){return sessions.read(profile(body),sid->soap.revisions(body,sid));}
-    Object content(Map<String,Object> body){return sessions.read(profile(body),sid->soap.content(body,sid));}
+    Object content(Map<String,Object> body){
+        Map<String,Object> request=prepareContentRequest(body);
+        String p=String.valueOf(request.get("clientProfileId"));
+        return sessions.read(p,sid->soap.content(request,sid));
+    }
+
+    static Map<String,Object> prepareContentRequest(Map<String,Object> body){
+        Set<String> required=Set.of("clientProfileId","requestedId","effectiveId","revisionNumber","contentWireId","contentLabel","options","traceId");
+        Set<String> allowed=new HashSet<>(required);
+        if(!body.keySet().containsAll(required) || body.keySet().stream().anyMatch(key->!allowed.contains(key)))throw new IllegalArgumentException("Unexpected content request fields");
+        String p=profile(body);
+        Object rawRequested=body.get("requestedId");
+        Object rawEffective=body.get("effectiveId");
+        if(!(rawRequested instanceof String requestedId)||!(rawEffective instanceof String effectiveId))throw new IllegalArgumentException("content identities are required");
+        requestedId=ArcSuiteSoapClient.requiredRepositoryObjectId(requestedId,"requestedId");
+        effectiveId=ArcSuiteSoapClient.requiredRepositoryObjectId(effectiveId,"effectiveId");
+        int revisionNumber=ArcSuiteSoapClient.revisionNumber(body.get("revisionNumber"));
+        Object rawWire=body.get("contentWireId");
+        if(!(rawWire instanceof String contentWireId))throw new IllegalArgumentException("contentWireId is required");
+        contentWireId=ArcSuiteSoapClient.requiredRepositoryObjectId(contentWireId,"contentWireId");
+        if(!ArcSuiteSoapClient.revisionWireId(effectiveId,revisionNumber).equals(contentWireId))throw new IllegalArgumentException("contentWireId does not match effectiveId and revisionNumber");
+        Map<String,Object> label=map(body.get("contentLabel"));
+        if(!label.keySet().equals(Set.of("ns","name")))throw new IllegalArgumentException("contentLabel must be a physical label");
+        requiredText(label,"ns");
+        requiredText(label,"name");
+        Object rawOptions=body.get("options");
+        if(!(rawOptions instanceof List<?> rawOptionList)
+                || rawOptionList.stream().anyMatch(option -> !(option instanceof String))) {
+            throw new IllegalArgumentException("Unsupported content option");
+        }
+        List<String> options=new ArrayList<>();
+        for(Object option:rawOptionList) options.add((String)option);
+        if(options.stream().anyMatch(option->!option.equals("errorOnOfflineContent"))) throw new IllegalArgumentException("Unsupported content option");
+        String traceId=requiredText(body,"traceId");
+        LinkedHashMap<String,Object> request=new LinkedHashMap<>();
+        request.put("clientProfileId",p);
+        request.put("requestedId",requestedId);
+        request.put("effectiveId",effectiveId);
+        request.put("revisionNumber",revisionNumber);
+        request.put("contentWireId",contentWireId);
+        request.put("contentLabel",Map.of("ns",label.get("ns"),"name",label.get("name")));
+        request.put("options",List.copyOf(options));
+        request.put("traceId",traceId);
+        return request;
+    }
 
     // v1.1 paging snapshots are keyed by the exact object IDs returned by the
     // ID-only ArcSuite operations. ResolveRef must therefore be false for the
@@ -125,4 +169,7 @@ final class AdapterService {
     }
 
     private static String profile(Map<String,Object> body){Object p=body.get("clientProfileId");if(p==null||String.valueOf(p).isBlank())throw new IllegalArgumentException("clientProfileId required");return String.valueOf(p);}
+
+    @SuppressWarnings("unchecked") private static Map<String,Object> map(Object value){if(!(value instanceof Map<?,?> map))throw new IllegalArgumentException("contentLabel is required");return (Map<String,Object>)map;}
+    private static String requiredText(Map<String,Object> map,String key){Object value=map.get(key);if(!(value instanceof String text)||text.isBlank())throw new IllegalArgumentException(key+" is required");return text;}
 }

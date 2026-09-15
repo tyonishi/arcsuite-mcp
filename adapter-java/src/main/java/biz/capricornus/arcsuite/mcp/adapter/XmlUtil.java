@@ -33,35 +33,33 @@ final class XmlUtil {
         return parse(xml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
-    static Element firstDesc(Element root, String localName) {
-        var nodes = root.getElementsByTagNameNS("*", localName);
+    static boolean is(Element element, String namespace, String localName) {
+        return element != null && localName.equals(element.getLocalName())
+                && (namespace == null ? element.getNamespaceURI() == null : namespace.equals(element.getNamespaceURI()));
+    }
+
+    static Element firstDesc(Element root, String namespace, String localName) {
+        var nodes = root.getElementsByTagNameNS(namespace, localName);
         return nodes.getLength() == 0 ? null : (Element) nodes.item(0);
     }
 
-    static Element child(Element root, String localName) {
+    static Element child(Element root, String namespace, String localName) {
         for (Node n = root.getFirstChild(); n != null; n = n.getNextSibling()) {
-            if (n instanceof Element e && localName.equals(e.getLocalName())) return e;
+            if (n instanceof Element e && is(e, namespace, localName)) return e;
         }
         return null;
     }
 
-    static List<Element> children(Element root, String localName) {
+    static List<Element> children(Element root, String namespace, String localName) {
         List<Element> out = new ArrayList<>();
         for (Node n = root.getFirstChild(); n != null; n = n.getNextSibling()) {
-            if (n instanceof Element e && localName.equals(e.getLocalName())) out.add(e);
+            if (n instanceof Element e && is(e, namespace, localName)) out.add(e);
         }
         return out;
     }
 
-    static List<Element> descendants(Element root, String localName) {
-        List<Element> out = new ArrayList<>();
-        NodeList nodes = root.getElementsByTagNameNS("*", localName);
-        for (int i=0;i<nodes.getLength();i++) out.add((Element)nodes.item(i));
-        return out;
-    }
-
     static String text(Element e) { return e == null ? null : e.getTextContent(); }
-    static String childText(Element e, String name) { return text(child(e,name)); }
+    static String childText(Element e, String namespace, String name) { return text(child(e, namespace, name)); }
     static boolean bool(String s) { return s != null && Boolean.parseBoolean(s.trim()); }
 
     static String esc(String s) {
@@ -69,10 +67,17 @@ final class XmlUtil {
         return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\"","&quot;").replace("'","&apos;");
     }
 
-    static String localType(Element e) {
-        String x = e.getAttributeNS(XMLConstants.W3C_XML_SCHEMA_INSTANCE_NS_URI, "type");
-        if (x == null || x.isBlank()) x = e.getAttribute("xsi:type");
-        if (x == null) return "";
-        int colon=x.indexOf(':'); return colon >= 0 ? x.substring(colon+1) : x;
+    static String qualifiedType(Element e, String expectedNamespace) {
+        String lexical = e.getAttributeNS(XMLConstants.W3C_XML_SCHEMA_INSTANCE_NS_URI, "type");
+        if (lexical == null || lexical.isBlank()) lexical = e.getAttribute("xsi:type");
+        if (lexical == null || lexical.isBlank()) return "";
+        int colon = lexical.indexOf(':');
+        String prefix = colon < 0 ? "" : lexical.substring(0, colon);
+        String local = colon < 0 ? lexical : lexical.substring(colon + 1);
+        String namespace = e.lookupNamespaceURI(prefix.isEmpty() ? null : prefix);
+        if (!expectedNamespace.equals(namespace) || local.isBlank()) {
+            throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "ArcSuite xsi:type namespace was not expected");
+        }
+        return local;
     }
 }

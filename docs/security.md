@@ -34,6 +34,13 @@
   PKCS#1 v1.5 padding (`RSA/ECB/PKCS1Padding`) over UTF-8
   (`challenge + password`); the resulting wire behavior remains subject to
   live ArcSuite qualification.
+- CodeQL's `java/rsa-without-oaep` finding corresponds to a vendor-required
+  compatibility path. Replacing PKCS#1 v1.5 with OAEP would change the
+  licensed ArcSuite login wire contract. The gateway never exposes the
+  challenge, ciphertext, or credentials through MCP; the Java adapter keeps
+  the operation internal, and live qualification must still check for any
+  observable padding-oracle behavior. Individual CodeQL alert disposition is
+  tracked separately from this compatibility requirement.
 - Administrator mode is fixed false; privileged-print, ACL, delete, workflow,
   delegation, and arbitrary SOAP operations are absent.
 - Content is size-bounded, character-bounded, extracted by allowlisted
@@ -52,6 +59,28 @@
 - GitHub Actions workflow references and container base images are pinned to
   reviewed immutable commit/digest references. Container updates must keep the
   human-readable tag and SHA-256 digest synchronized.
+
+## Resource-bound content handling
+
+Every content path has a finite limit before data is exposed to the semantic
+layer. The configured values may be lowered per deployment, but cannot exceed
+the hard bounds enforced by configuration and the relevant parser.
+
+| Boundary | Enforced bound | Failure behavior |
+| --- | --- | --- |
+| MCP request body | 4 MiB hard maximum | Reject before JSON materialization |
+| Adapter JSON response | 8 MiB hard maximum | Reject while streaming the response |
+| Content file | 100 MiB hard maximum | Reject before extraction and remove the temporary file |
+| Extracted text | 1,000,000 characters hard maximum | Truncate with a warning or reject parser output |
+| JSON formatting | 256 nesting levels plus output budget | Stop with a bounded result and warning |
+| OOXML archive | 20,000 members, 128 MiB total uncompressed, 200:1 compression-ratio guard | Reject the archive or member before extraction |
+| OOXML XML | 256 nesting levels, input-sized node/text budgets, and DTD/entity rejection | Reject the XML before entity expansion |
+| Content snapshot cache | 1,000 entries, 100 per client, and 256 MiB | Evict bounded entries or reject insertion |
+
+The same output budget is applied again by the gateway normalizer, so a
+bounded parser cannot be followed by an unbounded materialization step.
+Limits are defensive resource controls, not a qualification of a licensed
+ArcSuite deployment or of provider-specific content semantics.
 
 ## Repository security integrations
 

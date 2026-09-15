@@ -28,8 +28,8 @@ async function customizedScope(options: { enabled: boolean; allowEvidence: boole
   const dir = await mkdtemp(join(tmpdir(), "arcsuite-integrity-scope-"));
   let source = await readFile(resolve("config/scopes.mock.yaml"), "utf8");
   const integrityBlock = `    integrity:\n      enabled: ${options.enabled}\n      allow_evidence: ${options.allowEvidence}`;
-  if (source.includes("    integrity:\n")) {
-    source = source.replace(/    integrity:\n(?:      .*\n)*/u, integrityBlock + "\n");
+  if (source.includes("    integrity:\n") || source.includes("    integrity:\r\n")) {
+    source = source.replace(/    integrity:\r?\n(?:      .*\r?\n)*/u, integrityBlock + "\n");
   } else {
     source = source.replace("    relationships:\n      hard_references: true", `    relationships:\n      hard_references: true\n\n${integrityBlock}`);
   }
@@ -243,7 +243,7 @@ test("cabinet, root, identity, and document-type checks precede validation", asy
 
   adapter.get = async (request: any) => {
     gets.push(structuredClone(request));
-    return { ...(await originalGet(request)), objectClass: "folder" };
+    return { ...(await originalGet(request)), objectClass: "folder", nativeObjectClass: { ns: "rep", name: "system:folder" } };
   };
   await assert.rejects(
     () => rt.tools.call(profile(), toolName, { document_id: documentA }),

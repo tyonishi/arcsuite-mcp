@@ -26,7 +26,9 @@ export type ContentAuthorityBindingInput = {
   scopeId: string;
   requestedDocumentId: string;
   effectiveDocumentId: string;
-  revisionNumber?: number;
+  wireDocumentId: string;
+  requestedRevisionNumber?: number;
+  provenRevisionNumber: number;
   contentLabel: string;
   physicalContentLabel: { ns: string; name: string };
   cabinetId: string;
@@ -90,7 +92,9 @@ export class CursorManager {
       input.scopeId,
       input.requestedDocumentId,
       input.effectiveDocumentId,
-      input.revisionNumber ?? "current",
+      input.wireDocumentId,
+      input.requestedRevisionNumber ?? "current-request",
+      input.provenRevisionNumber,
       input.contentLabel,
       input.physicalContentLabel.ns,
       input.physicalContentLabel.name,

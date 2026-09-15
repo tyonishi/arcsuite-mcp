@@ -38,8 +38,13 @@ class _SafeElementTree:
 
     @staticmethod
     def fromstring(data: bytes):
+        data_length = len(data)
+        max_nodes = max(1, data_length)
+        max_depth = 256
         root = None
         stack = []
+        node_count = 0
+        text_chars = 0
         parser = expat.ParserCreate(namespace_separator="}")
 
         def unsafe(*_args):
@@ -53,7 +58,12 @@ class _SafeElementTree:
         parser.buffer_text = True
 
         def start(name, attrs):
-            nonlocal root
+            nonlocal root, node_count
+            node_count += 1
+            if node_count > max_nodes:
+                raise RuntimeError("OOXML_XML_NODE_LIMIT")
+            if len(stack) >= max_depth:
+                raise RuntimeError("OOXML_XML_DEPTH_LIMIT")
             element = _Element(name, dict(attrs))
             if stack:
                 stack[-1]._children.append(element)
@@ -71,7 +81,11 @@ class _SafeElementTree:
                 element.text = "".join(element._text_parts)
 
         def character_data(value):
+            nonlocal text_chars
             if stack:
+                text_chars += len(value)
+                if text_chars > data_length:
+                    raise RuntimeError("OOXML_XML_TEXT_LIMIT")
                 stack[-1]._text_parts.append(value)
 
         parser.StartElementHandler = start

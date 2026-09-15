@@ -5,6 +5,7 @@ import { runProcess } from "../../util/process.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const helper = resolve(here, "../../../scripts/ooxml_extract.py");
+const pythonCommand = process.platform === "win32" ? "python" : "python3";
 
 export class OfficeOpenXmlExtractor implements ContentExtractor {
   readonly name = "office";
@@ -16,7 +17,7 @@ export class OfficeOpenXmlExtractor implements ContentExtractor {
   async extract(request: ExtractRequest): Promise<ExtractResult> {
     const kind = extensionKind(request.fileName, request.contentType);
     const maxChars = request.maxExtractedChars ?? 200_000;
-    const result = await runProcess("python3", [helper, request.filePath, kind, String(maxChars)], { timeoutMs: 120_000, maxStdoutBytes: Math.min(64 * 1024 * 1024, maxChars * 8 + 1024) });
+    const result = await runProcess(pythonCommand, [helper, request.filePath, kind, String(maxChars)], { timeoutMs: 120_000, maxStdoutBytes: Math.min(64 * 1024 * 1024, maxChars * 8 + 1024) });
     const warnings = request.startPage || request.endPage ? ["PAGE_RANGE_NOT_SUPPORTED_FOR_OFFICE_OPEN_XML"] : [];
     return { extractor: `${this.name}:${kind}`, text: result.stdout.toString("utf8"), warnings };
   }

@@ -154,6 +154,16 @@ class OoxmlStreamingBudgetTests(unittest.TestCase):
 
 
 class OoxmlXmlSecurityTests(unittest.TestCase):
+    def test_parser_rejects_excessive_nesting_before_tree_walk(self):
+        payload = "<root>" + ("<a>" * 300) + "x" + ("</a>" * 300) + "</root>"
+        with self.assertRaisesRegex(RuntimeError, "OOXML_XML_DEPTH_LIMIT"):
+            list(ooxml_extract.xml_text_parts(payload.encode("utf-8")))
+
+    def test_parser_materialized_text_remains_tied_to_input_size(self):
+        payload = b"<root><t>" + (b"&#65;" * 10_000) + b"</t></root>"
+        parts = list(ooxml_extract.xml_text_parts(payload))
+        self.assertLessEqual(sum(end - start for _, start, end in parts), len(payload))
+
     def test_parser_accumulates_many_character_data_chunks_without_quadratic_concatenation(self):
         payload = b"<root><t>" + (b"chunk&amp;" * 10000) + b"</t></root>"
         parts = list(ooxml_extract.xml_text_parts(payload))
