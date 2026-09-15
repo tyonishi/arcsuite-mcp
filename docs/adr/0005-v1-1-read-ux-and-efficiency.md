@@ -83,6 +83,12 @@ preserving the v1.0 read-only security contract.
    - A scope MAY define an operator-controlled document URL template.
    - A result MAY expose `open_url` only when the template is enabled and the
      target host/scheme is fixed by trusted server configuration.
+   - HTTPS is the default. HTTP MAY be enabled only by an explicit
+     per-scope `ui.allow_http: true` setting; this setting is independent of
+     the SOAP endpoint transport and does not make HTTP secure.
+   - A template MUST contain exactly one supported object-ID placeholder:
+     `{document_id}` for the complete semantic ID or `{arcsuite_object_id}`
+     for the same ID with exactly its leading `rep:` removed.
    - Tool callers MUST NOT provide arbitrary URL templates, hosts, or query
      credentials.
    - Authentication secrets and ArcSuite session identifiers MUST never be

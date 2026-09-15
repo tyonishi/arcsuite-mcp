@@ -479,8 +479,57 @@ scopes:
     default_attr_ids:
       - {ns: rep, name: system:name}
     semantic_attributes: {}
-`);
+  `);
   const rt = await runtime(scopeFile);
+  const search: any = (await rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "DOC" })).structuredContent;
   const doc: any = (await rt.tools.call(profile(), "arcsuite_get_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001" })).structuredContent;
   assert.equal(doc.open_url, "https://arcsuite.example.invalid/open?id=rep%3Amock%3AEXAMPLE_CABINET%3A1001");
+  assert.equal(search.results[0].open_url, "https://arcsuite.example.invalid/open?id=rep%3Amock%3AEXAMPLE_CABINET%3A1001");
+});
+
+test("HTTP native-ID deep links are opt-in and decorate every document metadata surface", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-http-link-test-"));
+  const scopeFile = join(dir, "scopes.yaml");
+  await writeFile(scopeFile, `version: 1
+scopes:
+  example_documents:
+    description: Synthetic internal linked repository
+    enabled: true
+    arcsuite:
+      cabinet_alias: EXAMPLE_CABINET
+      cabinet_id: rep:mock:EXAMPLE_CABINET
+      root_object_id: null
+      resolve_references: true
+    ui:
+      allow_http: true
+      document_url_template: http://arcsuite-internal.example.invalid/ArcSuite/docspace/sdk/open.do?id={arcsuite_object_id}&enc=UTF-8
+    allowed_object_types: [document, folder, reference]
+    default_attr_ids:
+      - {ns: rep, name: system:name}
+    semantic_attributes: {}
+`);
+  const rt = await runtime(scopeFile);
+  const p = profile();
+  const expectedUrl = (id: string) => `http://arcsuite-internal.example.invalid/ArcSuite/docspace/sdk/open.do?id=${encodeURIComponent(id.slice("rep:".length))}&enc=UTF-8`;
+  const capabilities: any = (await rt.tools.call(p, "arcsuite_describe_capabilities", {})).structuredContent;
+  const search: any = (await rt.tools.call(p, "arcsuite_search_documents", { scope: "example_documents", query: "DOC" })).structuredContent;
+  const get: any = (await rt.tools.call(p, "arcsuite_get_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001" })).structuredContent;
+  const batch: any = (await rt.tools.call(p, "arcsuite_get_documents", {
+    scope: "example_documents",
+    document_ids: ["rep:mock:EXAMPLE_CABINET:1001", "rep:mock:EXAMPLE_CABINET:1002"]
+  })).structuredContent;
+  const folder: any = (await rt.tools.call(p, "arcsuite_list_folder", { scope: "example_documents" })).structuredContent;
+  const revisions: any = (await rt.tools.call(p, "arcsuite_list_document_revisions", {
+    document_id: "rep:mock:EXAMPLE_CABINET:1001"
+  })).structuredContent;
+
+  assert.equal(capabilities.scopes[0].ui_deep_link, true);
+  assert.equal(JSON.stringify(capabilities).includes("document_url_template"), false);
+  assert.equal(JSON.stringify(capabilities).includes("arcsuite-internal.example.invalid"), false);
+  assert.equal(search.results[0].open_url, expectedUrl(search.results[0].document_id));
+  assert.equal(get.open_url, expectedUrl(get.document_id));
+  assert.deepEqual(batch.results.map((item: any) => item.open_url), batch.results.map((item: any) => expectedUrl(item.document_id)));
+  assert.deepEqual(folder.results.map((item: any) => item.open_url), folder.results.map((item: any) => expectedUrl(item.document_id)));
+  assert.ok(revisions.revisions.every((item: any) => item.open_url === expectedUrl(item.document_id)));
+  assert.equal(JSON.stringify({ search, get, batch, folder, revisions }).includes("rep%3A"), false);
 });

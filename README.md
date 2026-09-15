@@ -132,9 +132,14 @@ scopes:
     #   preview:
     #     ns: "rep"
     #     name: "user:YOUR_PREVIEW_CONTENT_LABEL"
-    # Optional convenience; the host/template remain server-side.
+    # Optional convenience; the host/template remain server-side. HTTPS is the
+    # default and the complete semantic document ID is URL-encoded.
     # ui:
     #   document_url_template: "https://arcsuite.example.invalid/open?id={document_id}"
+    # For a trusted internal HTTP-only UI, opt in for this scope and use the
+    # native ArcSuite object ID placeholder:
+    #   allow_http: true
+    #   document_url_template: "http://arcsuite-internal.example.invalid/ArcSuite/docspace/sdk/open.do?id={arcsuite_object_id}&enc=UTF-8"
     allowed_object_types: [document, folder, reference]
     default_attr_ids:
       - {ns: "rep", name: "system:name"}
