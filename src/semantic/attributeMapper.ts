@@ -1,4 +1,4 @@
-import type { AdapterSearchCondition, AttributeId, AttributeSchemaInfo } from "../arcsuite/types.ts";
+import type { AdapterSearchCondition, AttributeId, AttributeSchemaInfo, AttributeValue } from "../arcsuite/types.ts";
 import type { SemanticAttributeConfig, SemanticOperator, SemanticScope } from "./scopeRegistry.ts";
 
 export type SemanticFilterPredicate = {
@@ -8,6 +8,26 @@ export type SemanticFilterPredicate = {
 
 export type SemanticFilterInput = string | number | boolean | SemanticFilterPredicate;
 
+export type CanonicalSemanticPredicate = {
+  semanticName: string;
+  semanticType: SemanticAttributeConfig["type"];
+  operator: SemanticOperator;
+  condition: AdapterSearchCondition;
+  verification: "deterministic" | "provider";
+};
+
+export type SemanticVerificationFailure = "attribute_missing" | "malformed_attribute" | "predicate_mismatch";
+
+export class SemanticVerificationError extends Error {
+  readonly reason: SemanticVerificationFailure;
+
+  constructor(reason: SemanticVerificationFailure, message: string) {
+    super(message);
+    this.name = "SemanticVerificationError";
+    this.reason = reason;
+  }
+}
+
 const OPERATOR_WIRE_NAMES: Record<SemanticOperator, AdapterSearchCondition["operator"]> = {
   eq: "EQUAL",
   like: "LIKE",
@@ -15,12 +35,12 @@ const OPERATOR_WIRE_NAMES: Record<SemanticOperator, AdapterSearchCondition["oper
   lte: "LESS_EQUAL"
 };
 
-export function mapFilter(
+export function canonicalizeFilter(
   scope: SemanticScope,
   semanticName: string,
   input: SemanticFilterInput,
   schema?: AttributeSchemaInfo
-): AdapterSearchCondition {
+): CanonicalSemanticPredicate {
   const cfg = scope.semantic_attributes[semanticName];
   if (!cfg) throw new TypeError(`Unsupported semantic filter: ${semanticName}`);
 
@@ -31,22 +51,160 @@ export function mapFilter(
     throw new TypeError(`${semanticName} requires validated schema metadata`);
   }
 
-  switch (cfg.type) {
+  const condition = (() => {
+    switch (cfg.type) {
     case "string":
-      return stringCondition(cfg, semanticName, predicate, schema);
+        return stringCondition(cfg, semanticName, predicate, schema);
     case "integer":
-      return integerCondition(cfg, semanticName, predicate, schema);
+        return integerCondition(cfg, semanticName, predicate, schema);
     case "number":
-      return numberCondition(cfg, semanticName, predicate, schema);
+        return numberCondition(cfg, semanticName, predicate, schema);
     case "boolean":
-      return booleanCondition(cfg, semanticName, predicate, schema);
+        return booleanCondition(cfg, semanticName, predicate, schema);
     case "date":
-      return dateCondition(cfg, semanticName, predicate, schema);
+        return dateCondition(cfg, semanticName, predicate, schema);
     case "datetime":
-      return datetimeCondition(cfg, semanticName, predicate, schema, explicit);
+        return datetimeCondition(cfg, semanticName, predicate, schema, explicit);
     case "enum":
-      return enumCondition(cfg, semanticName, predicate, schema);
+        return enumCondition(cfg, semanticName, predicate, schema);
+    }
+  })();
+  return Object.freeze({
+    semanticName,
+    semanticType: cfg.type,
+    operator: predicate.operator,
+    condition: freezeCondition(condition),
+    verification: predicate.operator === "like" ? "provider" : "deterministic"
+  });
+}
+
+export function mapFilter(
+  scope: SemanticScope,
+  semanticName: string,
+  input: SemanticFilterInput,
+  schema?: AttributeSchemaInfo
+): AdapterSearchCondition {
+  return canonicalizeFilter(scope, semanticName, input, schema).condition;
+}
+
+export function verifySemanticPredicate(
+  predicate: CanonicalSemanticPredicate,
+  attributes: Record<string, AttributeValue>
+): void {
+  if (predicate.verification === "provider") return;
+  const key = attrKey(predicate.condition.attrId);
+  const actual = attributes[key];
+  if (!actual) throw new SemanticVerificationError("attribute_missing", `${predicate.semanticName} authoritative attribute is missing`);
+  if (!hasAuthoritativeShape(predicate.condition.value, actual)) {
+    throw new SemanticVerificationError("malformed_attribute", `${predicate.semanticName} authoritative attribute is malformed`);
   }
+  if (!matchesCondition(predicate.condition, actual)) {
+    throw new SemanticVerificationError("predicate_mismatch", `${predicate.semanticName} authoritative value does not satisfy the search predicate`);
+  }
+}
+
+function freezeCondition(condition: AdapterSearchCondition): AdapterSearchCondition {
+  const value = { ...condition.value } as AdapterSearchCondition["value"];
+  const attrId = { ...condition.attrId };
+  Object.freeze(value);
+  Object.freeze(attrId);
+  return Object.freeze({ ...condition, attrId, value });
+}
+
+function matchesCondition(condition: AdapterSearchCondition, actual: AttributeValue): boolean {
+  if (condition.value.type === "string") {
+    if (actual.type !== "string") return false;
+    return compareText(actual.value, condition.value.value, condition.operator);
+  }
+  if (condition.value.type === "int" || condition.value.type === "long") {
+    if (actual.type !== condition.value.type || !Number.isSafeInteger(actual.value)) return false;
+    return compareNumber(actual.value, condition.value.value, condition.operator);
+  }
+  if (condition.value.type === "double") {
+    if (actual.type !== "double" || !Number.isFinite(actual.value)) return false;
+    return compareNumber(actual.value, condition.value.value, condition.operator);
+  }
+  if (condition.value.type === "boolean") {
+    return actual.type === "boolean" && condition.operator === "EQUAL" && actual.value === condition.value.value;
+  }
+  if (condition.value.type === "date") {
+    if (actual.type !== "date") return false;
+    const left = parseDateValue(actual.value);
+    const right = parseDateValue(condition.value.value);
+    return left !== undefined && right !== undefined && compareNumber(left, right, condition.operator);
+  }
+  if (condition.value.type === "datetime") {
+    if (actual.type !== "datetime") return false;
+    const left = parseDateTimeValue(actual.value);
+    const right = parseDateTimeValue(condition.value.value);
+    return left !== undefined && right !== undefined && compareDateTime(left, right, condition.operator);
+  }
+  if (condition.value.type === "i18n") {
+    return actual.type === "i18n"
+      && condition.operator === "EQUAL"
+      && actual.ns === condition.value.ns
+      && actual.name === condition.value.name;
+  }
+  return false;
+}
+
+function hasAuthoritativeShape(expected: AdapterSearchCondition["value"], actual: AttributeValue): boolean {
+  if (!actual || typeof actual !== "object") return false;
+  if (expected.type === "string") return actual.type === "string" && typeof actual.value === "string";
+  if (expected.type === "int" || expected.type === "long") {
+    return actual.type === expected.type && typeof actual.value === "number" && Number.isSafeInteger(actual.value);
+  }
+  if (expected.type === "double") return actual.type === "double" && typeof actual.value === "number" && Number.isFinite(actual.value);
+  if (expected.type === "boolean") return actual.type === "boolean" && typeof actual.value === "boolean";
+  if (expected.type === "date") return actual.type === "date" && typeof actual.value === "string" && parseDateValue(actual.value) !== undefined;
+  if (expected.type === "datetime") return actual.type === "datetime" && typeof actual.value === "string" && parseDateTimeValue(actual.value) !== undefined;
+  return expected.type === "i18n"
+    && actual.type === "i18n"
+    && typeof actual.ns === "string"
+    && typeof actual.name === "string";
+}
+
+function compareText(actual: string, expected: string, operator: AdapterSearchCondition["operator"]): boolean {
+  return operator === "EQUAL" && actual === expected;
+}
+
+function compareNumber(actual: number, expected: number, operator: AdapterSearchCondition["operator"]): boolean {
+  if (operator === "EQUAL") return actual === expected;
+  if (operator === "GREATER_EQUAL") return actual >= expected;
+  if (operator === "LESS_EQUAL") return actual <= expected;
+  return false;
+}
+
+type ParsedDateTime = { seconds: bigint; fraction: string };
+
+function compareDateTime(actual: ParsedDateTime, expected: ParsedDateTime, operator: AdapterSearchCondition["operator"]): boolean {
+  const comparison = actual.seconds < expected.seconds ? -1 : actual.seconds > expected.seconds ? 1 : compareFraction(actual.fraction, expected.fraction);
+  if (operator === "EQUAL") return comparison === 0;
+  if (operator === "GREATER_EQUAL") return comparison >= 0;
+  if (operator === "LESS_EQUAL") return comparison <= 0;
+  return false;
+}
+
+function compareFraction(actual: string, expected: string): number {
+  const length = Math.max(actual.length, expected.length);
+  const left = BigInt((actual || "0").padEnd(length, "0"));
+  const right = BigInt((expected || "0").padEnd(length, "0"));
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function parseDateValue(value: string): number | undefined {
+  if (!isCalendarDate(value)) return undefined;
+  const parsed = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseDateTimeValue(value: string): ParsedDateTime | undefined {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (!match || !isCalendarDate(match[1]) || Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4]) > 59) return undefined;
+  if (match[6] !== "Z" && (Number(match[7]) > 23 || Number(match[8]) > 59 || match[6] === "-00:00")) return undefined;
+  const base = Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}${match[6]}`);
+  if (!Number.isFinite(base) || base % 1000 !== 0) return undefined;
+  return { seconds: BigInt(Math.trunc(base / 1000)), fraction: (match[5] ?? "").replace(/0+$/, "") };
 }
 
 export function attrKey(attr: AttributeId): string {

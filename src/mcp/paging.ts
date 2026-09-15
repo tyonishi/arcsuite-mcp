@@ -1,4 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import type { CanonicalSemanticPredicate } from "../semantic/attributeMapper.ts";
 
 export type PagingKind = "search" | "folder" | "hard_reference";
 
@@ -6,6 +7,7 @@ export type PagingSnapshotContext = {
   folderId?: string;
   targetDocumentId?: string;
   includePath: boolean;
+  searchVerificationPlan?: readonly CanonicalSemanticPredicate[];
 };
 
 type PagingSnapshot = {
@@ -70,23 +72,24 @@ export class PagingSnapshotStore {
     this.pruneExpired();
     if (!Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > this.maxIdsPerSnapshot) throw new Error("INVALID_PAGE_SIZE");
     if (input.kind === "hard_reference" && (!input.context.targetDocumentId || !/^rep:\S+$/.test(input.context.targetDocumentId))) throw new Error("INVALID_HARD_REFERENCE_TARGET");
+    if (input.kind === "search" && !Array.isArray(input.context.searchVerificationPlan)) throw new Error("INVALID_SEARCH_VERIFICATION_PLAN");
     const unique = new Set(input.ids);
     if (unique.size !== input.ids.length) throw new Error("DUPLICATE_PAGING_IDS");
     const snapshotLimited = Boolean(input.upstreamLimited) || input.ids.length > this.maxIdsPerSnapshot;
     const boundedIds = input.ids.slice(0, this.maxIdsPerSnapshot);
     const first = boundedIds.slice(0, input.pageSize);
-    if (boundedIds.length <= input.pageSize) return { ids: first, nextCursor: null, snapshotLimited, pageSize: input.pageSize, context: { ...input.context } };
+    if (boundedIds.length <= input.pageSize) return { ids: first, nextCursor: null, snapshotLimited, pageSize: input.pageSize, context: cloneContext(input.context) };
 
     this.makeRoom(input.clientProfileId, boundedIds.length);
     const now = Date.now();
     const snapshot: PagingSnapshot = {
       id: randomUUID(), clientProfileId: input.clientProfileId, scopeId: input.scopeId, kind: input.kind,
-      ids: boundedIds, pageSize: input.pageSize, context: { ...input.context }, snapshotLimited,
+      ids: boundedIds, pageSize: input.pageSize, context: cloneContext(input.context), snapshotLimited,
       createdAt: now, expiresAt: now + this.ttlSeconds * 1000, lastAccessAt: now
     };
     this.snapshots.set(snapshot.id, snapshot);
     this.totalIds += snapshot.ids.length;
-    return { ids: first, nextCursor: this.createCursor(snapshot, input.pageSize), snapshotLimited, pageSize: snapshot.pageSize, context: { ...snapshot.context } };
+    return { ids: first, nextCursor: this.createCursor(snapshot, input.pageSize), snapshotLimited, pageSize: snapshot.pageSize, context: cloneContext(snapshot.context) };
   }
 
   next(cursor: string, expected: { clientProfileId: string; scopeId: string; kind: PagingKind; targetDocumentId?: string }): PagingPage {
@@ -103,7 +106,7 @@ export class PagingSnapshotStore {
     const end = Math.min(snapshot.ids.length, payload.offset + snapshot.pageSize);
     const ids = snapshot.ids.slice(payload.offset, end);
     const nextCursor = end < snapshot.ids.length ? this.createCursor(snapshot, end) : null;
-    const page = { ids, nextCursor, snapshotLimited: snapshot.snapshotLimited, pageSize: snapshot.pageSize, context: { ...snapshot.context } };
+    const page = { ids, nextCursor, snapshotLimited: snapshot.snapshotLimited, pageSize: snapshot.pageSize, context: cloneContext(snapshot.context) };
     if (!nextCursor) this.remove(snapshot.id);
     return page;
   }
@@ -146,4 +149,20 @@ export class PagingSnapshotStore {
   }
 
   private remove(id: string): void { const snapshot = this.snapshots.get(id); if (!snapshot) return; this.totalIds -= snapshot.ids.length; this.snapshots.delete(id); }
+}
+
+function cloneContext(context: PagingSnapshotContext): PagingSnapshotContext {
+  return deepFreezeClone(context);
+}
+
+function deepFreezeClone<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => deepFreezeClone(item))) as T;
+  }
+  if (value && typeof value === "object") {
+    const clone: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) clone[key] = deepFreezeClone(child);
+    return Object.freeze(clone) as T;
+  }
+  return value;
 }

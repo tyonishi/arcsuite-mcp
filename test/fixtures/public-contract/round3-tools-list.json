@@ -1,0 +1,21 @@
+{
+  "baseline_commit": "61bb240f541acbc9564bb849b73633bafb13b157",
+  "transport": "authenticated_streamable_http",
+  "result_keys": ["tools"],
+  "modern_result_keys": ["_meta", "cacheScope", "resultType", "tools", "ttlMs"],
+  "tool_count": 10,
+  "tool_key_sets": ["description,inputSchema,name"],
+  "tool_names": [
+    "arcsuite_describe_capabilities",
+    "arcsuite_search_documents",
+    "arcsuite_get_document",
+    "arcsuite_get_documents",
+    "arcsuite_list_folder",
+    "arcsuite_list_document_revisions",
+    "arcsuite_get_document_content_info",
+    "arcsuite_read_document",
+    "arcsuite_list_hard_references",
+    "arcsuite_validate_document_integrity"
+  ],
+  "canonical_tools_sha256": "a9200ae2c3cb703535d8bae83574e0ecc1946c2643cf89ad84b09477a590bdaa"
+}

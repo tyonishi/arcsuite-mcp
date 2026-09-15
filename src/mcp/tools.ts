@@ -15,7 +15,7 @@ import { ArcSuiteAdapterError } from "../arcsuite/errors.ts";
 import { AdapterSessionManager } from "../arcsuite/sessionManager.ts";
 import { ARCSUITE_OBJECT_CLASS_NS, ARCSUITE_SEMANTIC_OBJECT_CLASSES, DEFAULT_ATTRS, MAX_PAGE_NUMBER, MAX_REVISION_NUMBER, MIN_REVISION_NUMBER } from "../arcsuite/constants.ts";
 import { ScopeRegistry, type SemanticScope } from "../semantic/scopeRegistry.ts";
-import { mapFilter, type SemanticFilterInput } from "../semantic/attributeMapper.ts";
+import { attrKey, canonicalizeFilter, SemanticVerificationError, verifySemanticPredicate, type CanonicalSemanticPredicate, type SemanticFilterInput } from "../semantic/attributeMapper.ts";
 import { contentLabelMembership, normalizeDocument } from "../semantic/responseNormalizer.ts";
 import { ContentBridge, type ContentInfo } from "../content/contentBridge.ts";
 import type { ContentCacheContext } from "../content/snapshotCache.ts";
@@ -60,6 +60,18 @@ type AuthorizedHardReference = {
   id: string;
   publicResult: Record<string, unknown>;
 };
+
+type SearchOutcome = NonNullable<import("../audit/auditLogger.ts").AuditRecord["search_outcome"]>;
+
+class SearchOutcomeError extends Error {
+  readonly outcome: SearchOutcome;
+
+  constructor(outcome: SearchOutcome, message: string = outcome) {
+    super(message);
+    this.name = "SearchOutcomeError";
+    this.outcome = outcome;
+  }
+}
 
 export class ToolRegistry {
   private readonly config: AppConfig;
@@ -107,6 +119,7 @@ export class ToolRegistry {
     let objectIds: string[] = [];
     let resultCount: number | undefined;
     let resultCode = "OK";
+    let searchOutcome: SearchOutcome | undefined;
 
     try {
       const args = assertObject(rawArgs ?? {}, "arguments");
@@ -138,7 +151,9 @@ export class ToolRegistry {
           if (parsed.cursor) {
             page = this.paging.next(parsed.cursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.scope, kind: "search" });
           } else {
-            const attrConditions = Object.entries(parsed.filters).map(([key, value]) => mapFilter(scope, key, value, this.scopes.schemaFor(parsed.scope, key)));
+            const verificationPlan = Object.entries(parsed.filters)
+              .map(([key, value]) => canonicalizeFilter(scope, key, value, this.scopes.schemaFor(parsed.scope, key)));
+            const attrConditions = verificationPlan.map((predicate) => predicate.condition);
             const words = parsed.query ? tokenizeQuery(parsed.query) : [];
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
             const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
@@ -164,13 +179,16 @@ export class ToolRegistry {
               kind: "search",
               ids,
               pageSize: parsed.limit,
-              context: { includePath: parsed.includePath },
+              context: { includePath: parsed.includePath, searchVerificationPlan: verificationPlan },
               upstreamLimited: ids.length > snapshotLimit
             });
           }
-          const pageData = await this.fetchObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations);
+          const verificationPlan = page.context.searchVerificationPlan;
+          if (!verificationPlan) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "upstream_error", false);
+          const pageData = await this.fetchObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations, verificationPlan);
           objectIds = pageData.results.map((item) => item.document_id);
           resultCount = pageData.results.length;
+          searchOutcome = pageData.results.length ? "matches" : "zero";
           data = {
             scope: parsed.scope,
             count: pageData.results.length,
@@ -500,8 +518,13 @@ export class ToolRegistry {
 
       return { content: [{ type: "text", text: shortSummary(name, data) }], structuredContent: data };
     } catch (error) {
-      resultCode = toMcpToolError(error).stableCode;
-      throw toMcpToolError(error);
+      const mapped = toMcpToolError(error);
+      resultCode = mapped.stableCode;
+      if (name === "arcsuite_search_documents") {
+        if (error instanceof SearchOutcomeError) searchOutcome = error.outcome;
+        else if (mapped.stableCode !== "ARCSUITE_INVALID_ARGUMENT" && mapped.stableCode !== "ARCSUITE_FORBIDDEN") searchOutcome = "provider_failure";
+      }
+      throw mapped;
     } finally {
       await this.audit.write({
         ts: new Date().toISOString(),
@@ -513,6 +536,7 @@ export class ToolRegistry {
         object_ids: objectIds,
         result_code: resultCode,
         result_count: resultCount,
+        ...(name === "arcsuite_search_documents" && searchOutcome ? { search_outcome: searchOutcome } : {}),
         latency_ms: Date.now() - started
       }).catch(() => undefined);
     }
@@ -883,19 +907,36 @@ export class ToolRegistry {
     scope: SemanticScope,
     ids: string[],
     includePath: boolean,
-    operations: string[]
+    operations: string[],
+    verificationPlan?: readonly CanonicalSemanticPredicate[]
   ): Promise<{ results: NormalizedDocument[]; failures: Array<{ index: number; document_id: string; code: string }> }> {
     if (!ids.length) return { results: [], failures: [] };
     for (const id of ids) this.assertObjectIdInScope(scope, id);
     const root = scope.arcsuite.root_object_id;
     const options = root ? ["getRepositoryObjects.searchMode", `getRepositoryObjects.searchMode.searchRegion=${root}`] : [];
+    const attrIds: typeof scope.default_attr_ids = [];
+    const attrKeys = new Set<string>();
+    for (const attr of scope.default_attr_ids) {
+      const key = attrKey(attr);
+      if (attrKeys.has(key)) continue;
+      attrIds.push({ ...attr });
+      attrKeys.add(key);
+    }
+    for (const predicate of verificationPlan ?? []) {
+      if (predicate.verification !== "deterministic") continue;
+      const attr = predicate.condition.attrId;
+      if (!attrKeys.has(attrKey(attr))) {
+        attrIds.push({ ...attr });
+        attrKeys.add(attrKey(attr));
+      }
+    }
     const batch = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.getMany({
       clientProfileId: profile.clientProfileId,
       ids,
       // Metadata and its path must describe the selected/requested ID.  Path
       // enrichment is a separate exact-identity proof below.
       resolveRef: false,
-      attrIds: scope.default_attr_ids,
+      attrIds,
       options
     }));
     if (!operations.includes("getRepositoryObjects")) operations.push("getRepositoryObjects");
@@ -908,23 +949,41 @@ export class ToolRegistry {
     const coveredIndexes = new Set<number>();
     const returnedIds = new Set<string>();
     for (const object of batch.objects) {
+      if (!isRepositoryObject(object)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "repository_object_shape", false);
       const index = requestedIndexById.get(object.id);
       if (index === undefined || returnedIds.has(object.id)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
       returnedIds.add(object.id);
       coveredIndexes.add(index);
     }
     for (const failure of batch.failures) {
-      if (!Number.isSafeInteger(failure.index) || failure.index < 0 || failure.index >= ids.length) {
+      if (!failure || typeof failure !== "object" || !Number.isSafeInteger(failure.index) || failure.index < 0 || failure.index >= ids.length) {
         throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_index", false);
       }
       if (coveredIndexes.has(failure.index)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
       coveredIndexes.add(failure.index);
     }
     if (coveredIndexes.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_coverage", false);
+    const requiresDeterministicVerification = verificationPlan?.some((predicate) => predicate.verification === "deterministic") ?? false;
+    if (requiresDeterministicVerification && batch.failures.length) {
+      throw new SearchOutcomeError("hydration_failure", "Search hydration returned per-ID failures");
+    }
     this.assertRepositoryObjectsInScope(scope, batch.objects);
     this.assertAllowedObjectTypes(scope, batch.objects);
+    if (includePath || scope.arcsuite.root_object_id) await this.attachRawPaths(profile, scope, batch.objects, operations);
+    for (const object of batch.objects) {
+      for (const predicate of verificationPlan ?? []) {
+        try {
+          verifySemanticPredicate(predicate, object.attributes);
+        } catch (error) {
+          if (error instanceof SemanticVerificationError) {
+            throw new SearchOutcomeError(error.reason === "predicate_mismatch" ? "predicate_mismatch" : "metadata_unverifiable");
+          }
+          if (error instanceof McpToolError) throw error;
+          throw new SearchOutcomeError("metadata_unverifiable");
+        }
+      }
+    }
     const normalized = batch.objects.map((item) => this.decorateDocument(scope, normalizeDocument(item, scope.semantic_attributes, this.scopes.contentLabelAliases(scope))));
-    if (includePath || root) await this.attachPaths(profile, scope, normalized, operations);
     if (!includePath) for (const doc of normalized) delete doc.path;
     const failures = batch.failures.map((failure) => {
       if (!Number.isInteger(failure.index) || failure.index < 0 || failure.index >= ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_index", false);
@@ -979,29 +1038,35 @@ export class ToolRegistry {
     if (!obj.pathObjects?.some((p) => p.id === root)) throw new McpToolError("ARCSUITE_FORBIDDEN", "root_scope", false);
   }
 
-  private async attachPaths(profile: TokenProfile, scope: SemanticScope, docs: NormalizedDocument[], operations: string[]): Promise<void> {
-    for (const doc of docs) {
-      if (doc.path?.length) continue;
+  private async attachRawPaths(profile: TokenProfile, scope: SemanticScope, objects: AdapterRepositoryObject[], operations: string[]): Promise<void> {
+    for (const object of objects) {
+      if (object.pathObjects?.length) {
+        this.assertRepositoryObjectInScope(scope, object);
+        this.assertAllowedObjectType(scope, object);
+        this.assertRootScope(object, scope);
+        continue;
+      }
       const obj = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
         clientProfileId: profile.clientProfileId,
-        id: doc.document_id,
+        id: object.id,
         resolveRef: false,
         includePath: true,
         attrIds: [DEFAULT_ATTRS.name],
         options: []
       }));
-      if (!isRepositoryObject(obj) || obj.id !== doc.document_id) {
+      if (!isRepositoryObject(obj) || obj.id !== object.id) {
         throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_path_identity", false);
       }
-      if (obj.objectClass !== doc.object_class) {
+      if (obj.objectClass !== object.objectClass) {
         throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_path_class", false);
       }
       this.assertRepositoryObjectInScope(scope, obj);
       this.assertAllowedObjectType(scope, obj);
       this.assertRootScope(obj, scope);
-      doc.path = normalizeDocument(obj, scope.semantic_attributes, this.scopes.contentLabelAliases(scope)).path;
+      object.pathObjects = obj.pathObjects;
+      object.fullPath = obj.fullPath;
     }
-    if (docs.length && !operations.includes("getRepositoryObjectPath")) operations.push("getRepositoryObjectPath");
+    if (objects.length && !operations.includes("getRepositoryObjectPath")) operations.push("getRepositoryObjectPath");
   }
 
   private decorateDocument(scope: SemanticScope, doc: NormalizedDocument): NormalizedDocument {

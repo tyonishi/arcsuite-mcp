@@ -12,6 +12,7 @@ export type AuditRecord = {
   object_ids: string[];
   result_code: string;
   result_count?: number;
+  search_outcome?: "zero" | "matches" | "provider_failure" | "hydration_failure" | "metadata_unverifiable" | "predicate_mismatch";
   latency_ms: number;
 };
 

@@ -13,7 +13,7 @@ test("paging snapshots preserve order and bind cursors to profile scope and kind
     kind: "search",
     ids: ["rep:a:1", "rep:a:2", "rep:a:3"],
     pageSize: 2,
-    context: { includePath: true }
+    context: { includePath: true, searchVerificationPlan: [] }
   });
   assert.deepEqual(first.ids, ["rep:a:1", "rep:a:2"]);
   assert.equal(first.pageSize, 2);
@@ -88,6 +88,46 @@ test("hard-reference paging snapshots bind continuation to the requested target"
   });
   assert.deepEqual(second.ids, ["rep:a:hardref-2"]);
   assert.equal(second.context.targetDocumentId, "rep:a:target-1");
+});
+
+test("search snapshots retain an immutable private verification plan without changing cursor payload", () => {
+  const store = new PagingSnapshotStore(secret, 600, 10, 10, 5, 100);
+  const plan: any = [{
+    semanticName: "page_count",
+    semanticType: "integer",
+    operator: "gte",
+    verification: "deterministic",
+    condition: {
+      attrId: { ns: "rep", name: "user:page_count" },
+      operator: "GREATER_EQUAL",
+      value: { type: "long", value: 10 }
+    }
+  }];
+  const first = store.create({
+    clientProfileId: "client-a",
+    scopeId: "scope_a",
+    kind: "search",
+    ids: ["rep:a:1", "rep:a:2"],
+    pageSize: 1,
+    context: { includePath: false, searchVerificationPlan: plan }
+  });
+  plan[0].condition.value.value = 0;
+  const page = store.next(first.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" });
+  assert.equal((page.context.searchVerificationPlan?.[0].condition.value as any).value, 10);
+  const [cursorBody] = first.nextCursor!.split(".");
+  const cursorPayload = JSON.parse(Buffer.from(cursorBody, "base64url").toString("utf8")) as Record<string, unknown>;
+  assert.equal(Object.hasOwn(cursorPayload, "searchVerificationPlan"), false);
+  assert.equal(JSON.stringify(cursorPayload).includes("page_count"), false);
+  assert.equal(JSON.stringify(cursorPayload).includes("user:page_count"), false);
+  assert.equal(Object.hasOwn(cursorPayload, "value"), false);
+  assert.throws(() => store.create({
+    clientProfileId: "client-a",
+    scopeId: "scope_a",
+    kind: "search",
+    ids: ["rep:a:1", "rep:a:2"],
+    pageSize: 1,
+    context: { includePath: false } as any
+  }), /VERIFICATION_PLAN/);
 });
 
 test("content snapshots are isolated by client scope document revision and variant", () => {
