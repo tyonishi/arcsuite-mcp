@@ -21,6 +21,7 @@ import { ContentBridge, type ContentInfo } from "../content/contentBridge.ts";
 import type { ContentCacheContext } from "../content/snapshotCache.ts";
 import { AuditLogger } from "../audit/auditLogger.ts";
 import { PagingSnapshotStore } from "./paging.ts";
+import { buildAppliedQuery } from "./appliedQuery.ts";
 import { McpToolError, toMcpToolError } from "./errors.ts";
 import { assertExactKeys, assertObject, boolValue, enumValue, intValue, optionalInt, optionalString, stringValue } from "../util/json.ts";
 import { CONTENT_LABEL_PRIMARY_ALIAS, isSemanticContentLabelAlias, samePhysicalContentLabel } from "../semantic/contentLabels.ts";
@@ -155,16 +156,19 @@ export class ToolRegistry {
               .map(([key, value]) => canonicalizeFilter(scope, key, value, this.scopes.schemaFor(parsed.scope, key)));
             const attrConditions = verificationPlan.map((predicate) => predicate.condition);
             const words = parsed.query ? tokenizeQuery(parsed.query) : [];
+            const appliedQuery = buildAppliedQuery(verificationPlan, words, parsed.queryMode, parsed.textSearchMode);
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
             this.recordSoapOperation(soapOperations, "searchRepositoryObjectIds");
             const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
               clientProfileId: profile.clientProfileId,
               attributeConditions: attrConditions,
-              text: words.length ? { words, operator: parsed.queryMode.toUpperCase() as "AND" | "OR" } : undefined,
-              mode: attrConditions.length && words.length ? "AND" : parsed.queryMode.toUpperCase() as "AND" | "OR",
+              text: appliedQuery.text
+                ? { words: [...appliedQuery.text.terms], operator: appliedQuery.text.operator.toUpperCase() as "AND" | "OR" }
+                : undefined,
+              mode: appliedQuery.operator.toUpperCase() as "AND" | "OR",
               searchRegionIds: [scope.arcsuite.root_object_id ?? scope.arcsuite.cabinet_id],
               depth: 0,
-              textSearchMode: parsed.textSearchMode.toUpperCase() as "NONE" | "STEMMING" | "THESAURUS",
+              textSearchMode: (appliedQuery.text?.mode ?? "none").toUpperCase() as "NONE" | "STEMMING" | "THESAURUS",
               order: [
                 { attrId: DEFAULT_ATTRS.modifiedOn, descending: true },
                 { attrId: DEFAULT_ATTRS.name, descending: false }
@@ -182,12 +186,13 @@ export class ToolRegistry {
               kind: "search",
               ids,
               pageSize: parsed.limit,
-              context: { includePath: parsed.includePath, searchVerificationPlan: verificationPlan },
+              context: { includePath: parsed.includePath, searchVerificationPlan: verificationPlan, searchAppliedQuery: appliedQuery },
               upstreamLimited: ids.length > snapshotLimit
             });
           }
           const verificationPlan = page.context.searchVerificationPlan;
-          if (!verificationPlan) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "upstream_error", false);
+          const appliedQuery = page.context.searchAppliedQuery;
+          if (!verificationPlan || !appliedQuery) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "upstream_error", false);
           const pageData = await this.fetchObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations, verificationPlan);
           objectIds = pageData.results.map((item) => item.document_id);
           resultCount = pageData.results.length;
@@ -201,6 +206,7 @@ export class ToolRegistry {
             truncated: Boolean(page.nextCursor) || page.snapshotLimited,
             snapshot_limited: page.snapshotLimited,
             next_cursor: page.nextCursor,
+            applied_query: appliedQuery,
             failures: pageData.failures,
             results: pageData.results
           };

@@ -120,6 +120,11 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.deepEqual(search.inputSchema.properties.text_search_mode.enum, ["none", "stemming", "thesaurus"]);
   assert.match(JSON.stringify(search.inputSchema.properties.filters), /operator/);
   assert.match(search.description, /document_number/);
+  assert.equal(search.description.includes("applied_query"), false);
+  assert.equal(Object.hasOwn(search.inputSchema.properties, "applied_query"), false);
+  assert.deepEqual(Object.keys(search.inputSchema.properties).sort(), [
+    "cursor", "filters", "include_path", "limit", "query", "query_mode", "scope", "text_search_mode"
+  ]);
   const hardReferences = tools.find((tool: { name: string }) => tool.name === "arcsuite_list_hard_references");
   const hardReferenceBranches = hardReferences.inputSchema.anyOf;
   assert.equal(hardReferenceBranches.length, 2);

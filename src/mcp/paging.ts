@@ -1,5 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { CanonicalSemanticPredicate } from "../semantic/attributeMapper.ts";
+import type { AppliedQuery } from "./appliedQuery.ts";
 
 export type PagingKind = "search" | "folder" | "hard_reference";
 
@@ -8,6 +9,7 @@ export type PagingSnapshotContext = {
   targetDocumentId?: string;
   includePath: boolean;
   searchVerificationPlan?: readonly CanonicalSemanticPredicate[];
+  searchAppliedQuery?: AppliedQuery;
 };
 
 type PagingSnapshot = {
@@ -73,6 +75,7 @@ export class PagingSnapshotStore {
     if (!Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > this.maxIdsPerSnapshot) throw new Error("INVALID_PAGE_SIZE");
     if (input.kind === "hard_reference" && (!input.context.targetDocumentId || !/^rep:\S+$/.test(input.context.targetDocumentId))) throw new Error("INVALID_HARD_REFERENCE_TARGET");
     if (input.kind === "search" && !Array.isArray(input.context.searchVerificationPlan)) throw new Error("INVALID_SEARCH_VERIFICATION_PLAN");
+    if (input.kind === "search" && !input.context.searchAppliedQuery) throw new Error("INVALID_SEARCH_APPLIED_QUERY");
     const unique = new Set(input.ids);
     if (unique.size !== input.ids.length) throw new Error("DUPLICATE_PAGING_IDS");
     const snapshotLimited = Boolean(input.upstreamLimited) || input.ids.length > this.maxIdsPerSnapshot;

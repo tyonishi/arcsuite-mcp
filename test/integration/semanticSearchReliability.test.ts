@@ -129,6 +129,248 @@ test("verification-only attributes are unioned into hydration and never exposed"
   rt.stopValidationRetry();
 });
 
+test("applied query uses canonical values and the same terms and operators as the adapter request", async () => {
+  const rt = await runtime();
+  const id = "rep:mock:EXAMPLE_CABINET:synthetic-1";
+  let searchRequest: any;
+  rt.adapter.searchIds = async (request: any) => {
+    searchRequest = structuredClone(request);
+    return [id];
+  };
+  rt.adapter.getMany = async () => ({ objects: [document(id, baseAttributes)], failures: [] });
+  const call = await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: " annual   report annual \"AND\" OR * ",
+    query_mode: "or",
+    text_search_mode: "stemming",
+    filters: {
+      document_number: "DOC-000001",
+      name: "*.pdf",
+      page_count: { operator: "gte", value: 10 },
+      approved: true,
+      quality_score: { operator: "gte", value: 0.9 },
+      published_on: { operator: "gte", value: "2026-09-01" },
+      modified_after: "2026-09-01T00:00:00+09:00",
+      lifecycle: "active"
+    }
+  });
+  const result: any = call.structuredContent;
+  assert.deepEqual(result.applied_query, {
+    operator: "and",
+    filters: {
+      operator: "and",
+      predicates: [
+        { name: "document_number", type: "string", operator: "eq", value: "DOC-000001" },
+        { name: "name", type: "string", operator: "like", value: "*.pdf" },
+        { name: "page_count", type: "integer", operator: "gte", value: 10 },
+        { name: "approved", type: "boolean", operator: "eq", value: true },
+        { name: "quality_score", type: "number", operator: "gte", value: 0.9 },
+        { name: "published_on", type: "date", operator: "gte", value: "2026-09-01" },
+        { name: "modified_after", type: "datetime", operator: "gte", value: "2026-08-31T15:00:00.000Z" },
+        { name: "lifecycle", type: "enum", operator: "eq", value: "active" }
+      ]
+    },
+    text: { terms: ["annual", "report", "annual", "\"AND\"", "OR", "*"], operator: "or", mode: "stemming" }
+  });
+  assert.deepEqual(searchRequest.text, { words: result.applied_query.text.terms, operator: "OR" });
+  assert.equal(searchRequest.mode, "AND");
+  assert.equal(searchRequest.textSearchMode, "STEMMING");
+  assert.equal(searchRequest.attributeConditions.length, result.applied_query.filters.predicates.length);
+  assert.deepEqual(searchRequest.attributeConditions.map((condition: any) => condition.operator), [
+    "EQUAL", "LIKE", "GREATER_EQUAL", "EQUAL", "GREATER_EQUAL", "GREATER_EQUAL", "GREATER_EQUAL", "EQUAL"
+  ]);
+  assert.deepEqual(searchRequest.attributeConditions.map((condition: any) => "value" in condition.value
+    ? condition.value.value
+    : `${condition.value.ns}:${condition.value.name}`), [
+    "DOC-000001", "*.pdf", 10, true, 0.9, "2026-09-01", "2026-08-31T15:00:00.000Z", "rep:ACTIVE"
+  ]);
+  assert.equal(JSON.stringify(result).includes("user:example_document_number"), false);
+  assert.equal(JSON.stringify(result).includes("rep:ACTIVE"), false);
+  assert.equal(call.content[0].text.includes(JSON.stringify(result)), true);
+  rt.stopValidationRetry();
+});
+
+test("string-valued and I18N enum aliases remain semantic in structured and text responses", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-enum-aliases-"));
+  const scopeFile = join(dir, "scopes.yaml");
+  await writeFile(scopeFile, `version: 1
+scopes:
+  example_documents:
+    description: Synthetic enum alias scope
+    enabled: true
+    arcsuite:
+      cabinet_alias: EXAMPLE_CABINET
+      cabinet_id: rep:mock:EXAMPLE_CABINET
+      root_object_id: null
+      resolve_references: true
+    allowed_object_types: [document]
+    default_attr_ids:
+      - {ns: rep, name: system:name}
+    search:
+      full_text_modes: [none]
+    semantic_attributes:
+      string_state:
+        attr_id: {ns: rep, name: user:string_state}
+        type: enum
+        operators: [eq]
+        values:
+          open: {value: SYNTHETIC_STRING_STATE_OPEN}
+      i18n_state:
+        attr_id: {ns: rep, name: user:i18n_state}
+        type: enum
+        operators: [eq]
+        values:
+          active: {ns: rep, name: ACTIVE}
+`);
+  const rt = await runtime(scopeFile, { MCP_VALIDATE_ON_STARTUP: "false" });
+  try {
+    const adapter: any = rt.adapter;
+    const schemaFor = (attrId: { ns: string; name: string }) => {
+      const base = {
+        ...attrId,
+        searchable: true,
+        sortable: true,
+        modifiable: false,
+        multiValued: false,
+        required: false,
+        minInclusive: true,
+        maxInclusive: true
+      };
+      if (attrId.name === "user:string_state") {
+        return { ...base, dataType: "STRING_TYPE", enumerated: true, minLength: 1, maxLength: 255 };
+      }
+      if (attrId.name === "user:i18n_state") {
+        return { ...base, dataType: "I18N_STRING_TYPE", enumerated: true, enumLabels: [{ ns: "rep", name: "ACTIVE", label: "Synthetic active" }] };
+      }
+      return { ...base, dataType: "STRING_TYPE", minLength: 1, maxLength: 255 };
+    };
+    adapter.validateSchema = async (request: any) => ({
+      ok: true,
+      version: { minVersion: "4.0.0.0", curVersion: "4.0.0.0" },
+      cabinet: { id: request.cabinetId, label: "Synthetic cabinet", hasRecycleBin: true },
+      attributes: request.attributes.map(({ attrId }: any) => schemaFor(attrId)),
+      errors: []
+    });
+    assert.equal(await rt.validate(), true);
+
+    const id = "rep:mock:EXAMPLE_CABINET:synthetic-enum-1";
+    let searchRequest: any;
+    adapter.searchIds = async (request: any) => {
+      searchRequest = structuredClone(request);
+      return [id];
+    };
+    adapter.getMany = async () => ({
+      objects: [document(id, {
+        "rep:system:name": { type: "string", value: "synthetic-enum.pdf" },
+        "rep:user:string_state": { type: "string", value: "SYNTHETIC_STRING_STATE_OPEN" },
+        "rep:user:i18n_state": { type: "i18n", ns: "rep", name: "ACTIVE" }
+      })],
+      failures: []
+    });
+
+    const call = await rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      query: "synthetic",
+      filters: { string_state: "open", i18n_state: "active" }
+    });
+    const result: any = call.structuredContent;
+    assert.deepEqual(result.results[0].semantic_attributes, { string_state: "open", i18n_state: "active" });
+    assert.deepEqual(result.applied_query.filters.predicates, [
+      { name: "string_state", type: "enum", operator: "eq", value: "open" },
+      { name: "i18n_state", type: "enum", operator: "eq", value: "active" }
+    ]);
+    assert.deepEqual(searchRequest.attributeConditions.map((condition: any) => "value" in condition.value
+      ? condition.value.value
+      : `${condition.value.ns}:${condition.value.name}`), ["SYNTHETIC_STRING_STATE_OPEN", "rep:ACTIVE"]);
+    const text = call.content.map((entry) => entry.text).join(" ");
+    assert.equal(text.includes("\"string_state\":\"open\""), true);
+    assert.equal(text.includes("\"i18n_state\":\"active\""), true);
+    assert.equal(text.includes("SYNTHETIC_STRING_STATE_OPEN"), false);
+    assert.equal(text.includes("rep:ACTIVE"), false);
+    assert.equal(JSON.stringify(result).includes("SYNTHETIC_STRING_STATE_OPEN"), false);
+    assert.equal(JSON.stringify(result).includes("rep:ACTIVE"), false);
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("resolved composition drives adapter requests for filter-only, text-only, mixed, and empty text", async () => {
+  const cases: Array<{ name: string; args: Record<string, unknown>; applied: any }> = [
+    {
+      name: "filter-only OR",
+      args: { scope: "example_documents", query_mode: "or", filters: { page_count: 10 } },
+      applied: {
+        operator: "or",
+        filters: { operator: "and", predicates: [{ name: "page_count", type: "integer", operator: "eq", value: 10 }] },
+        text: null
+      }
+    },
+    {
+      name: "text-only AND",
+      args: { scope: "example_documents", query: "annual report", query_mode: "and" },
+      applied: {
+        operator: "and",
+        filters: { operator: "and", predicates: [] },
+        text: { terms: ["annual", "report"], operator: "and", mode: "none" }
+      }
+    },
+    {
+      name: "text-only OR",
+      args: { scope: "example_documents", query: "annual report", query_mode: "or" },
+      applied: {
+        operator: "or",
+        filters: { operator: "and", predicates: [] },
+        text: { terms: ["annual", "report"], operator: "or", mode: "none" }
+      }
+    },
+    {
+      name: "mixed",
+      args: {
+        scope: "example_documents",
+        query: "annual report",
+        query_mode: "or",
+        text_search_mode: "stemming",
+        filters: { page_count: { operator: "gte", value: 10 } }
+      },
+      applied: {
+        operator: "and",
+        filters: { operator: "and", predicates: [{ name: "page_count", type: "integer", operator: "gte", value: 10 }] },
+        text: { terms: ["annual", "report"], operator: "or", mode: "stemming" }
+      }
+    },
+    {
+      name: "whitespace text",
+      args: { scope: "example_documents", query: " \t\n ", query_mode: "or", filters: { page_count: 10 } },
+      applied: {
+        operator: "or",
+        filters: { operator: "and", predicates: [{ name: "page_count", type: "integer", operator: "eq", value: 10 }] },
+        text: null
+      }
+    }
+  ];
+
+  for (const current of cases) {
+    const rt = await runtime();
+    try {
+      let searchRequest: any;
+      rt.adapter.searchIds = async (request: any) => {
+        searchRequest = structuredClone(request);
+        return [];
+      };
+      const result: any = (await rt.tools.call(profile(), "arcsuite_search_documents", current.args)).structuredContent;
+      assert.deepEqual(result.applied_query, current.applied, current.name);
+      assert.deepEqual(searchRequest.text, current.applied.text
+        ? { words: current.applied.text.terms, operator: current.applied.text.operator.toUpperCase() }
+        : undefined, current.name);
+      assert.equal(searchRequest.mode, String(current.applied.operator).toUpperCase(), current.name);
+      assert.equal(searchRequest.textSearchMode, String(current.applied.text?.mode ?? "none").toUpperCase(), current.name);
+      assert.equal(searchRequest.attributeConditions.length, current.applied.filters.predicates.length, current.name);
+    } finally {
+      rt.stopValidationRetry();
+    }
+  }
+});
+
 test("LIKE and full-text results remain provider-authoritative", async () => {
   const id = "rep:mock:EXAMPLE_CABINET:synthetic-1";
   for (const args of [
@@ -198,6 +440,31 @@ test("provider failures remain distinct from successful zero results", async () 
   rt.stopValidationRetry();
 });
 
+test("search errors expose no query and do not log an applied query", async () => {
+  const rt = await runtime();
+  const privateQuery = "SYNTHETIC_PRIVATE_SEARCH_QUERY";
+  rt.adapter.searchIds = async () => {
+    throw new ArcSuiteAdapterError("ARCSUITE_UPSTREAM_ERROR", privateQuery);
+  };
+  try {
+    let mappedError: any;
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: privateQuery }),
+      (error: any) => {
+        mappedError = error;
+        return error?.stableCode === "ARCSUITE_UPSTREAM_ERROR";
+      }
+    );
+    assert.equal(mappedError.message, "ARCSUITE_UPSTREAM_ERROR");
+    assert.equal(mappedError.message.includes(privateQuery), false);
+    const audit = await readFile(rt.config.auditLogPath, "utf8");
+    assert.equal(audit.includes(privateQuery), false);
+    assert.equal(audit.includes("applied_query"), false);
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
 test("malformed provider ID results fail closed instead of becoming zero results", async () => {
   for (const value of ["", null, {}, [42]]) {
     const rt = await runtime();
@@ -254,6 +521,11 @@ test("LIKE-only searches retain per-ID hydration failures", async () => {
   installSearch(rt.adapter, [id, failedId], [document(id, baseAttributes)], [{ index: 1, code: "ARCSUITE_NOT_AVAILABLE" }]);
   const result: any = (await rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", filters: { name: "*.pdf" } })).structuredContent;
   assert.equal(result.count, 1);
+  assert.deepEqual(result.applied_query, {
+    operator: "and",
+    filters: { operator: "and", predicates: [{ name: "name", type: "string", operator: "like", value: "*.pdf" }] },
+    text: null
+  });
   assert.deepEqual(result.failures, [{ index: 1, document_id: failedId, code: "ARCSUITE_NOT_AVAILABLE" }]);
   const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").at(-1)!);
   assert.equal(audit.search_outcome, "matches");
@@ -271,6 +543,11 @@ test("full-text-only searches retain per-ID hydration failures", async () => {
     text_search_mode: "stemming"
   })).structuredContent;
   assert.equal(result.count, 1);
+  assert.deepEqual(result.applied_query, {
+    operator: "and",
+    filters: { operator: "and", predicates: [] },
+    text: { terms: ["provider-indexed-term"], operator: "and", mode: "stemming" }
+  });
   assert.deepEqual(result.failures, [{ index: 1, document_id: failedId, code: "ARCSUITE_NOT_AVAILABLE" }]);
   const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").at(-1)!);
   assert.equal(audit.search_outcome, "matches");
@@ -287,6 +564,11 @@ test("all provider hydration failures are distinct from a successful zero result
     text_search_mode: "stemming"
   })).structuredContent;
   assert.equal(result.count, 0);
+  assert.deepEqual(result.applied_query, {
+    operator: "and",
+    filters: { operator: "and", predicates: [] },
+    text: { terms: ["provider-indexed-term"], operator: "and", mode: "stemming" }
+  });
   assert.deepEqual(result.failures, [{ index: 0, document_id: failedId, code: "ARCSUITE_NOT_AVAILABLE" }]);
   const audit = JSON.parse((await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").at(-1)!);
   assert.equal(audit.result_code, "OK");
@@ -301,6 +583,11 @@ test("provider empty IDs remain a successful zero result", async () => {
   rt.adapter.getMany = async () => { hydrated = true; return { objects: [], failures: [] }; };
   const result: any = (await rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", filters: { page_count: 10 } })).structuredContent;
   assert.equal(result.count, 0);
+  assert.deepEqual(result.applied_query, {
+    operator: "and",
+    filters: { operator: "and", predicates: [{ name: "page_count", type: "integer", operator: "eq", value: 10 }] },
+    text: null
+  });
   assert.deepEqual(result.results, []);
   assert.deepEqual(result.failures, []);
   assert.equal(hydrated, false);
@@ -309,12 +596,12 @@ test("provider empty IDs remain a successful zero result", async () => {
   rt.stopValidationRetry();
 });
 
-test("search response keeps the existing public top-level shape", async () => {
+test("search response keeps the public top-level shape with applied query", async () => {
   const rt = await runtime();
   const id = "rep:mock:EXAMPLE_CABINET:synthetic-1";
   installSearch(rt.adapter, [id], [document(id, baseAttributes)]);
   const result: any = (await rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "provider-term" })).structuredContent;
-  assert.deepEqual(Object.keys(result).sort(), ["count", "failures", "limit", "next_cursor", "results", "scope", "snapshot_limited", "truncated"]);
+  assert.deepEqual(Object.keys(result).sort(), ["applied_query", "count", "failures", "limit", "next_cursor", "results", "scope", "snapshot_limited", "truncated"]);
   assert.equal(typeof result.count, "number");
   assert.equal(typeof result.limit, "number");
   assert.equal(typeof result.truncated, "boolean");
@@ -345,6 +632,100 @@ test("continuation pages reuse the original verification plan", async () => {
   assert.equal(typeof firstPage.next_cursor, "string");
   await assert.rejects(() => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", cursor: firstPage.next_cursor }), /ARCSUITE_UPSTREAM_ERROR/);
   assert.equal(searches, 1);
+  rt.stopValidationRetry();
+});
+
+test("mixed continuation preserves the full applied query without rerunning search", async () => {
+  const rt = await runtime(undefined, { MCP_SEARCH_DEFAULT_LIMIT: "1", MCP_SEARCH_MAX_LIMIT: "2" });
+  const firstId = "rep:mock:EXAMPLE_CABINET:synthetic-1";
+  const secondId = "rep:mock:EXAMPLE_CABINET:synthetic-2";
+  const expectedApplied = {
+    operator: "and",
+    filters: { operator: "and", predicates: [{ name: "page_count", type: "integer", operator: "gte", value: 4 }] },
+    text: { terms: ["annual", "report"], operator: "or", mode: "stemming" }
+  };
+  let searchCalls = 0;
+  let searchRequest: any;
+  rt.adapter.searchIds = async (request: any) => {
+    searchCalls += 1;
+    searchRequest = structuredClone(request);
+    return [firstId, secondId];
+  };
+  rt.adapter.getMany = async (request: any) => ({
+    objects: request.ids.map((id: string) => document(id, baseAttributes)),
+    failures: []
+  });
+
+  try {
+    const firstPage: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      query: "annual report",
+      query_mode: "or",
+      text_search_mode: "stemming",
+      filters: { page_count: { operator: "gte", value: 4 } },
+      limit: 1
+    })).structuredContent;
+    assert.deepEqual(firstPage.applied_query, expectedApplied);
+    assert.deepEqual(searchRequest.text, { words: ["annual", "report"], operator: "OR" });
+    assert.equal(searchRequest.mode, "AND");
+    assert.equal(searchRequest.textSearchMode, "STEMMING");
+    assert.deepEqual(searchRequest.attributeConditions[0].value, { type: "long", value: 4 });
+    assert.equal(typeof firstPage.next_cursor, "string");
+
+    const secondPage: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      cursor: firstPage.next_cursor
+    })).structuredContent;
+    assert.deepEqual(secondPage.applied_query, expectedApplied);
+    assert.equal(secondPage.results[0].document_id, secondId);
+    assert.equal(secondPage.next_cursor, null);
+    assert.equal(searchCalls, 1);
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("accepted ten-term and maximum-length queries are projected, while an eleventh term is rejected", async () => {
+  const rt = await runtime();
+  const searchRequests: any[] = [];
+  rt.adapter.searchIds = async (request: any) => {
+    searchRequests.push(structuredClone(request));
+    return [];
+  };
+  const tenTerms = Array.from({ length: 10 }, (_, index) => `term${index}`).join(" ");
+  const tenTermResult: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: tenTerms
+  })).structuredContent;
+  assert.deepEqual(tenTermResult.applied_query.text.terms, tenTerms.split(" "));
+  assert.deepEqual(searchRequests[0].text, { words: tenTerms.split(" "), operator: "AND" });
+  const maximumLengthQuery = "x".repeat(200);
+  const maximumLengthResult: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: maximumLengthQuery
+  })).structuredContent;
+  assert.deepEqual(maximumLengthResult.applied_query.text.terms, [maximumLengthQuery]);
+  assert.equal(maximumLengthResult.applied_query.text.mode, "none");
+  assert.deepEqual(searchRequests[1].text, { words: [maximumLengthQuery], operator: "AND" });
+  const maximumFilter = "f".repeat(255);
+  const maximumFilterResult: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { name: maximumFilter }
+  })).structuredContent;
+  assert.equal(maximumFilterResult.applied_query.filters.predicates[0].value.length, 255);
+  assert.deepEqual(searchRequests[2].attributeConditions[0].value, { type: "string", value: maximumFilter });
+  const whitespaceQueryResult: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: " \t\n ",
+    filters: { page_count: 10 }
+  })).structuredContent;
+  assert.equal(whitespaceQueryResult.applied_query.text, null);
+  assert.equal(searchRequests[3].text, undefined);
+  assert.equal(searchRequests[3].textSearchMode, "NONE");
+  await assert.rejects(() => rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: Array.from({ length: 11 }, (_, index) => `term${index}`).join(" ")
+  }), (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT");
   rt.stopValidationRetry();
 });
 

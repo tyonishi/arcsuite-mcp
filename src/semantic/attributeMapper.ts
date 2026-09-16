@@ -12,6 +12,7 @@ export type CanonicalSemanticPredicate = {
   semanticName: string;
   semanticType: SemanticAttributeConfig["type"];
   operator: SemanticOperator;
+  semanticValue: string | number | boolean;
   condition: AdapterSearchCondition;
   verification: "deterministic" | "provider";
 };
@@ -51,29 +52,32 @@ export function canonicalizeFilter(
     throw new TypeError(`${semanticName} requires validated schema metadata`);
   }
 
-  const condition = (() => {
-    switch (cfg.type) {
-    case "string":
-        return stringCondition(cfg, semanticName, predicate, schema);
-    case "integer":
-        return integerCondition(cfg, semanticName, predicate, schema);
-    case "number":
-        return numberCondition(cfg, semanticName, predicate, schema);
-    case "boolean":
-        return booleanCondition(cfg, semanticName, predicate, schema);
-    case "date":
-        return dateCondition(cfg, semanticName, predicate, schema);
-    case "datetime":
-        return datetimeCondition(cfg, semanticName, predicate, schema, explicit);
-    case "enum":
-        return enumCondition(cfg, semanticName, predicate, schema);
-    }
+  const canonical = (() => {
+    if (cfg.type === "enum") return enumCondition(cfg, semanticName, predicate, schema);
+    const condition = (() => {
+      switch (cfg.type) {
+      case "string":
+          return stringCondition(cfg, semanticName, predicate, schema);
+      case "integer":
+          return integerCondition(cfg, semanticName, predicate, schema);
+      case "number":
+          return numberCondition(cfg, semanticName, predicate, schema);
+      case "boolean":
+          return booleanCondition(cfg, semanticName, predicate, schema);
+      case "date":
+          return dateCondition(cfg, semanticName, predicate, schema);
+      case "datetime":
+          return datetimeCondition(cfg, semanticName, predicate, schema, explicit);
+      }
+    })();
+    return { condition, semanticValue: scalarConditionValue(condition) };
   })();
   return Object.freeze({
     semanticName,
     semanticType: cfg.type,
     operator: predicate.operator,
-    condition: freezeCondition(condition),
+    semanticValue: canonical.semanticValue,
+    condition: freezeCondition(canonical.condition),
     verification: predicate.operator === "like" ? "provider" : "deterministic"
   });
 }
@@ -109,6 +113,11 @@ function freezeCondition(condition: AdapterSearchCondition): AdapterSearchCondit
   Object.freeze(value);
   Object.freeze(attrId);
   return Object.freeze({ ...condition, attrId, value });
+}
+
+function scalarConditionValue(condition: AdapterSearchCondition): string | number | boolean {
+  if (!("value" in condition.value)) throw new Error("Semantic condition has no public scalar value");
+  return condition.value.value;
 }
 
 function matchesCondition(condition: AdapterSearchCondition, actual: AttributeValue): boolean {
@@ -298,7 +307,7 @@ function enumCondition(
   name: string,
   predicate: SemanticFilterPredicate,
   schema?: AttributeSchemaInfo
-): AdapterSearchCondition {
+): { condition: AdapterSearchCondition; semanticValue: string } {
   const alias = stringValue(predicate.value, name);
   const mapping = cfg.values?.[alias];
   if (!mapping) throw new TypeError(`${name} must be one of the configured enum aliases`);
@@ -307,11 +316,17 @@ function enumCondition(
     if (!schema.enumLabels?.some((label) => label.ns === mapping.ns && label.name === mapping.name)) {
       throw new TypeError(`${name} enum alias is not present in the validated schema`);
     }
-    return { attrId: cfg.attr_id, operator: "EQUAL", value: { type: "i18n", ns: mapping.ns, name: mapping.name } };
+    return {
+      condition: { attrId: cfg.attr_id, operator: "EQUAL", value: { type: "i18n", ns: mapping.ns, name: mapping.name } },
+      semanticValue: alias
+    };
   }
   if (schema.dataType === "STRING_TYPE" && "value" in mapping && typeof mapping.value === "string") {
     validateStringConstraints(name, mapping.value, cfg, schema, true);
-    return { attrId: cfg.attr_id, operator: "EQUAL", value: { type: "string", value: mapping.value } };
+    return {
+      condition: { attrId: cfg.attr_id, operator: "EQUAL", value: { type: "string", value: mapping.value } },
+      semanticValue: alias
+    };
   }
   throw new TypeError(`${name} enum mapping does not match the validated schema value type`);
 }
