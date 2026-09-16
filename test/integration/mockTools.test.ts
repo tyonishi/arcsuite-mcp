@@ -154,6 +154,7 @@ test("enum aliases normalize consistently across every metadata surface", async 
   })).structuredContent;
 
   assert.equal(search.results[0].semantic_attributes.lifecycle, "active");
+  assert.deepEqual(search.applied_query.filters.predicates, [{ name: "lifecycle", type: "enum", operator: "eq", value: "active" }]);
   assert.equal(search.results[0].status, "active");
   assert.equal(get.semantic_attributes.lifecycle, "active");
   assert.equal(get.status, "active");
@@ -166,6 +167,7 @@ test("enum aliases normalize consistently across every metadata surface", async 
 
   const publicOutput = JSON.stringify({ search, get, batch, folder, revisions, hardReferences });
   assert.equal(publicOutput.includes("ACTIVE"), false);
+  assert.equal(publicOutput.includes("system:status"), false);
   const audit = await readFile(rt.config.auditLogPath, "utf8");
   assert.equal(audit.includes("ACTIVE"), false);
 });
@@ -324,6 +326,7 @@ test("search and folder paging use stable opaque cursors", async () => {
   assert.equal(typeof first.next_cursor, "string");
   const second: any = (await rt.tools.call(p, "arcsuite_search_documents", { scope: "example_documents", cursor: first.next_cursor })).structuredContent;
   assert.equal(second.count, 1);
+  assert.deepEqual(second.applied_query, first.applied_query);
   assert.notEqual(first.results[0].document_id, second.results[0].document_id);
   assert.equal(second.next_cursor, null);
 

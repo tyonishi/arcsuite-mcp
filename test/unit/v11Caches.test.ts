@@ -13,7 +13,7 @@ test("paging snapshots preserve order and bind cursors to profile scope and kind
     kind: "search",
     ids: ["rep:a:1", "rep:a:2", "rep:a:3"],
     pageSize: 2,
-    context: { includePath: true, searchVerificationPlan: [] }
+    context: { includePath: true, searchVerificationPlan: [], searchAppliedQuery: { operator: "and", filters: { operator: "and", predicates: [] }, text: null } }
   });
   assert.deepEqual(first.ids, ["rep:a:1", "rep:a:2"]);
   assert.equal(first.pageSize, 2);
@@ -45,7 +45,7 @@ test("paging cursor tampering and duplicate ID snapshots fail closed", () => {
     kind: "search",
     ids: ["rep:a:1", "rep:a:1"],
     pageSize: 1,
-    context: { includePath: false, searchVerificationPlan: [] }
+    context: { includePath: false, searchVerificationPlan: [], searchAppliedQuery: { operator: "and", filters: { operator: "and", predicates: [] }, text: null } }
   }));
 });
 
@@ -103,17 +103,22 @@ test("search snapshots retain an immutable private verification plan without cha
       value: { type: "long", value: 10 }
     }
   }];
+  const appliedQuery: any = { operator: "and", filters: { operator: "and", predicates: [{ name: "page_count", type: "integer", operator: "gte", value: 10 }] }, text: null };
   const first = store.create({
     clientProfileId: "client-a",
     scopeId: "scope_a",
     kind: "search",
     ids: ["rep:a:1", "rep:a:2"],
     pageSize: 1,
-    context: { includePath: false, searchVerificationPlan: plan }
+    context: { includePath: false, searchVerificationPlan: plan, searchAppliedQuery: appliedQuery }
   });
   plan[0].condition.value.value = 0;
+  appliedQuery.filters.predicates[0].value = 0;
+  assert.equal(first.context.searchAppliedQuery?.filters.predicates[0].value, 10);
+  assert.throws(() => { (first.context.searchAppliedQuery!.filters.predicates[0] as any).value = 0; }, TypeError);
   const page = store.next(first.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" });
   assert.equal((page.context.searchVerificationPlan?.[0].condition.value as any).value, 10);
+  assert.equal(page.context.searchAppliedQuery?.filters.predicates[0].value, 10);
   const [cursorBody] = first.nextCursor!.split(".");
   const cursorPayload = JSON.parse(Buffer.from(cursorBody, "base64url").toString("utf8")) as Record<string, unknown>;
   assert.equal(Object.hasOwn(cursorPayload, "searchVerificationPlan"), false);

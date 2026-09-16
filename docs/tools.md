@@ -14,7 +14,7 @@ authority.
 | Tool | Required input | Result |
 | --- | --- | --- |
 | `arcsuite_describe_capabilities` | none | Safe profile-aware scope/filter/object-type discovery; never physical ArcSuite IDs |
-| `arcsuite_search_documents` | `scope` plus `query` or configured `filters`; or `scope` + `cursor` | Bounded semantic document page, deterministic verification, provider-authoritative partial failures, and optional continuation cursor |
+| `arcsuite_search_documents` | `scope` plus `query` or configured `filters`; or `scope` + `cursor` | Bounded semantic document page, canonical `applied_query` on success, deterministic verification, provider-authoritative partial failures, and optional continuation cursor |
 | `arcsuite_get_document` | `document_id` | Metadata, status, revisions, content labels, optional path and optional configured `open_url` |
 | `arcsuite_get_documents` | `scope`, `document_ids` | Bounded batch metadata with explicit per-input failures |
 | `arcsuite_list_folder` | `scope`; optional proven `folder_id`, or `scope` + `cursor` | Bounded child document/folder page and optional continuation cursor |
@@ -93,8 +93,37 @@ the hydrated value must also stay within the signed 32-bit range. Out-of-range
 or otherwise malformed authoritative metadata fails closed.
 
 Search continuation cursors retain the original private verification plan on
-the server. The public cursor format and the public result fields do not
-change, and a continuation cannot redefine the original filters.
+the server. The public cursor format does not change, and a continuation
+cannot redefine the original filters.
+
+Successful `arcsuite_search_documents` responses also include `applied_query`,
+which reports the canonical semantic query that was dispatched:
+
+```json
+{
+  "applied_query": {
+    "operator": "and",
+    "filters": {
+      "operator": "and",
+      "predicates": [
+        {"name": "lifecycle", "type": "enum", "operator": "eq", "value": "active"}
+      ]
+    },
+    "text": {"terms": ["annual", "report"], "operator": "or", "mode": "stemming"}
+  }
+}
+```
+
+The filter group always combines predicates with `and`. Attribute-only
+queries use the requested outer `query_mode`; text-only queries use it for
+their terms and outer operator; a query containing both groups uses outer
+`and`. An empty filter group and `text: null` mean that group is absent. Values
+are the canonical semantic values used for the search: enum values remain
+configured aliases, scalar values retain their types, and date-time values
+retain the existing normalization rules. The field is present on every
+successful search page, including zero-result and provider-partial results,
+and remains unchanged across cursor continuation. It never contains physical
+Attribute IDs or provider wire details and is not returned with errors.
 
 An `integrity` capability appears only for a scope with integrity enabled.
 `evidence` reflects its separate evidence opt-in. Discovery never names SOAP
