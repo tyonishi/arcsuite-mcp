@@ -474,19 +474,30 @@ export class ToolRegistry {
           if (batch.failures.length || batch.results.length !== authorities.length) {
             throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "ref_target_unavailable", false);
           }
-          for (const [index, result] of batch.results.entries()) {
-            if (result.document_id !== authorities[index].record.documentId
-              || result.object_class !== authorities[index].record.objectClass) {
+          const resultById = new Map<string, NormalizedDocument>();
+          for (const result of batch.results) {
+            if (resultById.has(result.document_id)) {
+              throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+            }
+            resultById.set(result.document_id, result);
+          }
+          const orderedResults = authorities.map((authority) => {
+            const result = resultById.get(authority.record.documentId);
+            if (!result || result.object_class !== authority.record.objectClass) {
               throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
             }
+            return result;
+          });
+          if (resultById.size !== orderedResults.length) {
+            throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
           }
-          resultCount = batch.results.length;
+          resultCount = orderedResults.length;
           data = {
             scope: boundScopeId,
             requested_count: parsed.resultRefs.length,
-            count: batch.results.length,
+            count: orderedResults.length,
             failures: [],
-            results: batch.results.map((result, index) => ({
+            results: orderedResults.map((result, index) => ({
               ...withoutDocumentIdentity(result),
               result_ref: parsed.resultRefs[index]
             }))

@@ -27,10 +27,19 @@ function hashTools(tools: unknown): string {
   return createHash("sha256").update(JSON.stringify(stable(tools))).digest("hex");
 }
 
-async function listTools(protocolVersion: "2025-03-26" | "2026-07-28", p2 = false) {
+async function listTools(
+  protocolVersion: "2025-03-26" | "2026-07-28",
+  p2 = false,
+  inheritedEnv: NodeJS.ProcessEnv = process.env
+) {
   const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-public-contract-"));
   const runtime = await buildRuntime({
-    ...process.env,
+    ...inheritedEnv,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON_FILE: undefined,
+    MCP_OPAQUE_REFS_ENABLED: "false",
+    MCP_OPAQUE_REF_KEYS_JSON: undefined,
+    MCP_OPAQUE_REF_KEYS_JSON_FILE: undefined,
     NODE_ENV: "test",
     ARCSUITE_ADAPTER_MODE: "mock",
     MCP_DEV_BEARER_TOKEN: "test-token",
@@ -116,6 +125,23 @@ for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
       "removing response_contract must restore the exact previous public tools/list contract");
   });
 }
+
+test("public contract fixtures ignore inherited token and opaque-ref authority", async () => {
+  const hostileInheritedEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: "not-json",
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON_FILE: join(tmpdir(), "must-not-read-token-config.json"),
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: "not-json",
+    MCP_OPAQUE_REF_KEYS_JSON_FILE: join(tmpdir(), "must-not-read-key-config.json")
+  };
+  const p1 = await listTools("2025-03-26", false, hostileInheritedEnv);
+  assert.equal(p1.status, 200);
+  assert.equal(hashTools(p1.result.tools), fixture.canonical_tools_sha256);
+  const p2 = await listTools("2025-03-26", true, hostileInheritedEnv);
+  assert.equal(p2.status, 200);
+  assert.equal(hashTools(p2.result.tools), p2Fixture.canonical_tools_sha256);
+});
 
 for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
   test(`authenticated HTTP tools/list matches the P2 additive public contract (${protocolVersion})`, async () => {

@@ -472,6 +472,46 @@ test("invalid and duplicate result refs keep batch dispatch atomic", async () =>
   }
 });
 
+test("result-ref batch normalizes provider order and rejects incomplete or ambiguous identity sets", async () => {
+  const rt = await runtime();
+  const original = (rt.adapter as any).getMany.bind(rt.adapter);
+  try {
+    const search = await opaqueSearch(rt, 2);
+    const refs = search.results.map((item: any) => item.result_ref);
+    const expectedNumbers = search.results.map((item: any) => item.semantic_attributes.document_number);
+    assert.equal(refs.length, 2);
+
+    (rt.adapter as any).getMany = async (...args: unknown[]) => {
+      const batch = await original(...args);
+      return { ...batch, objects: [...batch.objects].reverse() };
+    };
+    const reordered: any = (await rt.tools.call(profile(), "arcsuite_get_documents_by_ref", {
+      result_refs: refs
+    })).structuredContent;
+    assert.deepEqual(reordered.results.map((item: any) => item.result_ref), refs);
+    assert.deepEqual(reordered.results.map((item: any) => item.semantic_attributes.document_number), expectedNumbers);
+
+    const invalidBatches = [
+      { expected: ["ARCSUITE_UPSTREAM_ERROR", "batch_coverage"], make: (objects: any[]) => ({ objects: objects.slice(0, 1), failures: [] }) },
+      { expected: ["ARCSUITE_UPSTREAM_ERROR", "batch_identity"], make: (objects: any[]) => ({ objects: [{ ...objects[0], id: "rep:mock:EXAMPLE_CABINET:unexpected" }, objects[1]], failures: [] }) },
+      { expected: ["ARCSUITE_UPSTREAM_ERROR", "batch_identity"], make: (objects: any[]) => ({ objects: [objects[0], structuredClone(objects[0])], failures: [] }) },
+      { expected: ["ARCSUITE_FORBIDDEN", "object_identity"], make: (objects: any[]) => ({ objects: [{ ...objects[0], objectClass: "folder", nativeObjectClass: { ns: "rep", name: "system:folder" } }, objects[1]], failures: [] }) }
+    ];
+    for (const { expected, make } of invalidBatches) {
+      (rt.adapter as any).getMany = async (...args: unknown[]) => {
+        const batch = await original(...args);
+        return make(batch.objects);
+      };
+      await assert.rejects(
+        () => rt.tools.call(profile(), "arcsuite_get_documents_by_ref", { result_refs: refs }),
+        (error: any) => error?.stableCode === expected[0] && error?.category === expected[1]
+      );
+    }
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
 test("policy/profile changes and revoked source scope fail before any provider operation", async () => {
   const rt = await runtime();
   let dispatches = 0;

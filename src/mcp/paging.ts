@@ -88,7 +88,7 @@ export class PagingSnapshotStore {
     const first = boundedIds.slice(0, input.pageSize);
     if (boundedIds.length <= input.pageSize) return { ids: first, nextCursor: null, snapshotLimited, pageSize: input.pageSize, context: cloneContext(input.context) };
 
-    this.makeRoom(input.clientProfileId, boundedIds.length);
+    this.makeCombinedRoom(input.clientProfileId, boundedIds.length, undefined, "PAGING_CACHE_LIMIT");
     const now = Date.now();
     const snapshot: PagingSnapshot = {
       id: randomUUID(), clientProfileId: input.clientProfileId, scopeId: input.scopeId, kind: input.kind,
@@ -143,7 +143,12 @@ export class PagingSnapshotStore {
       || !snapshot.context.searchAppliedQuery
       || !snapshot.context.searchAuthority
       || snapshot.context.responseContract !== "opaque_refs_v1") throw new Error("INVALID_PAGING_CURSOR");
-    this.makeRetainedSearchRoom(expected.clientProfileId, snapshot.ids.length);
+    this.makeCombinedRoom(
+      expected.clientProfileId,
+      snapshot.ids.length,
+      { pool: "normal", id: snapshot.id },
+      "PAGING_REF_CACHE_LIMIT"
+    );
     const authorityId = randomUUID();
     const retained: PagingSnapshot = {
       ...snapshot,
@@ -234,31 +239,52 @@ export class PagingSnapshotStore {
     for (const snapshot of this.retainedSearchSnapshots.values()) if (snapshot.expiresAt <= now) this.removeRetainedSearch(snapshot.id);
   }
 
-  private makeRoom(clientProfileId: string, incomingIds: number): void {
-    const byAge = () => [...this.snapshots.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt || a.createdAt - b.createdAt);
-    while ([...this.snapshots.values()].filter((s) => s.clientProfileId === clientProfileId).length >= this.maxSnapshotsPerClient) {
-      const victim = byAge().find((s) => s.clientProfileId === clientProfileId); if (!victim) break; this.remove(victim.id);
-    }
-    while (this.snapshots.size >= this.maxSnapshots || this.totalIds + incomingIds > this.maxTotalIds) { const victim = byAge()[0]; if (!victim) break; this.remove(victim.id); }
-    if (this.snapshots.size >= this.maxSnapshots || this.totalIds + incomingIds > this.maxTotalIds) throw new Error("PAGING_CACHE_LIMIT");
-  }
+  private makeCombinedRoom(
+    clientProfileId: string,
+    incomingIds: number,
+    protectedEntry: { pool: "normal" | "retained"; id: string } | undefined,
+    limitError: "PAGING_CACHE_LIMIT" | "PAGING_REF_CACHE_LIMIT"
+  ): void {
+    type Entry = { pool: "normal" | "retained"; snapshot: PagingSnapshot };
+    const entries = (): Entry[] => [
+      ...[...this.snapshots.values()].map((snapshot) => ({ pool: "normal" as const, snapshot })),
+      ...[...this.retainedSearchSnapshots.values()].map((snapshot) => ({ pool: "retained" as const, snapshot }))
+    ];
+    const isProtected = (entry: Entry): boolean => protectedEntry !== undefined
+      && entry.pool === protectedEntry.pool
+      && entry.snapshot.id === protectedEntry.id;
+    const byAge = (): Entry[] => entries()
+      .filter((entry) => !isProtected(entry))
+      .sort((left, right) => left.snapshot.lastAccessAt - right.snapshot.lastAccessAt
+        || left.snapshot.createdAt - right.snapshot.createdAt
+        || (left.pool < right.pool ? -1 : left.pool > right.pool ? 1 : 0)
+        || (left.snapshot.id < right.snapshot.id ? -1 : left.snapshot.id > right.snapshot.id ? 1 : 0));
+    const removeEntry = (entry: Entry): void => {
+      if (entry.pool === "normal") this.remove(entry.snapshot.id);
+      else this.removeRetainedSearch(entry.snapshot.id);
+    };
+    const protectedEntries = entries().filter(isProtected);
+    const protectedClientCount = protectedEntries.filter((entry) => entry.snapshot.clientProfileId === clientProfileId).length;
+    const protectedIds = protectedEntries.reduce((sum, entry) => sum + entry.snapshot.ids.length, 0);
+    if (protectedEntries.length + 1 > this.maxSnapshots
+      || protectedClientCount + 1 > this.maxSnapshotsPerClient
+      || protectedIds + incomingIds > this.maxTotalIds) throw new Error(limitError);
 
-  private makeRetainedSearchRoom(clientProfileId: string, incomingIds: number): void {
-    const byAge = () => [...this.retainedSearchSnapshots.values()]
-      .sort((a, b) => a.lastAccessAt - b.lastAccessAt || a.createdAt - b.createdAt);
-    while ([...this.retainedSearchSnapshots.values()].filter((snapshot) => snapshot.clientProfileId === clientProfileId).length >= this.maxSnapshotsPerClient) {
-      const victim = byAge().find((snapshot) => snapshot.clientProfileId === clientProfileId);
+    const clientCount = (): number => entries().filter((entry) => entry.snapshot.clientProfileId === clientProfileId).length;
+    while (clientCount() >= this.maxSnapshotsPerClient) {
+      const victim = byAge().find((entry) => entry.snapshot.clientProfileId === clientProfileId);
       if (!victim) break;
-      this.removeRetainedSearch(victim.id);
+      removeEntry(victim);
     }
-    while (this.retainedSearchSnapshots.size >= this.maxSnapshots
-      || this.retainedSearchTotalIds + incomingIds > this.maxTotalIds) {
+    const combinedIds = (): number => this.totalIds + this.retainedSearchTotalIds;
+    while (entries().length >= this.maxSnapshots || combinedIds() + incomingIds > this.maxTotalIds) {
       const victim = byAge()[0];
       if (!victim) break;
-      this.removeRetainedSearch(victim.id);
+      removeEntry(victim);
     }
-    if (this.retainedSearchSnapshots.size >= this.maxSnapshots
-      || this.retainedSearchTotalIds + incomingIds > this.maxTotalIds) throw new Error("PAGING_REF_CACHE_LIMIT");
+    if (entries().length >= this.maxSnapshots
+      || clientCount() >= this.maxSnapshotsPerClient
+      || combinedIds() + incomingIds > this.maxTotalIds) throw new Error(limitError);
   }
 
   private remove(id: string): void { const snapshot = this.snapshots.get(id); if (!snapshot) return; this.totalIds -= snapshot.ids.length; this.snapshots.delete(id); }
