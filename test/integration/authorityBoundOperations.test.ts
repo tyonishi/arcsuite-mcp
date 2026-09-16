@@ -17,12 +17,49 @@ const P2_TOOLS = [
   "arcsuite_read_document_by_ref"
 ] as const;
 
+const RESULT_REF_TOOL_CASES = [
+  {
+    tool: "arcsuite_get_document_by_ref",
+    args: (resultRef: string) => ({ result_ref: resultRef }),
+    firstProviderOperation: "get"
+  },
+  {
+    tool: "arcsuite_get_documents_by_ref",
+    args: (resultRef: string) => ({ result_refs: [resultRef] }),
+    firstProviderOperation: "getMany"
+  },
+  {
+    tool: "arcsuite_list_document_revisions_by_ref",
+    args: (resultRef: string) => ({ result_ref: resultRef, limit: 2 }),
+    firstProviderOperation: "get",
+    downstreamOperation: "revisions"
+  },
+  {
+    tool: "arcsuite_get_document_content_info_by_ref",
+    args: (resultRef: string) => ({ result_ref: resultRef }),
+    firstProviderOperation: "get",
+    downstreamOperation: "content"
+  },
+  {
+    tool: "arcsuite_read_document_by_ref",
+    args: (resultRef: string) => ({ result_ref: resultRef, max_chars: 1000 }),
+    firstProviderOperation: "get",
+    downstreamOperation: "content"
+  }
+] as const;
+
+const OBSERVED_PROVIDER_METHODS = ["searchIds", "get", "getMany", "revisions", "content"] as const;
+
 const opaqueKeyring = JSON.stringify({
   active_kid: "test-active",
   keys: [{ kid: "test-active", secret_base64url: Buffer.alloc(32, 0x6b).toString("base64url") }]
 });
 
-async function runtime(enabled = true, scopesFile = resolve("config/scopes.mock.yaml")) {
+async function runtime(
+  enabled = true,
+  scopesFile = resolve("config/scopes.mock.yaml"),
+  overrides: NodeJS.ProcessEnv = {}
+) {
   const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-p2-"));
   const rt = await buildRuntime({
     ...process.env,
@@ -37,9 +74,19 @@ async function runtime(enabled = true, scopesFile = resolve("config/scopes.mock.
     MCP_SEARCH_DEFAULT_LIMIT: "1",
     MCP_SEARCH_MAX_LIMIT: "3",
     MCP_OPAQUE_REFS_ENABLED: String(enabled),
-    ...(enabled ? { MCP_OPAQUE_REF_KEYS_JSON: opaqueKeyring } : {})
+    ...(enabled ? { MCP_OPAQUE_REF_KEYS_JSON: opaqueKeyring } : {}),
+    ...overrides
   });
   return rt;
+}
+
+async function rootedRuntime() {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-p2-root-"));
+  const registry = parseYaml(await readFile(resolve("config/scopes.mock.yaml"), "utf8")) as any;
+  registry.scopes.example_documents.arcsuite.root_object_id = "rep:mock:EXAMPLE_CABINET:folder-a";
+  const path = join(dir, "scopes.yaml");
+  await writeFile(path, stringifyYaml(registry), "utf8");
+  return runtime(true, path);
 }
 
 async function twoScopeRuntime() {
@@ -73,6 +120,21 @@ async function opaqueSearch(rt: Awaited<ReturnType<typeof runtime>>, limit = 1) 
     limit,
     response_contract: "opaque_refs_v1"
   })).structuredContent as any;
+}
+
+function observeProvider(rt: Awaited<ReturnType<typeof runtime>>) {
+  const calls: string[] = [];
+  for (const method of OBSERVED_PROVIDER_METHODS) {
+    const original = (rt.adapter as any)[method].bind(rt.adapter);
+    (rt.adapter as any)[method] = async (...args: unknown[]) => {
+      calls.push(method);
+      return original(...args);
+    };
+  }
+  return {
+    calls,
+    reset: () => { calls.length = 0; }
+  };
 }
 
 test("P2 tools are feature- and allowedTools-gated", async () => {
@@ -133,18 +195,12 @@ test("continuation_ref is the only authority and is idempotent on the final page
   }
 });
 
-test("wrong-kind search authority fails closed before provider dispatch", async () => {
+test("wrong-kind refs fail every result-ref public tool before provider dispatch", async () => {
   const rt = await runtime();
-  let searchDispatches = 0;
-  let hydrationDispatches = 0;
-  const originalSearch = (rt.adapter as any).searchIds.bind(rt.adapter);
-  const originalGetMany = (rt.adapter as any).getMany.bind(rt.adapter);
-  (rt.adapter as any).searchIds = async (...args: unknown[]) => { searchDispatches += 1; return originalSearch(...args); };
-  (rt.adapter as any).getMany = async (...args: unknown[]) => { hydrationDispatches += 1; return originalGetMany(...args); };
+  const observed = observeProvider(rt);
   try {
     const first = await opaqueSearch(rt, 1);
-    searchDispatches = 0;
-    hydrationDispatches = 0;
+    observed.reset();
     await assert.rejects(
       () => rt.tools.call(profile(), "arcsuite_continue_search", { continuation_ref: first.search_ref }),
       refUnavailable
@@ -161,16 +217,16 @@ test("wrong-kind search authority fails closed before provider dispatch", async 
       () => rt.tools.call(profile(), "arcsuite_replay_search", { search_ref: first.results[0].result_ref, target_scope: "example_documents" }),
       refUnavailable
     );
-    await assert.rejects(
-      () => rt.tools.call(profile(), "arcsuite_get_document_by_ref", { result_ref: first.search_ref }),
-      refUnavailable
-    );
-    await assert.rejects(
-      () => rt.tools.call(profile(), "arcsuite_get_document_by_ref", { result_ref: first.continuation_ref }),
-      refUnavailable
-    );
-    assert.equal(searchDispatches, 0);
-    assert.equal(hydrationDispatches, 0);
+    for (const { tool, args } of RESULT_REF_TOOL_CASES) {
+      for (const wrongKindRef of [first.search_ref, first.continuation_ref]) {
+        await assert.rejects(
+          () => rt.tools.call(profile(), tool, args(wrongKindRef)),
+          refUnavailable,
+          `${tool} must reject a wrong-kind ref`
+        );
+      }
+    }
+    assert.deepEqual(observed.calls, [], "wrong-kind refs must not reach any provider operation");
   } finally {
     rt.stopValidationRetry();
   }
@@ -268,7 +324,115 @@ test("all result-ref operations use stored identity and return ref-native identi
   }
 });
 
-test("an invalid result_ref makes a batch atomic before provider dispatch", async () => {
+test("each result-ref public tool requires current allowedTools before provider dispatch", async () => {
+  const rt = await runtime();
+  const observed = observeProvider(rt);
+  try {
+    const search = await opaqueSearch(rt, 1);
+    const resultRef = search.results[0].result_ref;
+    observed.reset();
+    for (const { tool, args } of RESULT_REF_TOOL_CASES) {
+      const denied = profile({
+        allowedTools: profile().allowedTools.filter((allowed: string) => allowed !== tool)
+      });
+      await assert.rejects(
+        () => rt.tools.call(denied, tool, args(resultRef)),
+        (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN"
+          && error?.category === "tool_not_allowed"
+          && error?.retryable === false,
+        `${tool} must require its current tool permission`
+      );
+      assert.deepEqual(observed.calls, [], `${tool} denial must precede provider dispatch`);
+    }
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("expired result refs collapse uniformly before every public result tool dispatch", async () => {
+  const rt = await runtime(true, resolve("config/scopes.mock.yaml"), {
+    MCP_OPAQUE_REF_TTL_SECONDS: "1"
+  });
+  const observed = observeProvider(rt);
+  try {
+    const search = await opaqueSearch(rt, 1);
+    const resultRef = search.results[0].result_ref;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_100));
+    observed.reset();
+    for (const { tool, args } of RESULT_REF_TOOL_CASES) {
+      await assert.rejects(
+        () => rt.tools.call(profile(), tool, args(resultRef)),
+        refUnavailable,
+        `${tool} must collapse expiry to ref_unavailable`
+      );
+      assert.deepEqual(observed.calls, [], `${tool} must reject expiry before provider dispatch`);
+    }
+
+    const unavailableSearch = await opaqueSearch(rt, 1);
+    const unavailableRef = unavailableSearch.results[0].result_ref;
+    rt.handles!.delete(unavailableRef);
+    observed.reset();
+    for (const { tool, args } of RESULT_REF_TOOL_CASES) {
+      await assert.rejects(
+        () => rt.tools.call(profile(), tool, args(unavailableRef)),
+        refUnavailable,
+        `${tool} must collapse a missing store record to the same ref error`
+      );
+      assert.deepEqual(observed.calls, [], `${tool} must reject a missing record before provider dispatch`);
+    }
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("policy and source-scope mismatch fail every result-ref public tool before provider dispatch", async () => {
+  const rt = await runtime();
+  const observed = observeProvider(rt);
+  try {
+    const search = await opaqueSearch(rt, 1);
+    const resultRef = search.results[0].result_ref;
+    const revokedScope = profile({ allowedScopes: [] });
+    observed.reset();
+    for (const { tool, args } of RESULT_REF_TOOL_CASES) {
+      await assert.rejects(
+        () => rt.tools.call(revokedScope, tool, args(resultRef)),
+        refUnavailable,
+        `${tool} must reject the changed current policy binding`
+      );
+      assert.deepEqual(observed.calls, [], `${tool} policy mismatch must precede provider dispatch`);
+    }
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("each result-ref public tool performs fresh provider identity hydration", async () => {
+  for (const toolCase of RESULT_REF_TOOL_CASES) {
+    const rt = await runtime();
+    const observed = observeProvider(rt);
+    try {
+      const search = await opaqueSearch(rt, 1);
+      const resultRef = search.results[0].result_ref;
+      observed.reset();
+      await rt.tools.call(profile(), toolCase.tool, toolCase.args(resultRef));
+      assert.equal(
+        observed.calls[0],
+        toolCase.firstProviderOperation,
+        `${toolCase.tool} must begin with current identity hydration`
+      );
+      if ("downstreamOperation" in toolCase) {
+        assert.ok(
+          observed.calls.indexOf(toolCase.downstreamOperation) > 0,
+          `${toolCase.tool} downstream work must follow identity hydration`
+        );
+      }
+    } finally {
+      rt.stopValidationRetry();
+    }
+  }
+});
+
+test("invalid and duplicate result refs keep batch dispatch atomic", async () => {
   const rt = await runtime();
   let batchDispatches = 0;
   const original = (rt.adapter as any).getMany.bind(rt.adapter);
@@ -281,6 +445,26 @@ test("an invalid result_ref makes a batch atomic before provider dispatch", asyn
         result_refs: [search.results[0].result_ref, "not-a-ref"]
       }),
       refUnavailable
+    );
+    assert.equal(batchDispatches, 0);
+
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_get_documents_by_ref", {
+        result_refs: [search.results[0].result_ref, search.results[0].result_ref]
+      }),
+      (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+        && error?.category === "invalid_argument"
+    );
+    assert.equal(batchDispatches, 0);
+
+    const repeatedSearch = await opaqueSearch(rt, 1);
+    batchDispatches = 0;
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_get_documents_by_ref", {
+        result_refs: [search.results[0].result_ref, repeatedSearch.results[0].result_ref]
+      }),
+      (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+        && error?.category === "duplicate_ref_identity"
     );
     assert.equal(batchDispatches, 0);
   } finally {
@@ -419,6 +603,75 @@ test("result identity and object class are freshly revalidated", async () => {
   }
 });
 
+test("root mismatch stops a ref-native revision request after base hydration", async () => {
+  const rt = await rootedRuntime();
+  let revisionDispatches = 0;
+  try {
+    const search = await opaqueSearch(rt, 1);
+    const originalGet = (rt.adapter as any).get.bind(rt.adapter);
+    const originalRevisions = (rt.adapter as any).revisions.bind(rt.adapter);
+    (rt.adapter as any).get = async (...args: unknown[]) => ({
+      ...(await originalGet(...args)),
+      pathObjects: [
+        { id: "rep:mock:EXAMPLE_CABINET:outside-root", objectClass: "folder", nativeObjectClass: { ns: "rep", name: "system:folder" } },
+        { id: "rep:mock:EXAMPLE_CABINET", objectClass: "cabinet", nativeObjectClass: { ns: "rep", name: "system:cabinet" } }
+      ],
+      fullPath: true
+    });
+    (rt.adapter as any).revisions = async (...args: unknown[]) => {
+      revisionDispatches += 1;
+      return originalRevisions(...args);
+    };
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_list_document_revisions_by_ref", {
+        result_ref: search.results[0].result_ref,
+        limit: 2
+      }),
+      (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "root_scope"
+    );
+    assert.equal(revisionDispatches, 0, "revision history must not run after current root verification fails");
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("predicate mismatch stops ref-native content work after base hydration", async () => {
+  const rt = await runtime();
+  let contentDispatches = 0;
+  try {
+    const search: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      filters: { document_number: "DOC-000001" },
+      response_contract: "opaque_refs_v1"
+    })).structuredContent;
+    const originalGet = (rt.adapter as any).get.bind(rt.adapter);
+    const originalContent = (rt.adapter as any).content.bind(rt.adapter);
+    (rt.adapter as any).get = async (...args: unknown[]) => {
+      const current = await originalGet(...args);
+      return {
+        ...current,
+        attributes: {
+          ...current.attributes,
+          "rep:user:example_document_number": { type: "string", value: "DOC-CHANGED" }
+        }
+      };
+    };
+    (rt.adapter as any).content = async (...args: unknown[]) => {
+      contentDispatches += 1;
+      return originalContent(...args);
+    };
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_get_document_content_info_by_ref", {
+        result_ref: search.results[0].result_ref
+      }),
+      (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "scope_predicate"
+    );
+    assert.equal(contentDispatches, 0, "content work must not run after current predicate verification fails");
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
 test("continuation children do not extend expiry and legacy final-page consumption remains destructive", async () => {
   const rt = await runtime();
   const ids = [
@@ -471,6 +724,73 @@ test("every invalid ref-native operation has zero provider dispatch", async () =
       await assert.rejects(() => rt.tools.call(profile(), tool, input), refUnavailable);
     }
     assert.equal(dispatches, 0);
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("read_document_by_ref rejects a valid cursor bound to another result document", async () => {
+  const rt = await runtime();
+  let contentDispatches = 0;
+  try {
+    const search = await opaqueSearch(rt, 2);
+    const documentA = search.results.find((item: any) => item.semantic_attributes?.document_number === "DOC-000001");
+    const documentB = search.results.find((item: any) => item.semantic_attributes?.document_number === "DOC-000002");
+    assert.equal(typeof documentA?.result_ref, "string");
+    assert.equal(typeof documentB?.result_ref, "string");
+
+    const originalContent = (rt.adapter as any).content.bind(rt.adapter);
+    (rt.adapter as any).content = async (...args: unknown[]) => {
+      contentDispatches += 1;
+      const content = await originalContent(...args);
+      const request = args[0] as { requestedId?: string };
+      if (request.requestedId === "rep:mock:EXAMPLE_CABINET:1002") {
+        const text = `${"Synthetic document B content.\n".repeat(160)}`;
+        await writeFile(content.filePath, text, "utf8");
+        return { ...content, sizeBytes: Buffer.byteLength(text) };
+      }
+      return content;
+    };
+
+    const readB: any = (await rt.tools.call(profile(), "arcsuite_read_document_by_ref", {
+      result_ref: documentB.result_ref,
+      max_chars: 1000
+    })).structuredContent;
+    assert.equal(typeof readB.next_cursor, "string", "document B must produce a valid bounded content cursor");
+
+    contentDispatches = 0;
+    let failure: any;
+    try {
+      await rt.tools.call(profile(), "arcsuite_read_document_by_ref", {
+        result_ref: documentA.result_ref,
+        cursor: readB.next_cursor,
+        max_chars: 1000
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.equal(failure?.stableCode, "ARCSUITE_INVALID_ARGUMENT");
+    assert.equal(failure?.category, "invalid_cursor");
+    assert.equal(failure?.retryable, false);
+    assert.equal(contentDispatches, 0, "cross-document cursor rejection must precede content dispatch");
+    const publicError = JSON.stringify({
+      code: failure?.stableCode,
+      category: failure?.category,
+      retryable: failure?.retryable,
+      recovery: failure?.recovery,
+      message: failure?.message
+    });
+    for (const authority of [documentA.result_ref, readB.next_cursor, "rep:mock:EXAMPLE_CABINET:1001", "rep:mock:EXAMPLE_CABINET:1002"]) {
+      assert.equal(publicError.includes(authority), false, "public cursor failure must not expose internal authority");
+    }
+    const readAuditRecords = (await readFile(rt.config.auditLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .filter((line) => JSON.parse(line).tool_name === "arcsuite_read_document_by_ref");
+    const failureAudit = readAuditRecords.at(-1) ?? "";
+    for (const authority of [documentA.result_ref, readB.next_cursor, "rep:mock:EXAMPLE_CABINET:1001", "rep:mock:EXAMPLE_CABINET:1002"]) {
+      assert.equal(failureAudit.includes(authority), false, "audit must not expose cross-document authority");
+    }
   } finally {
     rt.stopValidationRetry();
   }
