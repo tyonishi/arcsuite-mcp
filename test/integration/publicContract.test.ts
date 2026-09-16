@@ -40,6 +40,8 @@ async function listTools(
     MCP_OPAQUE_REFS_ENABLED: "false",
     MCP_OPAQUE_REF_KEYS_JSON: undefined,
     MCP_OPAQUE_REF_KEYS_JSON_FILE: undefined,
+    MCP_OPAQUE_REF_MAX_ENTRIES: undefined,
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: undefined,
     NODE_ENV: "test",
     ARCSUITE_ADAPTER_MODE: "mock",
     MCP_DEV_BEARER_TOKEN: "test-token",

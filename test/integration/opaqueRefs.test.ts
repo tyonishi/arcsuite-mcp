@@ -164,6 +164,54 @@ test("verified results receive distinct identity-bound refs and failures never d
   }
 });
 
+test("global handle pressure rejects a search atomically without evicting another profile", async () => {
+  const { rt } = await runtime(true, {
+    MCP_SEARCH_DEFAULT_LIMIT: "2",
+    MCP_SEARCH_MAX_LIMIT: "2",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "4",
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: "4"
+  });
+  const victim = {
+    ...profile(),
+    clientProfileId: "synthetic-profile-b",
+    tokenSha256: createHash("sha256").update("synthetic-token-b").digest("hex")
+  };
+  const authority = {
+    scopeId: "example_documents",
+    appliedQuery: { operator: "and" as const, filters: { operator: "and" as const, predicates: [] }, text: null },
+    includePath: false,
+    pageSize: 2
+  };
+  const victimRefs = Array.from({ length: 4 }, () => rt.handles!.issueSearch({
+    profile: victim,
+    scopeId: "example_documents",
+    scope: rt.scopes.get("example_documents")
+  }, authority));
+  const ids = ["rep:mock:EXAMPLE_CABINET:opaque-1", "rep:mock:EXAMPLE_CABINET:opaque-2"];
+  (rt.adapter as any).searchIds = async () => ids;
+  (rt.adapter as any).getMany = async (request: any) => ({ objects: request.ids.map(document), failures: [] });
+  try {
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_search_documents", {
+        scope: "example_documents",
+        query: "synthetic",
+        limit: 2,
+        response_contract: "opaque_refs_v1"
+      }),
+      (error: any) => error?.stableCode === "ARCSUITE_NOT_AVAILABLE" && error?.category === "opaque_ref_capacity"
+    );
+    for (const ref of victimRefs) {
+      assert.equal(rt.handles!.resolve(ref, "search", {
+        profile: victim,
+        scopeId: "example_documents",
+        scope: rt.scopes.get("example_documents")
+      }).kind, "search");
+    }
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
 test("cursor continuation inherits opaque contract without changing the legacy cursor", async () => {
   const { rt } = await runtime(true, { MCP_SEARCH_DEFAULT_LIMIT: "1", MCP_SEARCH_MAX_LIMIT: "2" });
   const ids = ["rep:mock:EXAMPLE_CABINET:opaque-1", "rep:mock:EXAMPLE_CABINET:opaque-2"];

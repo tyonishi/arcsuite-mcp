@@ -53,6 +53,7 @@ function config(activeKid = "active-1", keys = [
     keys,
     ttlSeconds: 600,
     capacity: 100,
+    capacityPerProfile: 100,
     contractGeneration: 1,
     credentialContextGeneration: 1
   };
@@ -133,7 +134,7 @@ test("parser collapses garbage, truncation, unknown version/kid, and oversized i
 test("expiry, policy mismatch, missing records, and process restart fail closed", () => {
   let now = 1_800_000_000_000;
   const clock = () => now;
-  const store = new InMemoryHandleStore<OpaqueHandleRecord>(100, clock);
+  const store = new InMemoryHandleStore<OpaqueHandleRecord>(100, 100, clock);
   const service = new OpaqueHandleService(config(), store, clock);
   const ref = service.issueSearch(context(), searchAuthority);
 
@@ -148,7 +149,7 @@ test("expiry, policy mismatch, missing records, and process restart fail closed"
 });
 
 test("key rotation accepts a retained previous key and rejects unknown keys", () => {
-  const store = new InMemoryHandleStore<OpaqueHandleRecord>(100);
+  const store = new InMemoryHandleStore<OpaqueHandleRecord>(100, 100);
   const oldService = new OpaqueHandleService(config("old", [{ kid: "old", secret: Buffer.alloc(32, 0x22) }]), store);
   const ref = oldService.issueSearch(context(), searchAuthority);
   const rotated = new OpaqueHandleService(config("new", [
@@ -161,12 +162,12 @@ test("key rotation accepts a retained previous key and rejects unknown keys", ()
 
 test("in-memory handle store is bounded, expires deterministically, prunes, and reads non-destructively", () => {
   let now = 1000;
-  const store = new InMemoryHandleStore<string>(2, () => now);
-  store.put("a", "A", 2000);
-  store.put("b", "B", 3000);
+  const store = new InMemoryHandleStore<string>(2, 2, () => now);
+  store.put("a", "A", 2000, "profile-a");
+  store.put("b", "B", 3000, "profile-a");
   assert.equal(store.get("a"), "A");
   assert.equal(store.get("a"), "A");
-  store.put("c", "C", 4000);
+  store.put("c", "C", 4000, "profile-a");
   assert.equal(store.size, 2);
   assert.equal(store.get("b"), undefined);
   now = 2500;
@@ -177,8 +178,79 @@ test("in-memory handle store is bounded, expires deterministically, prunes, and 
   assert.equal(store.get("c"), undefined);
 });
 
+test("one profile cannot evict another profile's unexpired opaque handle", () => {
+  const service = new OpaqueHandleService({ ...config(), capacity: 3, capacityPerProfile: 3 });
+  const victim = context({
+    clientProfileId: "synthetic-profile-b",
+    tokenSha256: createHash("sha256").update("synthetic-token-b").digest("hex")
+  });
+  const churner = context({
+    clientProfileId: "synthetic-profile-a",
+    tokenSha256: createHash("sha256").update("synthetic-token-a").digest("hex")
+  });
+  const victimRef = service.issueSearch(victim, searchAuthority);
+  assert.equal(service.resolve(victimRef, "search", victim).kind, "search");
+
+  const churnerRefs = Array.from({ length: 3 }, () => service.issueSearch(churner, searchAuthority));
+
+  assert.equal(service.resolve(victimRef, "search", victim).kind, "search");
+  assert.throws(() => service.resolve(churnerRefs[0], "search", churner), refUnavailable);
+  assert.equal(service.resolve(churnerRefs[2], "search", churner).kind, "search");
+});
+
+test("profile quota and global pressure evict only the allocating profile", () => {
+  const store = new InMemoryHandleStore<string>(4, 2, () => 1_000);
+  store.put("b-1", "B1", 10_000, "profile-b");
+  store.put("a-1", "A1", 10_000, "profile-a");
+  store.put("a-2", "A2", 10_000, "profile-a");
+  assert.equal(store.get("a-1"), "A1");
+  store.put("a-3", "A3", 10_000, "profile-a");
+  assert.equal(store.size, 3);
+  assert.equal(store.get("b-1"), "B1");
+  assert.equal(store.get("a-2"), undefined, "least-recent same-profile entry must be evicted first");
+  assert.equal(store.get("a-1"), "A1");
+  assert.equal(store.get("a-3"), "A3");
+
+  store.put("b-2", "B2", 10_000, "profile-b");
+  assert.equal(store.size, 4);
+  store.put("a-4", "A4", 10_000, "profile-a");
+  assert.equal(store.size, 4);
+  assert.equal(store.get("b-1"), "B1");
+  assert.equal(store.get("b-2"), "B2");
+});
+
+test("global-full allocation fails atomically when the caller has no safe eviction candidate", () => {
+  const store = new InMemoryHandleStore<string>(3, 3, () => 1_000);
+  store.put("b-1", "B1", 10_000, "profile-b");
+  store.put("b-2", "B2", 10_000, "profile-b");
+  store.put("a-old", "A-old", 10_000, "profile-a");
+
+  assert.throws(() => store.putMany("profile-a", [
+    { index: "a-new-1", record: "A-new-1", expiresAtMs: 10_000 },
+    { index: "a-new-2", record: "A-new-2", expiresAtMs: 10_000 }
+  ]), /capacity unavailable/i);
+
+  assert.equal(store.size, 3);
+  assert.equal(store.get("a-old"), "A-old", "failed batch must not evict an existing caller record");
+  assert.equal(store.get("a-new-1"), undefined);
+  assert.equal(store.get("a-new-2"), undefined);
+  assert.equal(store.get("b-1"), "B1");
+  assert.equal(store.get("b-2"), "B2");
+});
+
+test("expired cross-profile entries are reclaimed before owner quota decisions", () => {
+  let now = 1_000;
+  const store = new InMemoryHandleStore<string>(2, 1, () => now);
+  store.put("expired-b", "B", 1_500, "profile-b");
+  now = 2_000;
+  store.put("a-1", "A1", 3_000, "profile-a");
+  assert.equal(store.size, 1);
+  assert.equal(store.get("expired-b"), undefined);
+  assert.equal(store.get("a-1"), "A1");
+});
+
 test("locators are unique 256-bit random values and are not raw store keys", () => {
-  const store = new InMemoryHandleStore<OpaqueHandleRecord>(200);
+  const store = new InMemoryHandleStore<OpaqueHandleRecord>(200, 200);
   const service = new OpaqueHandleService(config(), store);
   const refs = Array.from({ length: 128 }, () => service.issueSearch(context(), searchAuthority));
   const locators = refs.map((ref) => {

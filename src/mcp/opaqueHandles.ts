@@ -28,6 +28,7 @@ export type OpaqueHandleConfig = Readonly<{
   keys: readonly HandleKeyConfig[];
   ttlSeconds: number;
   capacity: number;
+  capacityPerProfile: number;
   contractGeneration: number;
   credentialContextGeneration: number;
 }>;
@@ -81,16 +82,38 @@ export type ResultHandleRecord = CommonHandleRecord & Readonly<{
 
 export type OpaqueHandleRecord = SearchHandleRecord | ContinuationHandleRecord | ResultHandleRecord;
 
+export type OpaqueHandleIssue = Readonly<
+  | { kind: "search"; authority: CanonicalSearchAuthority; maxExpiresAt?: number }
+  | {
+      kind: "continuation";
+      input: Readonly<{ searchAuthority: CanonicalSearchAuthority; cursor?: string; pageAuthority?: ContinuationPageAuthority }>;
+      maxExpiresAt?: number;
+    }
+  | {
+      kind: "result";
+      input: Readonly<{ documentId: string; objectClass: string; verificationPlan?: readonly CanonicalSemanticPredicate[] }>;
+      maxExpiresAt?: number;
+    }
+>;
+
 export interface HandleStore<T> {
-  put(index: string, record: T, expiresAtMs: number): void;
+  put(index: string, record: T, expiresAtMs: number, ownerProfileId: string): void;
+  putMany(ownerProfileId: string, entries: readonly HandleStorePut<T>[]): void;
   get(index: string): T | undefined;
   delete(index: string): void;
   prune(): void;
   readonly size: number;
 }
 
+export type HandleStorePut<T> = Readonly<{
+  index: string;
+  record: T;
+  expiresAtMs: number;
+}>;
+
 type StoredEntry<T> = {
   record: T;
+  ownerProfileId: string;
   expiresAtMs: number;
   lastAccessSequence: number;
   insertionSequence: number;
@@ -100,35 +123,75 @@ export class InMemoryHandleStore<T> implements HandleStore<T> {
   private readonly entries = new Map<string, StoredEntry<T>>();
   private sequence = 0;
   private readonly capacity: number;
+  private readonly capacityPerProfile: number;
   private readonly clock: () => number;
 
   constructor(
     capacity: number,
+    capacityPerProfile: number,
     clock: () => number = Date.now
   ) {
     if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > OPAQUE_HANDLE_LIMITS.maxCapacity) {
       throw new Error(`Handle store capacity must be 1..${OPAQUE_HANDLE_LIMITS.maxCapacity}`);
     }
+    if (!Number.isSafeInteger(capacityPerProfile) || capacityPerProfile < 1 || capacityPerProfile > capacity) {
+      throw new Error("Handle store per-profile capacity must be 1..global capacity");
+    }
     this.capacity = capacity;
+    this.capacityPerProfile = capacityPerProfile;
     this.clock = clock;
   }
 
   get size(): number { return this.entries.size; }
 
-  put(index: string, record: T, expiresAtMs: number): void {
-    const now = this.clock();
-    this.prune();
-    if (!index || !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= now) throw new Error("Invalid handle store entry");
-    if (!this.entries.has(index)) {
-      while (this.entries.size >= this.capacity) this.evictOldest();
+  put(index: string, record: T, expiresAtMs: number, ownerProfileId: string): void {
+    this.putMany(ownerProfileId, [{ index, record, expiresAtMs }]);
+  }
+
+  putMany(ownerProfileId: string, entries: readonly HandleStorePut<T>[]): void {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(ownerProfileId) || !entries.length) {
+      throw new Error("Invalid handle store owner or empty batch");
     }
-    const sequence = ++this.sequence;
-    this.entries.set(index, {
-      record: deepFreezeClone(record),
-      expiresAtMs,
-      lastAccessSequence: sequence,
-      insertionSequence: sequence
+    const now = this.clock();
+    const indexes = new Set<string>();
+    const prepared = entries.map((entry) => {
+      if (!entry.index || indexes.has(entry.index)
+        || !Number.isSafeInteger(entry.expiresAtMs) || entry.expiresAtMs <= now) {
+        throw new Error("Invalid handle store entry");
+      }
+      indexes.add(entry.index);
+      return { ...entry, record: deepFreezeClone(entry.record) };
     });
+
+    this.prune();
+    for (const entry of prepared) {
+      const existing = this.entries.get(entry.index);
+      if (existing && existing.ownerProfileId !== ownerProfileId) throw new Error("Handle store owner mismatch");
+    }
+    const newEntryCount = prepared.filter((entry) => !this.entries.has(entry.index)).length;
+    const ownerEntries = [...this.entries.entries()]
+      .filter(([, entry]) => entry.ownerProfileId === ownerProfileId);
+    const profileEvictions = Math.max(0, ownerEntries.length + newEntryCount - this.capacityPerProfile);
+    const globalEvictions = Math.max(0, this.entries.size + newEntryCount - this.capacity);
+    const requiredEvictions = Math.max(profileEvictions, globalEvictions);
+    const evictionCandidates = ownerEntries
+      .filter(([index]) => !indexes.has(index))
+      .sort((left, right) => left[1].lastAccessSequence - right[1].lastAccessSequence
+        || left[1].insertionSequence - right[1].insertionSequence
+        || (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
+    if (evictionCandidates.length < requiredEvictions) throw new HandleStoreCapacityError();
+
+    for (const [index] of evictionCandidates.slice(0, requiredEvictions)) this.entries.delete(index);
+    for (const entry of prepared) {
+      const sequence = ++this.sequence;
+      this.entries.set(entry.index, {
+        record: entry.record,
+        ownerProfileId,
+        expiresAtMs: entry.expiresAtMs,
+        lastAccessSequence: sequence,
+        insertionSequence: sequence
+      });
+    }
   }
 
   get(index: string): T | undefined {
@@ -151,17 +214,10 @@ export class InMemoryHandleStore<T> implements HandleStore<T> {
 
   hasIndex(index: string): boolean { return this.entries.has(index); }
 
-  private evictOldest(): void {
-    let victim: [string, StoredEntry<T>] | undefined;
-    for (const candidate of this.entries) {
-      if (!victim
-        || candidate[1].lastAccessSequence < victim[1].lastAccessSequence
-        || (candidate[1].lastAccessSequence === victim[1].lastAccessSequence
-          && candidate[1].insertionSequence < victim[1].insertionSequence)) victim = candidate;
-    }
-    if (!victim) throw new Error("Handle store capacity unavailable");
-    this.entries.delete(victim[0]);
-  }
+}
+
+class HandleStoreCapacityError extends Error {
+  constructor() { super("Handle store capacity unavailable"); }
 }
 
 type DerivedKey = Readonly<{
@@ -204,12 +260,11 @@ export class OpaqueHandleService {
     this.config = config;
     this.clock = clock;
     for (const item of config.keys) this.keys.set(item.kid, deriveKeys(item));
-    this.store = store ?? new InMemoryHandleStore<OpaqueHandleRecord>(config.capacity, clock);
+    this.store = store ?? new InMemoryHandleStore<OpaqueHandleRecord>(config.capacity, config.capacityPerProfile, clock);
   }
 
   issueSearch(context: HandlePolicyContext, authority: CanonicalSearchAuthority, maxExpiresAt?: number): string {
-    if (authority.scopeId !== context.scopeId) throw new Error("Search authority scope mismatch");
-    return this.issue("search", context, (common) => ({ ...common, kind: "search", authority: deepFreezeClone(authority) }), maxExpiresAt);
+    return this.issueMany(context, [{ kind: "search", authority, maxExpiresAt }])[0];
   }
 
   issueContinuation(
@@ -217,19 +272,7 @@ export class OpaqueHandleService {
     input: Readonly<{ searchAuthority: CanonicalSearchAuthority; cursor?: string; pageAuthority?: ContinuationPageAuthority }>,
     maxExpiresAt?: number
   ): string {
-    if (input.searchAuthority.scopeId !== context.scopeId
-      || (input.cursor !== undefined && (!input.cursor || input.cursor.length > 4096))
-      || (!input.cursor && !input.pageAuthority)) {
-      throw new Error("Invalid continuation authority");
-    }
-    if (input.pageAuthority) validateContinuationPageAuthority(input.pageAuthority, input.searchAuthority.pageSize);
-    return this.issue("continuation", context, (common) => ({
-      ...common,
-      kind: "continuation",
-      searchAuthority: deepFreezeClone(input.searchAuthority),
-      ...(input.cursor ? { cursor: input.cursor } : {}),
-      ...(input.pageAuthority ? { pageAuthority: deepFreezeClone(input.pageAuthority) } : {})
-    }), maxExpiresAt ?? input.pageAuthority?.expiresAt);
+    return this.issueMany(context, [{ kind: "continuation", input, maxExpiresAt }])[0];
   }
 
   issueResult(
@@ -237,15 +280,23 @@ export class OpaqueHandleService {
     input: Readonly<{ documentId: string; objectClass: string; verificationPlan?: readonly CanonicalSemanticPredicate[] }>,
     maxExpiresAt?: number
   ): string {
-    if (!input.documentId.startsWith("rep:") || !input.objectClass) throw new Error("Invalid result authority");
-    return this.issue("result", context, (common) => ({
-      ...common,
-      kind: "result",
-      scopeId: context.scopeId,
-      documentId: input.documentId,
-      objectClass: input.objectClass,
-      ...(input.verificationPlan ? { verificationPlan: deepFreezeClone(input.verificationPlan) } : {})
-    }), maxExpiresAt);
+    return this.issueMany(context, [{ kind: "result", input, maxExpiresAt }])[0];
+  }
+
+  issueMany(context: HandlePolicyContext, requests: readonly OpaqueHandleIssue[]): string[] {
+    if (!requests.length) throw new Error("Opaque handle issue batch must not be empty");
+    const prepared = requests.map((request) => this.prepareIssue(context, request));
+    try {
+      this.store.putMany(context.profile.clientProfileId, prepared.map(({ index, record, expiresAtMs }) => ({
+        index, record, expiresAtMs
+      })));
+    } catch (error) {
+      if (error instanceof HandleStoreCapacityError) {
+        throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_ref_capacity", false);
+      }
+      throw error;
+    }
+    return prepared.map((entry) => entry.ref);
   }
 
   resolve(ref: string, expectedKind: OpaqueHandleKind, context: HandlePolicyContext): OpaqueHandleRecord {
@@ -300,12 +351,44 @@ export class OpaqueHandleService {
     }
   }
 
-  private issue(
-    kind: OpaqueHandleKind,
+  private prepareIssue(
     context: HandlePolicyContext,
-    build: (common: CommonHandleRecord) => OpaqueHandleRecord,
-    maxExpiresAt?: number
-  ): string {
+    request: OpaqueHandleIssue
+  ): { ref: string; index: string; record: OpaqueHandleRecord; expiresAtMs: number } {
+    const kind = request.kind;
+    let maxExpiresAt = request.maxExpiresAt;
+    let build: (common: CommonHandleRecord) => OpaqueHandleRecord;
+    if (request.kind === "search") {
+      if (request.authority.scopeId !== context.scopeId) throw new Error("Search authority scope mismatch");
+      build = (common) => ({ ...common, kind: "search", authority: deepFreezeClone(request.authority) });
+    } else if (request.kind === "continuation") {
+      const input = request.input;
+      if (input.searchAuthority.scopeId !== context.scopeId
+        || (input.cursor !== undefined && (!input.cursor || input.cursor.length > 4096))
+        || (!input.cursor && !input.pageAuthority)) {
+        throw new Error("Invalid continuation authority");
+      }
+      if (input.pageAuthority) validateContinuationPageAuthority(input.pageAuthority, input.searchAuthority.pageSize);
+      maxExpiresAt ??= input.pageAuthority?.expiresAt;
+      build = (common) => ({
+        ...common,
+        kind: "continuation",
+        searchAuthority: deepFreezeClone(input.searchAuthority),
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+        ...(input.pageAuthority ? { pageAuthority: deepFreezeClone(input.pageAuthority) } : {})
+      });
+    } else {
+      const input = request.input;
+      if (!input.documentId.startsWith("rep:") || !input.objectClass) throw new Error("Invalid result authority");
+      build = (common) => ({
+        ...common,
+        kind: "result",
+        scopeId: context.scopeId,
+        documentId: input.documentId,
+        objectClass: input.objectClass,
+        ...(input.verificationPlan ? { verificationPlan: deepFreezeClone(input.verificationPlan) } : {})
+      });
+    }
     const key = this.keys.get(this.config.activeKid);
     if (!key) throw new Error("Active handle key unavailable");
     const issuedAt = Math.floor(this.clock() / 1000);
@@ -332,8 +415,12 @@ export class OpaqueHandleService {
     const tag = envelopeTag(key.envelopeAuthentication, body);
     const ref = `${HANDLE_PREFIX}.${body}.${tag}`;
     if (ref.length > OPAQUE_HANDLE_LIMITS.maxEncodedLength) throw new Error("Encoded handle exceeds bound");
-    this.store.put(storeIndex(key.storeIndex, key.kid, locator), build(common), expiresAt * 1000);
-    return ref;
+    return {
+      ref,
+      index: storeIndex(key.storeIndex, key.kid, locator),
+      record: build(common),
+      expiresAtMs: expiresAt * 1000
+    };
   }
 
   private authenticateEnvelope(ref: string): { envelope: PublicEnvelope; key: DerivedKey } {
@@ -385,6 +472,7 @@ export class OpaqueHandleService {
 function validateServiceConfig(config: OpaqueHandleConfig): void {
   if (!Number.isSafeInteger(config.ttlSeconds) || config.ttlSeconds < 1 || config.ttlSeconds > OPAQUE_HANDLE_LIMITS.maxTtlSeconds) throw new Error("Invalid opaque handle TTL");
   if (!Number.isSafeInteger(config.capacity) || config.capacity < 1 || config.capacity > OPAQUE_HANDLE_LIMITS.maxCapacity) throw new Error("Invalid opaque handle capacity");
+  if (!Number.isSafeInteger(config.capacityPerProfile) || config.capacityPerProfile < 1 || config.capacityPerProfile > config.capacity) throw new Error("Invalid opaque handle per-profile capacity");
   if (!Number.isSafeInteger(config.contractGeneration) || config.contractGeneration < 1) throw new Error("Invalid handle contract generation");
   if (!Number.isSafeInteger(config.credentialContextGeneration) || config.credentialContextGeneration < 1) throw new Error("Invalid credential context generation");
   if (!Array.isArray(config.keys) || config.keys.length < 1 || config.keys.length > OPAQUE_HANDLE_LIMITS.maxValidationKeys) throw new Error("Invalid opaque handle key count");

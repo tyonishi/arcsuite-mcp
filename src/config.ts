@@ -181,6 +181,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (opaqueRefs && opaqueRefs.capacity < searchMaxLimit + 2) {
     throw new Error("MCP_OPAQUE_REF_MAX_ENTRIES must be at least MCP_SEARCH_MAX_LIMIT + 2");
   }
+  if (opaqueRefs && opaqueRefs.capacityPerProfile < searchMaxLimit + 2) {
+    throw new Error("MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE must be at least MCP_SEARCH_MAX_LIMIT + 2");
+  }
   const allowedHostnames = csv(env.MCP_ALLOWED_HOSTNAMES ?? "localhost,127.0.0.1");
   const allowedOriginHostnames = csv(env.MCP_ALLOWED_ORIGIN_HOSTNAMES ?? "localhost,127.0.0.1");
   const adapterBaseUrl = normalizeAdapterBaseUrl(env.ARCSUITE_ADAPTER_BASE_URL ?? "http://127.0.0.1:18080");
@@ -261,11 +264,21 @@ function loadOpaqueRefConfig(env: NodeJS.ProcessEnv, production: boolean): Opaqu
     return Object.freeze({ kid: item.kid, secret });
   });
   if (!kids.has(keyring.active_kid)) throw new Error("Opaque ref active kid is missing from keys");
+  const capacity = positiveInteger(env.MCP_OPAQUE_REF_MAX_ENTRIES ?? "1000", "MCP_OPAQUE_REF_MAX_ENTRIES", OPAQUE_HANDLE_LIMITS.maxCapacity);
+  const capacityPerProfile = positiveInteger(
+    env.MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE ?? String(capacity),
+    "MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE",
+    OPAQUE_HANDLE_LIMITS.maxCapacity
+  );
+  if (capacityPerProfile > capacity) {
+    throw new Error("MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE cannot exceed MCP_OPAQUE_REF_MAX_ENTRIES");
+  }
   return Object.freeze({
     activeKid: keyring.active_kid,
     keys: Object.freeze(keys),
     ttlSeconds: positiveInteger(env.MCP_OPAQUE_REF_TTL_SECONDS ?? "600", "MCP_OPAQUE_REF_TTL_SECONDS", OPAQUE_HANDLE_LIMITS.maxTtlSeconds),
-    capacity: positiveInteger(env.MCP_OPAQUE_REF_MAX_ENTRIES ?? "1000", "MCP_OPAQUE_REF_MAX_ENTRIES", OPAQUE_HANDLE_LIMITS.maxCapacity),
+    capacity,
+    capacityPerProfile,
     contractGeneration: positiveInteger(env.MCP_OPAQUE_REF_CONTRACT_GENERATION ?? "1", "MCP_OPAQUE_REF_CONTRACT_GENERATION", 2_147_483_647),
     credentialContextGeneration: positiveInteger(env.MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION ?? "1", "MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION", 2_147_483_647)
   });

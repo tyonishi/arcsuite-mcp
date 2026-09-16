@@ -31,6 +31,7 @@ import {
   type ContinuationHandleRecord,
   type ContinuationPageAuthority,
   type HandlePolicyContext,
+  type OpaqueHandleIssue,
   type ResultHandleRecord,
   type SearchHandleRecord
 } from "./opaqueHandles.ts";
@@ -255,28 +256,23 @@ export class ToolRegistry {
               throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
             }
             const policyContext: HandlePolicyContext = { profile, scopeId: parsed.scope, scope };
-            const results = pageData.results.map((result) => ({
-              ...result,
-              result_ref: this.handles!.issueResult(policyContext, {
-                documentId: result.document_id,
-                objectClass: result.object_class,
-                verificationPlan
-              })
-            }));
             const continuationAuthority = page.nextCursor
               ? this.paging.continuationAuthority(page.nextCursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.scope })
               : undefined;
+            const refSet = this.issueSearchAuthoritySet(
+              policyContext,
+              page.context.searchAuthority,
+              pageData.results,
+              verificationPlan,
+              continuationAuthority
+                ? { cursor: page.nextCursor!, pageAuthority: continuationAuthority, maxExpiresAt: continuationAuthority.expiresAt }
+                : undefined
+            );
             data = {
               ...legacyData,
-              results,
-              search_ref: this.handles.issueSearch(policyContext, page.context.searchAuthority),
-              continuation_ref: page.nextCursor
-                ? this.handles.issueContinuation(policyContext, {
-                    searchAuthority: page.context.searchAuthority,
-                    cursor: page.nextCursor,
-                    pageAuthority: continuationAuthority
-                  }, continuationAuthority?.expiresAt)
-                : null
+              results: pageData.results.map((result, index) => ({ ...result, result_ref: refSet.resultRefs[index] })),
+              search_ref: refSet.searchRef,
+              continuation_ref: refSet.continuationRef
             };
           } else {
             data = legacyData;
@@ -1058,16 +1054,20 @@ export class ToolRegistry {
     if (!this.handles) throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
     const policyContext: HandlePolicyContext = { profile, scopeId, scope };
     const maxExpiresAt = continuation.expiresAt;
-    const results = pageData.results.map((result) => ({
-      ...withoutDocumentIdentity(result),
-      result_ref: this.handles!.issueResult(policyContext, {
-        documentId: result.document_id,
-        objectClass: result.object_class,
-        verificationPlan: continuation.verificationPlan
-      }, maxExpiresAt)
-    }));
     const nextPageAuthority = continuation.nextAuthority;
     if (nextPageAuthority && !maxExpiresAt) throw refUnavailable();
+    const refSet = this.issueSearchAuthoritySet(
+      policyContext,
+      searchAuthority,
+      pageData.results,
+      continuation.verificationPlan,
+      nextPageAuthority ? { pageAuthority: nextPageAuthority, maxExpiresAt } : undefined,
+      maxExpiresAt
+    );
+    const results = pageData.results.map((result, index) => ({
+      ...withoutDocumentIdentity(result),
+      result_ref: refSet.resultRefs[index]
+    }));
     return {
       scope: scopeId,
       count: results.length,
@@ -1077,13 +1077,46 @@ export class ToolRegistry {
       applied_query: searchAuthority.appliedQuery,
       failures: pageData.failures.map(({ index, code }) => ({ index, code })),
       results,
-      search_ref: this.handles.issueSearch(policyContext, searchAuthority, maxExpiresAt),
-      continuation_ref: nextPageAuthority
-        ? this.handles.issueContinuation(policyContext, {
-            searchAuthority,
-            pageAuthority: nextPageAuthority
-          }, maxExpiresAt)
-        : null
+      search_ref: refSet.searchRef,
+      continuation_ref: refSet.continuationRef
+    };
+  }
+
+  private issueSearchAuthoritySet(
+    context: HandlePolicyContext,
+    searchAuthority: CanonicalSearchAuthority,
+    results: readonly NormalizedDocument[],
+    verificationPlan: readonly CanonicalSemanticPredicate[],
+    continuation?: Readonly<{ cursor?: string; pageAuthority: ContinuationPageAuthority; maxExpiresAt?: number }>,
+    maxExpiresAt?: number
+  ): { resultRefs: string[]; searchRef: string; continuationRef: string | null } {
+    if (!this.handles) throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+    const requests: OpaqueHandleIssue[] = results.map((result) => ({
+      kind: "result",
+      input: {
+        documentId: result.document_id,
+        objectClass: result.object_class,
+        verificationPlan
+      },
+      maxExpiresAt
+    }));
+    requests.push({ kind: "search", authority: searchAuthority, maxExpiresAt });
+    if (continuation) {
+      requests.push({
+        kind: "continuation",
+        input: {
+          searchAuthority,
+          ...(continuation.cursor ? { cursor: continuation.cursor } : {}),
+          pageAuthority: continuation.pageAuthority
+        },
+        maxExpiresAt: continuation.maxExpiresAt
+      });
+    }
+    const refs = this.handles.issueMany(context, requests);
+    return {
+      resultRefs: refs.slice(0, results.length),
+      searchRef: refs[results.length],
+      continuationRef: continuation ? refs[results.length + 1] : null
     };
   }
 

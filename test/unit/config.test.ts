@@ -119,12 +119,14 @@ test("enabled opaque refs require a bounded valid keyring", () => {
     MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 3).toString("base64url") }] }),
     MCP_OPAQUE_REF_TTL_SECONDS: "600",
     MCP_OPAQUE_REF_MAX_ENTRIES: "100",
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: "52",
     MCP_OPAQUE_REF_CONTRACT_GENERATION: "1",
     MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION: "7"
   });
   assert.equal(config.opaqueRefs?.activeKid, "active-1");
   assert.equal(config.opaqueRefs?.ttlSeconds, 600);
   assert.equal(config.opaqueRefs?.capacity, 100);
+  assert.equal(config.opaqueRefs?.capacityPerProfile, 52);
   assert.equal(config.opaqueRefs?.contractGeneration, 1);
   assert.equal(config.opaqueRefs?.credentialContextGeneration, 7);
 });
@@ -138,6 +140,29 @@ test("opaque ref capacity can hold one maximum search page and its top-level ref
     MCP_SEARCH_MAX_LIMIT: "50",
     MCP_OPAQUE_REF_MAX_ENTRIES: "51"
   }), /MCP_SEARCH_MAX_LIMIT \+ 2/);
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_SEARCH_MAX_LIMIT: "50",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "100",
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: "51"
+  }), /MCP_SEARCH_MAX_LIMIT \+ 2/);
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_OPAQUE_REF_MAX_ENTRIES: "100",
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: "101"
+  }), /cannot exceed MCP_OPAQUE_REF_MAX_ENTRIES/);
+
+  const defaultPartition = loadConfig({
+    ...baseEnv,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_OPAQUE_REF_MAX_ENTRIES: "100"
+  });
+  assert.equal(defaultPartition.opaqueRefs?.capacityPerProfile, 100);
 });
 
 test("production opaque refs accept secret material only from a file", () => {
