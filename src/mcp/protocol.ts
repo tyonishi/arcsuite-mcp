@@ -45,7 +45,12 @@ export function createMcpHttpServer(options: McpHttpServerOptions) {
             isError: true,
             content: [{
               type: "text" as const,
-              text: JSON.stringify({ code: mapped.stableCode, category: mapped.category, retryable: mapped.retryable })
+              text: JSON.stringify({
+                code: mapped.stableCode,
+                category: mapped.category,
+                retryable: mapped.retryable,
+                ...(mapped.recovery ? { recovery: mapped.recovery } : {})
+              })
             }]
           };
         }

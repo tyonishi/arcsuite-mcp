@@ -274,6 +274,39 @@ plan for semantic searches. `snapshot_limited=true` means the bounded snapshot
 itself hit its configured maximum; no additional pages beyond that snapshot are
 promised. The plan is never placed in the cursor or returned to the caller.
 
+### Opt-in opaque refs
+
+`arcsuite_search_documents` keeps the exact legacy response by default. An
+initial search may explicitly request the additive P1 contract:
+
+```json
+{
+  "scope": "example_documents",
+  "query": "annual report",
+  "response_contract": "opaque_refs_v1"
+}
+```
+
+`response_contract` accepts `legacy` or `opaque_refs_v1`. Omitted means
+`legacy`. It is initial-search-only and cannot be sent with `cursor`. A legacy
+cursor continuation inherits the contract selected by its initial search; the
+caller cannot switch contracts during pagination.
+
+When explicitly selected and enabled by the operator, `opaque_refs_v1` adds
+`search_ref` and `continuation_ref` at the top level and `result_ref` to each
+verified result. `search_ref` is emitted even for a successful zero-result
+search. `continuation_ref` is non-null only when `next_cursor` is non-null.
+Failures and rejected or unverified provider objects never receive a result
+ref. Existing fields, including `document_id`, `next_cursor`, and
+`applied_query`, are unchanged.
+
+Refs are short-lived authenticated authority references, not credentials.
+Possession does not grant access and future consumers must recheck the current
+bearer, tool, scope, provider result, root, type, and predicate authority. P1
+only issues refs: it does not register continue, replay, or `*_by_ref` tools.
+If the feature is disabled, an `opaque_refs_v1` request fails before provider
+dispatch and is never silently downgraded to legacy.
+
 ## Batch metadata
 
 Use `arcsuite_get_documents` when an agent needs metadata for several known

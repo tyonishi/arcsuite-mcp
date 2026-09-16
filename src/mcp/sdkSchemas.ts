@@ -29,22 +29,28 @@ const semanticFilterValue = z.union([
 function createToolInputSchemas(limits: ToolSchemaLimits) {
   const limit = z.number().int().min(1).max(limits.searchMaxLimit).optional();
   const revisionNumber = z.number().int().min(MIN_REVISION_NUMBER).max(MAX_REVISION_NUMBER).optional();
+  const search = z.object({
+    scope,
+    query: z.string().min(1).max(200).optional(),
+    query_mode: z.enum(["and", "or"]).optional(),
+    filters: z.record(z.string(), semanticFilterValue).optional(),
+    limit,
+    include_path: z.boolean().optional(),
+    cursor: pagingCursor,
+    text_search_mode: z.enum(["none", "stemming", "thesaurus"]).optional(),
+    response_contract: z.enum(["legacy", "opaque_refs_v1"])
+      .optional()
+      .describe("Initial searches only. Omit for the exact legacy response; cannot be combined with cursor.")
+  }).strict().refine((value) => value.cursor === undefined || value.response_contract === undefined, {
+    message: "response_contract cannot be combined with cursor"
+  });
   return {
     arcsuite_describe_capabilities: z.object({}).strict(),
     arcsuite_validate_document_integrity: z.object({
       document_id: documentId,
       include_evidence: z.boolean().default(false)
     }).strict(),
-    arcsuite_search_documents: z.object({
-      scope,
-      query: z.string().min(1).max(200).optional(),
-      query_mode: z.enum(["and", "or"]).optional(),
-      filters: z.record(z.string(), semanticFilterValue).optional(),
-      limit,
-      include_path: z.boolean().optional(),
-      cursor: pagingCursor,
-      text_search_mode: z.enum(["none", "stemming", "thesaurus"]).optional()
-    }).strict(),
+    arcsuite_search_documents: search,
     arcsuite_get_document: z.object({
       document_id: documentId,
       revision_number: revisionNumber,
@@ -157,9 +163,9 @@ export type ToolInputName = keyof typeof toolInputSchemas;
 export function toolInputSchemaForProfile(name: ToolInputName, allowedScopes: string[], limits: ToolSchemaLimits = TOOL_SCHEMA_HARD_LIMITS) {
   const schema = schemasForLimits(limits)[name];
   if (!isScopeTool(name)) return schema;
-  if (!allowedScopes.length) return (schema as any).extend({ scope: z.never() });
+  if (!allowedScopes.length) return (schema as any).safeExtend({ scope: z.never() });
   const scopeEnum = z.enum(allowedScopes as [string, ...string[]]);
-  return (schema as any).extend({ scope: scopeEnum });
+  return (schema as any).safeExtend({ scope: scopeEnum });
 }
 
 function isScopeTool(name: ToolInputName): name is "arcsuite_search_documents" | "arcsuite_get_documents" | "arcsuite_list_folder" {

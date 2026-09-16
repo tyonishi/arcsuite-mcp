@@ -5,7 +5,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildRuntime } from "../../src/server.ts";
-import fixture from "../fixtures/public-contract/round3-tools-list.json" with { type: "json" };
+import fixture from "../fixtures/public-contract/vnext-p1-tools-list.json" with { type: "json" };
+import baselineFixture from "../fixtures/public-contract/round3-tools-list.json" with { type: "json" };
 
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
@@ -76,7 +77,7 @@ async function listTools(protocolVersion: "2025-03-26" | "2026-07-28") {
 }
 
 for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
-  test(`authenticated HTTP tools/list remains the Round-3 public contract (${protocolVersion})`, async () => {
+  test(`authenticated HTTP tools/list matches the P1 additive public contract (${protocolVersion})`, async () => {
     const listed = await listTools(protocolVersion);
     assert.equal(listed.status, 200);
     assert.deepEqual(Object.keys(listed.result).sort(), protocolVersion === "2026-07-28" ? fixture.modern_result_keys : fixture.result_keys);
@@ -84,5 +85,16 @@ for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
     assert.deepEqual(listed.result.tools.map((tool: { name: string }) => tool.name), fixture.tool_names);
     assert.deepEqual([...new Set(listed.result.tools.map((tool: Record<string, unknown>) => Object.keys(tool).sort().join(",")))].sort(), fixture.tool_key_sets);
     assert.equal(hashTools(listed.result.tools), fixture.canonical_tools_sha256);
+    const search = listed.result.tools.find((tool: { name: string }) => tool.name === "arcsuite_search_documents");
+    assert.deepEqual(search.inputSchema.properties.response_contract.enum, fixture.intentional_public_contract_delta.allowed_values);
+    assert.equal(search.inputSchema.properties.response_contract.description.includes("Initial searches only"), true);
+    assert.deepEqual(fixture.intentional_public_contract_delta.changed_tool_input_schemas, ["arcsuite_search_documents"]);
+    assert.deepEqual(fixture.intentional_public_contract_delta.new_tools, []);
+    assert.deepEqual(fixture.intentional_public_contract_delta.removed_tools, []);
+    const legacyProjection = structuredClone(listed.result.tools);
+    const projectedSearch = legacyProjection.find((tool: { name: string }) => tool.name === "arcsuite_search_documents");
+    delete projectedSearch.inputSchema.properties.response_contract;
+    assert.equal(hashTools(legacyProjection), baselineFixture.canonical_tools_sha256,
+      "removing response_contract must restore the exact previous public tools/list contract");
   });
 }

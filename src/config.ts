@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { toolInputSchemas, TOOL_SCHEMA_HARD_LIMITS } from "./mcp/sdkSchemas.ts";
+import { OPAQUE_HANDLE_LIMITS, type OpaqueHandleConfig } from "./mcp/opaqueHandles.ts";
 
 export const CONFIG_LIMITS = Object.freeze({
   maxRequestBytes: 4 * 1024 * 1024,
@@ -12,6 +13,7 @@ export const CONFIG_LIMITS = Object.freeze({
   maxHardReferenceCandidates: 1000,
   maxBatchIds: TOOL_SCHEMA_HARD_LIMITS.batchMaxIds,
   maxCursorTtlSeconds: 86_400,
+  maxOpaqueRefEntries: OPAQUE_HANDLE_LIMITS.maxCapacity,
   maxPagingSnapshotIds: 5_000,
   maxPagingSnapshots: 1_000,
   maxPagingSnapshotsPerClient: 100,
@@ -64,6 +66,7 @@ export type AppConfig = {
   contentCacheMaxEntriesPerClient: number;
   contentCacheMaxBytes: number;
   validateOnStartup: boolean;
+  opaqueRefs: OpaqueHandleConfig | null;
 };
 
 function readSecretFile(path: string | undefined): string | undefined {
@@ -174,6 +177,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const contentCacheMaxEntriesPerClient = positiveInteger(env.MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT ?? "16", "MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT", CONFIG_LIMITS.maxContentCacheEntriesPerClient);
   if (contentCacheMaxEntriesPerClient > contentCacheMaxEntries) throw new Error("MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT cannot exceed MCP_CONTENT_CACHE_MAX_ENTRIES");
   const contentCacheMaxBytes = positiveInteger(env.MCP_CONTENT_CACHE_MAX_BYTES ?? "16777216", "MCP_CONTENT_CACHE_MAX_BYTES", CONFIG_LIMITS.maxContentCacheBytes);
+  const opaqueRefs = loadOpaqueRefConfig(env, production);
+  if (opaqueRefs && opaqueRefs.capacity < searchMaxLimit + 2) {
+    throw new Error("MCP_OPAQUE_REF_MAX_ENTRIES must be at least MCP_SEARCH_MAX_LIMIT + 2");
+  }
   const allowedHostnames = csv(env.MCP_ALLOWED_HOSTNAMES ?? "localhost,127.0.0.1");
   const allowedOriginHostnames = csv(env.MCP_ALLOWED_ORIGIN_HOSTNAMES ?? "localhost,127.0.0.1");
   const adapterBaseUrl = normalizeAdapterBaseUrl(env.ARCSUITE_ADAPTER_BASE_URL ?? "http://127.0.0.1:18080");
@@ -211,8 +218,57 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     contentCacheMaxEntries,
     contentCacheMaxEntriesPerClient,
     contentCacheMaxBytes,
+    opaqueRefs,
     validateOnStartup: (env.MCP_VALIDATE_ON_STARTUP ?? "true").toLowerCase() !== "false"
   };
+}
+
+function loadOpaqueRefConfig(env: NodeJS.ProcessEnv, production: boolean): OpaqueHandleConfig | null {
+  const enabled = strictBoolean(env.MCP_OPAQUE_REFS_ENABLED ?? "false", "MCP_OPAQUE_REFS_ENABLED");
+  if (!enabled) return null;
+  const file = env.MCP_OPAQUE_REF_KEYS_JSON_FILE;
+  const inline = env.MCP_OPAQUE_REF_KEYS_JSON;
+  if (production && !file) throw new Error("MCP_OPAQUE_REF_KEYS_JSON_FILE is required when opaque refs are enabled in production");
+  let raw: string | undefined;
+  if (file) raw = readFileSync(file, "utf8");
+  else if (!production) raw = inline;
+  if (!raw?.trim()) throw new Error("MCP_OPAQUE_REF_KEYS_JSON_FILE or MCP_OPAQUE_REF_KEYS_JSON is required when opaque refs are enabled");
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new Error("Invalid opaque ref keyring JSON"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid opaque ref keyring");
+  const keyring = parsed as Record<string, unknown>;
+  if (typeof keyring.active_kid !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(keyring.active_kid)) {
+    throw new Error("Invalid opaque ref active kid");
+  }
+  if (!Array.isArray(keyring.keys) || keyring.keys.length < 1 || keyring.keys.length > OPAQUE_HANDLE_LIMITS.maxValidationKeys) {
+    throw new Error(`Opaque ref keyring must contain 1..${OPAQUE_HANDLE_LIMITS.maxValidationKeys} keys`);
+  }
+  const kids = new Set<string>();
+  const keys = keyring.keys.map((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid opaque ref key at index ${index}`);
+    const item = value as Record<string, unknown>;
+    if (typeof item.kid !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(item.kid)) throw new Error(`Invalid opaque ref kid at index ${index}`);
+    if (kids.has(item.kid)) throw new Error(`Duplicate opaque ref kid: ${item.kid}`);
+    kids.add(item.kid);
+    if (typeof item.secret_base64url !== "string" || !/^[A-Za-z0-9_-]+$/.test(item.secret_base64url)) throw new Error(`Invalid opaque ref key encoding at index ${index}`);
+    const secret = Buffer.from(item.secret_base64url, "base64url");
+    if (secret.toString("base64url") !== item.secret_base64url
+      || secret.length < OPAQUE_HANDLE_LIMITS.minKeyBytes
+      || secret.length > OPAQUE_HANDLE_LIMITS.maxKeyBytes) {
+      throw new Error(`Opaque ref key at index ${index} must decode to ${OPAQUE_HANDLE_LIMITS.minKeyBytes}..${OPAQUE_HANDLE_LIMITS.maxKeyBytes} bytes`);
+    }
+    return Object.freeze({ kid: item.kid, secret });
+  });
+  if (!kids.has(keyring.active_kid)) throw new Error("Opaque ref active kid is missing from keys");
+  return Object.freeze({
+    activeKid: keyring.active_kid,
+    keys: Object.freeze(keys),
+    ttlSeconds: positiveInteger(env.MCP_OPAQUE_REF_TTL_SECONDS ?? "600", "MCP_OPAQUE_REF_TTL_SECONDS", OPAQUE_HANDLE_LIMITS.maxTtlSeconds),
+    capacity: positiveInteger(env.MCP_OPAQUE_REF_MAX_ENTRIES ?? "1000", "MCP_OPAQUE_REF_MAX_ENTRIES", OPAQUE_HANDLE_LIMITS.maxCapacity),
+    contractGeneration: positiveInteger(env.MCP_OPAQUE_REF_CONTRACT_GENERATION ?? "1", "MCP_OPAQUE_REF_CONTRACT_GENERATION", 2_147_483_647),
+    credentialContextGeneration: positiveInteger(env.MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION ?? "1", "MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION", 2_147_483_647)
+  });
 }
 
 function positiveInteger(value: string, name: string, max = Number.MAX_SAFE_INTEGER, min = 1): number {
@@ -245,4 +301,10 @@ function csv(value: string): string[] {
   const values = value.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
   if (!values.length) throw new Error("Host allowlists cannot be empty");
   return [...new Set(values)];
+}
+
+function strictBoolean(value: string, name: string): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be true or false`);
 }

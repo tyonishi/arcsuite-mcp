@@ -25,6 +25,7 @@ import { buildAppliedQuery } from "./appliedQuery.ts";
 import { McpToolError, toMcpToolError } from "./errors.ts";
 import { assertExactKeys, assertObject, boolValue, enumValue, intValue, optionalInt, optionalString, stringValue } from "../util/json.ts";
 import { CONTENT_LABEL_PRIMARY_ALIAS, isSemanticContentLabelAlias, samePhysicalContentLabel } from "../semantic/contentLabels.ts";
+import { OpaqueHandleService, type CanonicalSearchAuthority, type HandlePolicyContext } from "./opaqueHandles.ts";
 
 export type ToolDefinition = {
   name: string;
@@ -82,6 +83,7 @@ export class ToolRegistry {
   private readonly contentBridge: ContentBridge;
   private readonly audit: AuditLogger;
   private readonly paging: PagingSnapshotStore;
+  private readonly handles: OpaqueHandleService | null;
 
   constructor(
     config: AppConfig,
@@ -89,7 +91,8 @@ export class ToolRegistry {
     adapter: ArcSuiteAdapterClient,
     sessions: AdapterSessionManager,
     contentBridge: ContentBridge,
-    audit: AuditLogger
+    audit: AuditLogger,
+    handles: OpaqueHandleService | null = null
   ) {
     this.config = config;
     this.scopes = scopes;
@@ -97,6 +100,7 @@ export class ToolRegistry {
     this.sessions = sessions;
     this.contentBridge = contentBridge;
     this.audit = audit;
+    this.handles = handles;
     this.paging = new PagingSnapshotStore(
       config.cursorSecret,
       config.pagingTtlSeconds,
@@ -141,6 +145,9 @@ export class ToolRegistry {
         }
         case "arcsuite_search_documents": {
           const parsed = parseSearchArgs(args, this.config);
+          if (parsed.responseContract === "opaque_refs_v1" && !this.handles) {
+            throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+          }
           scopeId = parsed.scope;
           const scope = this.allowedScope(profile, parsed.scope);
           if (parsed.textSearchMode !== "none" && !parsed.query) throw new TypeError("text_search_mode requires a text query");
@@ -157,6 +164,12 @@ export class ToolRegistry {
             const attrConditions = verificationPlan.map((predicate) => predicate.condition);
             const words = parsed.query ? tokenizeQuery(parsed.query) : [];
             const appliedQuery = buildAppliedQuery(verificationPlan, words, parsed.queryMode, parsed.textSearchMode);
+            const searchAuthority: CanonicalSearchAuthority = {
+              scopeId: parsed.scope,
+              appliedQuery,
+              includePath: parsed.includePath,
+              pageSize: parsed.limit
+            };
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
             this.recordSoapOperation(soapOperations, "searchRepositoryObjectIds");
             const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
@@ -186,7 +199,13 @@ export class ToolRegistry {
               kind: "search",
               ids,
               pageSize: parsed.limit,
-              context: { includePath: parsed.includePath, searchVerificationPlan: verificationPlan, searchAppliedQuery: appliedQuery },
+              context: {
+                includePath: parsed.includePath,
+                searchVerificationPlan: verificationPlan,
+                searchAppliedQuery: appliedQuery,
+                responseContract: parsed.responseContract,
+                ...(parsed.responseContract === "opaque_refs_v1" ? { searchAuthority } : {})
+              },
               upstreamLimited: ids.length > snapshotLimit
             });
           }
@@ -199,7 +218,7 @@ export class ToolRegistry {
           searchOutcome = pageData.failures.length && pageData.results.length === 0
             ? "hydration_failure"
             : pageData.results.length ? "matches" : "zero";
-          data = {
+          const legacyData: Record<string, unknown> = {
             scope: parsed.scope,
             count: pageData.results.length,
             limit: page.pageSize,
@@ -210,6 +229,33 @@ export class ToolRegistry {
             failures: pageData.failures,
             results: pageData.results
           };
+          const responseContract = page.context.responseContract ?? "legacy";
+          if (responseContract === "opaque_refs_v1") {
+            if (!this.handles || !page.context.searchAuthority) {
+              throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+            }
+            const policyContext: HandlePolicyContext = { profile, scopeId: parsed.scope, scope };
+            const results = pageData.results.map((result) => ({
+              ...result,
+              result_ref: this.handles!.issueResult(policyContext, {
+                documentId: result.document_id,
+                objectClass: result.object_class
+              })
+            }));
+            data = {
+              ...legacyData,
+              results,
+              search_ref: this.handles.issueSearch(policyContext, page.context.searchAuthority),
+              continuation_ref: page.nextCursor
+                ? this.handles.issueContinuation(policyContext, {
+                    searchAuthority: page.context.searchAuthority,
+                    cursor: page.nextCursor
+                  })
+                : null
+            };
+          } else {
+            data = legacyData;
+          }
           break;
         }
         case "arcsuite_get_document": {
@@ -1117,12 +1163,12 @@ function rejectRawArcSuiteFields(value: unknown): void {
 }
 
 function parseSearchArgs(args: Record<string, unknown>, config: AppConfig) {
-  assertExactKeys(args, ["scope", "query", "query_mode", "filters", "limit", "include_path", "cursor", "text_search_mode"], "search arguments");
+  assertExactKeys(args, ["scope", "query", "query_mode", "filters", "limit", "include_path", "cursor", "text_search_mode", "response_contract"], "search arguments");
   const scope = stringValue(args.scope, "scope", 1, 100);
   const cursor = optionalString(args.cursor, "cursor", 4096);
   if (cursor) {
-    for (const key of ["query", "query_mode", "filters", "limit", "include_path", "text_search_mode"]) if (args[key] !== undefined) throw new TypeError(`${key} cannot be combined with cursor`);
-    return { scope, cursor, query: undefined, queryMode: "and" as const, filters: {} as Record<string, SemanticFilterInput>, textSearchMode: "none" as const, limit: config.searchDefaultLimit, includePath: false };
+    for (const key of ["query", "query_mode", "filters", "limit", "include_path", "text_search_mode", "response_contract"]) if (args[key] !== undefined) throw new TypeError(`${key} cannot be combined with cursor`);
+    return { scope, cursor, query: undefined, queryMode: "and" as const, filters: {} as Record<string, SemanticFilterInput>, textSearchMode: "none" as const, limit: config.searchDefaultLimit, includePath: false, responseContract: "legacy" as const };
   }
   const queryValue = optionalString(args.query, "query", 200);
   const query = queryValue?.trim() || undefined;
@@ -1137,7 +1183,8 @@ function parseSearchArgs(args: Record<string, unknown>, config: AppConfig) {
   if (!query && !Object.keys(filters).length) throw new TypeError("At least query or one semantic filter is required");
   if (!query && textSearchMode !== "none") throw new TypeError("text_search_mode requires a text query");
   const limit = args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit);
-  return { scope, cursor: undefined, query, queryMode, filters, textSearchMode, limit, includePath: boolValue(args.include_path, false) };
+  const responseContract = enumValue(args.response_contract, ["legacy", "opaque_refs_v1"] as const, "legacy");
+  return { scope, cursor: undefined, query, queryMode, filters, textSearchMode, limit, includePath: boolValue(args.include_path, false), responseContract };
 }
 
 function parseSemanticFilterInput(value: unknown, label: string): SemanticFilterInput {
@@ -1522,7 +1569,7 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
     {
       name: "arcsuite_search_documents",
       description: `Search an allowed semantic ArcSuite scope. Available scope/filter names: ${scopeSummary || "none"}. Use next_cursor by itself with scope to continue a stable bounded snapshot.`,
-      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: filterValue }, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 }, text_search_mode: { type: "string", enum: ["none", "stemming", "thesaurus"], default: "none" } } }
+      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: filterValue }, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 }, text_search_mode: { type: "string", enum: ["none", "stemming", "thesaurus"], default: "none" }, response_contract: { type: "string", enum: ["legacy", "opaque_refs_v1"], default: "legacy" } }, allOf: [{ if: { required: ["cursor"] }, then: { not: { required: ["response_contract"] } } }] }
     },
     {
       name: "arcsuite_get_document",

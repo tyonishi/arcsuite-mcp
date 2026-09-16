@@ -1,6 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { CanonicalSemanticPredicate } from "../semantic/attributeMapper.ts";
 import type { AppliedQuery } from "./appliedQuery.ts";
+import type { CanonicalSearchAuthority } from "./opaqueHandles.ts";
 
 export type PagingKind = "search" | "folder" | "hard_reference";
 
@@ -10,6 +11,8 @@ export type PagingSnapshotContext = {
   includePath: boolean;
   searchVerificationPlan?: readonly CanonicalSemanticPredicate[];
   searchAppliedQuery?: AppliedQuery;
+  responseContract?: "legacy" | "opaque_refs_v1";
+  searchAuthority?: CanonicalSearchAuthority;
 };
 
 type PagingSnapshot = {

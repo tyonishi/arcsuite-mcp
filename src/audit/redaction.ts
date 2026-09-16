@@ -1,12 +1,23 @@
 const FORBIDDEN_KEYS = new Set([
   "password",
   "credential",
-  "securityToken",
-  "sessionId",
-  "rawSoap",
+  "securitytoken",
+  "sessionid",
+  "rawsoap",
   "binary",
   "content",
-  "query"
+  "query",
+  "ref",
+  "search_ref",
+  "continuation_ref",
+  "result_ref",
+  "locator",
+  "tag",
+  "policyfingerprint",
+  "tokenhash",
+  "tokensha256",
+  "cursor",
+  "decodedhandlerecord"
 ]);
 
 export function redactAuditValue(value: unknown): unknown {
@@ -14,7 +25,7 @@ export function redactAuditValue(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (FORBIDDEN_KEYS.has(key)) continue;
+    if (FORBIDDEN_KEYS.has(key.toLowerCase())) continue;
     out[key] = redactAuditValue(item);
   }
   return out;

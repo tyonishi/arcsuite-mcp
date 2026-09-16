@@ -88,3 +88,82 @@ test("hard-reference candidates have a bounded default and cannot exceed snapsho
   assert.throws(() => loadConfig({ ...baseEnv, MCP_HARD_REFERENCE_MAX_CANDIDATES: "1001" }), /MCP_HARD_REFERENCE_MAX_CANDIDATES/);
   assert.throws(() => loadConfig({ ...baseEnv, MCP_HARD_REFERENCE_MAX_CANDIDATES: "6", MCP_SEARCH_DEFAULT_LIMIT: "5", MCP_SEARCH_MAX_LIMIT: "5", MCP_PAGING_SNAPSHOT_MAX_IDS: "5" }), /MCP_HARD_REFERENCE_MAX_CANDIDATES cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS/);
 });
+
+test("opaque refs are disabled without adding a legacy startup secret requirement", () => {
+  const config = loadConfig(baseEnv);
+  assert.equal(config.opaqueRefs, null);
+});
+
+test("enabled opaque refs require a bounded valid keyring", () => {
+  const enabled = { ...baseEnv, MCP_OPAQUE_REFS_ENABLED: "true" };
+  assert.throws(() => loadConfig(enabled), /MCP_OPAQUE_REF_KEYS_JSON/);
+  assert.throws(() => loadConfig({ ...enabled, MCP_OPAQUE_REF_KEYS_JSON: "not-json" }), /opaque ref keyring/i);
+  assert.throws(() => loadConfig({
+    ...enabled,
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "missing", keys: [{ kid: "present", secret_base64url: Buffer.alloc(32).toString("base64url") }] })
+  }), /active/i);
+  assert.throws(() => loadConfig({
+    ...enabled,
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "duplicate", keys: [
+      { kid: "duplicate", secret_base64url: Buffer.alloc(32, 1).toString("base64url") },
+      { kid: "duplicate", secret_base64url: Buffer.alloc(32, 2).toString("base64url") }
+    ] })
+  }), /duplicate/i);
+  assert.throws(() => loadConfig({
+    ...enabled,
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "short", keys: [{ kid: "short", secret_base64url: Buffer.alloc(16).toString("base64url") }] })
+  }), /32/);
+
+  const config = loadConfig({
+    ...enabled,
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 3).toString("base64url") }] }),
+    MCP_OPAQUE_REF_TTL_SECONDS: "600",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "100",
+    MCP_OPAQUE_REF_CONTRACT_GENERATION: "1",
+    MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION: "7"
+  });
+  assert.equal(config.opaqueRefs?.activeKid, "active-1");
+  assert.equal(config.opaqueRefs?.ttlSeconds, 600);
+  assert.equal(config.opaqueRefs?.capacity, 100);
+  assert.equal(config.opaqueRefs?.contractGeneration, 1);
+  assert.equal(config.opaqueRefs?.credentialContextGeneration, 7);
+});
+
+test("opaque ref capacity can hold one maximum search page and its top-level refs", () => {
+  const keyring = JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 5).toString("base64url") }] });
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_SEARCH_MAX_LIMIT: "50",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "51"
+  }), /MCP_SEARCH_MAX_LIMIT \+ 2/);
+});
+
+test("production opaque refs accept secret material only from a file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arcsuite-mcp-handle-config-"));
+  const keyFile = join(dir, "handle-keys.json");
+  const tokenSha256 = createHash("sha256").update("production-token").digest("hex");
+  const productionTokens = JSON.stringify({ tokens: [{
+    tokenSha256,
+    clientProfileId: "production-client",
+    allowedScopes: ["example_documents"],
+    allowedTools: ["arcsuite_search_documents"],
+    rateLimit: { requestsPerMinute: 1, burst: 1 }
+  }] });
+  const keyring = JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 4).toString("base64url") }] });
+  const env = {
+    ...baseEnv,
+    NODE_ENV: "production",
+    MCP_DEV_BEARER_TOKEN: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: productionTokens,
+    MCP_CURSOR_HMAC_SECRET_FILE: join(dir, "cursor-secret"),
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring
+  };
+  writeFileSync(env.MCP_CURSOR_HMAC_SECRET_FILE, "0123456789abcdef0123456789abcdef");
+  assert.throws(() => loadConfig(env), /MCP_OPAQUE_REF_KEYS_JSON_FILE/);
+  writeFileSync(keyFile, keyring);
+  const config = loadConfig({ ...env, MCP_OPAQUE_REF_KEYS_JSON_FILE: keyFile });
+  assert.equal(config.opaqueRefs?.activeKid, "active-1");
+});
