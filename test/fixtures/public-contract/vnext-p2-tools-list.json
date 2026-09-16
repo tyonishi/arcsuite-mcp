@@ -1,0 +1,41 @@
+{
+  "previous_p1_sha256": "c80c867e1a4750ca6d238dd14cd2e67c66ceb9e6be375718536cd2c3116ee867",
+  "transport": "authenticated_streamable_http",
+  "result_keys": ["tools"],
+  "modern_result_keys": ["_meta", "cacheScope", "resultType", "tools", "ttlMs"],
+  "tool_count": 17,
+  "tool_key_sets": ["description,inputSchema,name"],
+  "tool_names": [
+    "arcsuite_describe_capabilities",
+    "arcsuite_search_documents",
+    "arcsuite_get_document",
+    "arcsuite_get_documents",
+    "arcsuite_list_folder",
+    "arcsuite_list_document_revisions",
+    "arcsuite_get_document_content_info",
+    "arcsuite_read_document",
+    "arcsuite_list_hard_references",
+    "arcsuite_validate_document_integrity",
+    "arcsuite_continue_search",
+    "arcsuite_replay_search",
+    "arcsuite_get_document_by_ref",
+    "arcsuite_get_documents_by_ref",
+    "arcsuite_list_document_revisions_by_ref",
+    "arcsuite_get_document_content_info_by_ref",
+    "arcsuite_read_document_by_ref"
+  ],
+  "intentional_public_contract_delta": {
+    "changed_existing_tool_input_schemas": [],
+    "new_tools": [
+      "arcsuite_continue_search",
+      "arcsuite_replay_search",
+      "arcsuite_get_document_by_ref",
+      "arcsuite_get_documents_by_ref",
+      "arcsuite_list_document_revisions_by_ref",
+      "arcsuite_get_document_content_info_by_ref",
+      "arcsuite_read_document_by_ref"
+    ],
+    "removed_tools": []
+  },
+  "canonical_tools_sha256": "3cbe801e51854d3330789fd53ac28c9e4e72d223c6bfcfc71bd640a195727b21"
+}

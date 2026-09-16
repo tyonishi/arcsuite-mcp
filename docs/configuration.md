@@ -92,7 +92,7 @@ characters. A request above one of those deployment limits is rejected by the
 registered schema before tool dispatch; the runtime parsers enforce the same
 limits as defense in depth.
 
-## P1 opaque semantic refs
+## P1/P2 opaque semantic refs
 
 Opaque refs are disabled by default. A legacy-only deployment requires no new
 secret and starts with the same configuration as before. Enabling the feature
@@ -125,8 +125,14 @@ fingerprints.
 
 Configuration is startup-only. Changing the keyring, contract generation,
 credential-context generation, token profiles, or scope policy requires a
-restart. P1 uses a process-local bounded store, so restart or deploy invalidates
+restart. P1/P2 use a process-local bounded store, so restart or deploy invalidates
 all refs. Recovery is to repeat the semantic search.
+
+P2 ref-native tools are exposed only when opaque refs are enabled and the
+authenticated token profile lists each exact tool name in `allowedTools`.
+Enabling opaque refs does not grant any P2 tool automatically. Operators must
+keep the gateway runtime count at exactly one; no replica discovery, sticky
+routing, or shared-store fallback is implemented.
 
 ## Scope registry
 

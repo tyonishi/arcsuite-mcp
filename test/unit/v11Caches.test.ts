@@ -135,6 +135,42 @@ test("search snapshots retain an immutable private verification plan without cha
   }), /VERIFICATION_PLAN/);
 });
 
+test("ref-native search paging is non-destructive, bounded, and independent of legacy final-page deletion", () => {
+  const store = new PagingSnapshotStore(secret, 600, 10, 1, 1, 10);
+  const appliedQuery: any = { operator: "and", filters: { operator: "and", predicates: [] }, text: { terms: ["x"], operator: "and", mode: "none" } };
+  const searchAuthority: any = { scopeId: "scope_a", appliedQuery, includePath: false, pageSize: 1 };
+  const create = (ids: string[]) => store.create({
+    clientProfileId: "client-a",
+    scopeId: "scope_a",
+    kind: "search" as const,
+    ids,
+    pageSize: 1,
+    context: {
+      includePath: false,
+      searchVerificationPlan: [],
+      searchAppliedQuery: appliedQuery,
+      responseContract: "opaque_refs_v1" as const,
+      searchAuthority
+    }
+  });
+
+  const first = create(["rep:a:1", "rep:a:2"]);
+  const retained = store.continuationAuthority(first.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a" });
+  const legacyFinal = store.next(first.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" });
+  assert.equal(legacyFinal.nextCursor, null);
+  const one = store.resolveContinuationAuthority(retained, { clientProfileId: "client-a", scopeId: "scope_a" });
+  const two = store.resolveContinuationAuthority(retained, { clientProfileId: "client-a", scopeId: "scope_a" });
+  assert.deepEqual(one.page.ids, ["rep:a:2"]);
+  assert.deepEqual(two.page.ids, one.page.ids);
+
+  const replacement = create(["rep:a:3", "rep:a:4"]);
+  store.continuationAuthority(replacement.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a" });
+  assert.throws(
+    () => store.resolveContinuationAuthority(retained, { clientProfileId: "client-a", scopeId: "scope_a" }),
+    /PAGING_REF_AUTHORITY_UNAVAILABLE/
+  );
+});
+
 test("content snapshots are isolated by client scope document revision and variant", () => {
   const cache = new ContentSnapshotCache(600, 10, 5, 1024 * 1024);
   const base = {

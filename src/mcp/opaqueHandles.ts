@@ -1,6 +1,7 @@
 import { createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import type { TokenProfile } from "../config.ts";
 import type { SemanticScope } from "../semantic/scopeRegistry.ts";
+import type { CanonicalSemanticPredicate } from "../semantic/attributeMapper.ts";
 import type { AppliedQuery } from "./appliedQuery.ts";
 import { McpToolError } from "./errors.ts";
 
@@ -44,6 +45,12 @@ export type CanonicalSearchAuthority = Readonly<{
   pageSize: number;
 }>;
 
+export type ContinuationPageAuthority = Readonly<{
+  authorityId: string;
+  offset: number;
+  expiresAt: number;
+}>;
+
 type CommonHandleRecord = Readonly<{
   kid: string;
   issuedAt: number;
@@ -60,7 +67,8 @@ export type SearchHandleRecord = CommonHandleRecord & Readonly<{
 export type ContinuationHandleRecord = CommonHandleRecord & Readonly<{
   kind: "continuation";
   searchAuthority: CanonicalSearchAuthority;
-  cursor: string;
+  cursor?: string;
+  pageAuthority?: ContinuationPageAuthority;
 }>;
 
 export type ResultHandleRecord = CommonHandleRecord & Readonly<{
@@ -68,6 +76,7 @@ export type ResultHandleRecord = CommonHandleRecord & Readonly<{
   scopeId: string;
   documentId: string;
   objectClass: string;
+  verificationPlan?: readonly CanonicalSemanticPredicate[];
 }>;
 
 export type OpaqueHandleRecord = SearchHandleRecord | ContinuationHandleRecord | ResultHandleRecord;
@@ -198,29 +207,35 @@ export class OpaqueHandleService {
     this.store = store ?? new InMemoryHandleStore<OpaqueHandleRecord>(config.capacity, clock);
   }
 
-  issueSearch(context: HandlePolicyContext, authority: CanonicalSearchAuthority): string {
+  issueSearch(context: HandlePolicyContext, authority: CanonicalSearchAuthority, maxExpiresAt?: number): string {
     if (authority.scopeId !== context.scopeId) throw new Error("Search authority scope mismatch");
-    return this.issue("search", context, (common) => ({ ...common, kind: "search", authority: deepFreezeClone(authority) }));
+    return this.issue("search", context, (common) => ({ ...common, kind: "search", authority: deepFreezeClone(authority) }), maxExpiresAt);
   }
 
   issueContinuation(
     context: HandlePolicyContext,
-    input: Readonly<{ searchAuthority: CanonicalSearchAuthority; cursor: string }>
+    input: Readonly<{ searchAuthority: CanonicalSearchAuthority; cursor?: string; pageAuthority?: ContinuationPageAuthority }>,
+    maxExpiresAt?: number
   ): string {
-    if (input.searchAuthority.scopeId !== context.scopeId || !input.cursor || input.cursor.length > 4096) {
+    if (input.searchAuthority.scopeId !== context.scopeId
+      || (input.cursor !== undefined && (!input.cursor || input.cursor.length > 4096))
+      || (!input.cursor && !input.pageAuthority)) {
       throw new Error("Invalid continuation authority");
     }
+    if (input.pageAuthority) validateContinuationPageAuthority(input.pageAuthority, input.searchAuthority.pageSize);
     return this.issue("continuation", context, (common) => ({
       ...common,
       kind: "continuation",
       searchAuthority: deepFreezeClone(input.searchAuthority),
-      cursor: input.cursor
-    }));
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.pageAuthority ? { pageAuthority: deepFreezeClone(input.pageAuthority) } : {})
+    }), maxExpiresAt ?? input.pageAuthority?.expiresAt);
   }
 
   issueResult(
     context: HandlePolicyContext,
-    input: Readonly<{ documentId: string; objectClass: string }>
+    input: Readonly<{ documentId: string; objectClass: string; verificationPlan?: readonly CanonicalSemanticPredicate[] }>,
+    maxExpiresAt?: number
   ): string {
     if (!input.documentId.startsWith("rep:") || !input.objectClass) throw new Error("Invalid result authority");
     return this.issue("result", context, (common) => ({
@@ -228,11 +243,36 @@ export class OpaqueHandleService {
       kind: "result",
       scopeId: context.scopeId,
       documentId: input.documentId,
-      objectClass: input.objectClass
-    }));
+      objectClass: input.objectClass,
+      ...(input.verificationPlan ? { verificationPlan: deepFreezeClone(input.verificationPlan) } : {})
+    }), maxExpiresAt);
   }
 
   resolve(ref: string, expectedKind: OpaqueHandleKind, context: HandlePolicyContext): OpaqueHandleRecord {
+    return this.resolveInternal(ref, expectedKind, () => context);
+  }
+
+  resolveBound(
+    ref: string,
+    expectedKind: OpaqueHandleKind,
+    profile: TokenProfile,
+    resolveScope: (scopeId: string) => SemanticScope
+  ): OpaqueHandleRecord {
+    return this.resolveInternal(ref, expectedKind, (record) => {
+      const scopeId = record.kind === "search"
+        ? record.authority.scopeId
+        : record.kind === "continuation"
+          ? record.searchAuthority.scopeId
+          : record.scopeId;
+      return { profile, scopeId, scope: resolveScope(scopeId) };
+    });
+  }
+
+  private resolveInternal(
+    ref: string,
+    expectedKind: OpaqueHandleKind,
+    contextFor: (record: OpaqueHandleRecord) => HandlePolicyContext
+  ): OpaqueHandleRecord {
     try {
       const { envelope, key } = this.authenticateEnvelope(ref);
       if (envelope.k !== expectedKind || envelope.gen !== this.config.contractGeneration) throw new Error("unavailable");
@@ -243,7 +283,7 @@ export class OpaqueHandleService {
       if (!record || record.kind !== expectedKind || record.kid !== envelope.kid
         || record.issuedAt !== envelope.iat || record.expiresAt !== envelope.exp
         || record.contractGeneration !== envelope.gen) throw new Error("unavailable");
-      const expectedPolicy = this.policyFingerprint(key, expectedKind, context);
+      const expectedPolicy = this.policyFingerprint(key, expectedKind, contextFor(record));
       if (!constantTimeTextEqual(record.policyFingerprint, expectedPolicy)) throw new Error("unavailable");
       return deepFreezeClone(record);
     } catch {
@@ -263,12 +303,14 @@ export class OpaqueHandleService {
   private issue(
     kind: OpaqueHandleKind,
     context: HandlePolicyContext,
-    build: (common: CommonHandleRecord) => OpaqueHandleRecord
+    build: (common: CommonHandleRecord) => OpaqueHandleRecord,
+    maxExpiresAt?: number
   ): string {
     const key = this.keys.get(this.config.activeKid);
     if (!key) throw new Error("Active handle key unavailable");
     const issuedAt = Math.floor(this.clock() / 1000);
-    const expiresAt = issuedAt + this.config.ttlSeconds;
+    const expiresAt = Math.min(issuedAt + this.config.ttlSeconds, maxExpiresAt ?? Number.MAX_SAFE_INTEGER);
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= issuedAt) throw new Error("Invalid handle expiry lineage");
     const locator = randomBytes(OPAQUE_HANDLE_LIMITS.locatorBytes).toString("base64url");
     const common: CommonHandleRecord = {
       kid: key.kid,
@@ -403,6 +445,15 @@ function constantTimeTextEqual(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, "utf8");
   const rightBytes = Buffer.from(right, "utf8");
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function validateContinuationPageAuthority(authority: ContinuationPageAuthority, pageSize: number): void {
+  if (typeof authority.authorityId !== "string" || !/^[0-9a-f-]{36}$/i.test(authority.authorityId)
+    || !Number.isSafeInteger(authority.offset) || authority.offset < 0
+    || !Number.isSafeInteger(authority.expiresAt)
+    || !Number.isSafeInteger(pageSize) || pageSize < 1) {
+    throw new Error("Invalid continuation page authority");
+  }
 }
 
 function canonicalStringify(value: unknown): string {

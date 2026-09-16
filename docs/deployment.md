@@ -14,9 +14,9 @@ flowchart LR
     Adapter --> Service["ArcSuite service"]
 ```
 
-## P1 opaque-ref topology boundary
+## P1/P2 opaque-ref topology boundary
 
-P1 opaque refs are supported only when the operator has verified that the MCP
+P1/P2 opaque refs and ref-native operations are supported only when the operator has verified that the MCP
 gateway runtime count is exactly one. The handle store is process-local and is
 not shared with another gateway process. Restart, replacement, or deployment
 invalidates every outstanding ref; clients recover by running the semantic
@@ -25,7 +25,7 @@ search again.
 Multi-replica routing, rolling overlap, sticky-session guarantees, and
 cross-instance ref resolution are not supported. Do not enable
 `MCP_OPAQUE_REFS_ENABLED` on a multi-replica deployment. A shared HandleStore
-backend is future additive HA work and is not part of P1.
+backend is future additive HA work and is not part of P1/P2.
 
 The checked-in Compose and Podman templates remain legacy-only by default and
 do not mount a handle keyring. An operator enabling opaque refs must add a

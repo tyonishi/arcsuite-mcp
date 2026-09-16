@@ -6,7 +6,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildRuntime } from "../../src/server.ts";
 import fixture from "../fixtures/public-contract/vnext-p1-tools-list.json" with { type: "json" };
+import p2Fixture from "../fixtures/public-contract/vnext-p2-tools-list.json" with { type: "json" };
 import baselineFixture from "../fixtures/public-contract/round3-tools-list.json" with { type: "json" };
+
+const P2_TOOLS = p2Fixture.intentional_public_contract_delta.new_tools;
+const opaqueKeyring = JSON.stringify({
+  active_kid: "contract-test",
+  keys: [{ kid: "contract-test", secret_base64url: Buffer.alloc(32, 0x71).toString("base64url") }]
+});
 
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
@@ -20,7 +27,7 @@ function hashTools(tools: unknown): string {
   return createHash("sha256").update(JSON.stringify(stable(tools))).digest("hex");
 }
 
-async function listTools(protocolVersion: "2025-03-26" | "2026-07-28") {
+async function listTools(protocolVersion: "2025-03-26" | "2026-07-28", p2 = false) {
   const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-public-contract-"));
   const runtime = await buildRuntime({
     ...process.env,
@@ -39,7 +46,18 @@ async function listTools(protocolVersion: "2025-03-26" | "2026-07-28") {
     MCP_READ_MAX_CHARS: "50000",
     MCP_PAGING_SNAPSHOT_MAX_IDS: "1000",
     MCP_ALLOWED_HOSTNAMES: "127.0.0.1,localhost",
-    MCP_ALLOWED_ORIGIN_HOSTNAMES: "127.0.0.1,localhost"
+    MCP_ALLOWED_ORIGIN_HOSTNAMES: "127.0.0.1,localhost",
+    ...(p2 ? {
+      MCP_OPAQUE_REFS_ENABLED: "true",
+      MCP_OPAQUE_REF_KEYS_JSON: opaqueKeyring,
+      ARCSUITE_MCP_CLIENT_TOKENS_JSON: JSON.stringify({ tokens: [{
+        tokenSha256: createHash("sha256").update("test-token").digest("hex"),
+        clientProfileId: "p2-contract-profile",
+        allowedScopes: ["example_documents"],
+        allowedTools: [...fixture.tool_names, ...P2_TOOLS],
+        rateLimit: { requestsPerMinute: 120, burst: 30 }
+      }] })
+    } : {})
   });
   try {
     await new Promise<void>((resolveListen) => runtime.server.listen(0, "127.0.0.1", resolveListen));
@@ -96,5 +114,22 @@ for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
     delete projectedSearch.inputSchema.properties.response_contract;
     assert.equal(hashTools(legacyProjection), baselineFixture.canonical_tools_sha256,
       "removing response_contract must restore the exact previous public tools/list contract");
+  });
+}
+
+for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
+  test(`authenticated HTTP tools/list matches the P2 additive public contract (${protocolVersion})`, async () => {
+    const listed = await listTools(protocolVersion, true);
+    assert.equal(listed.status, 200);
+    assert.deepEqual(Object.keys(listed.result).sort(), protocolVersion === "2026-07-28" ? p2Fixture.modern_result_keys : p2Fixture.result_keys);
+    assert.equal(listed.result.tools.length, p2Fixture.tool_count);
+    assert.deepEqual(listed.result.tools.map((tool: { name: string }) => tool.name), p2Fixture.tool_names);
+    assert.deepEqual([...new Set(listed.result.tools.map((tool: Record<string, unknown>) => Object.keys(tool).sort().join(",")))].sort(), p2Fixture.tool_key_sets);
+    assert.equal(hashTools(listed.result.tools), p2Fixture.canonical_tools_sha256);
+    assert.deepEqual(listed.result.tools.slice(0, fixture.tool_count), (await listTools(protocolVersion)).result.tools,
+      "P2 must not change any P1 tool schema or description");
+    assert.deepEqual(listed.result.tools.slice(fixture.tool_count).map((tool: { name: string }) => tool.name), P2_TOOLS);
+    assert.deepEqual(p2Fixture.intentional_public_contract_delta.changed_existing_tool_input_schemas, []);
+    assert.deepEqual(p2Fixture.intentional_public_contract_delta.removed_tools, []);
   });
 }
