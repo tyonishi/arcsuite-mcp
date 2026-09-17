@@ -11,7 +11,16 @@ test("audit redaction drops secrets, sessions, queries, and extracted content", 
     password: "secret",
     sessionId: "session",
     query: "private text",
-    nested: { content: "document text", keep: "metadata" }
+    nested: {
+      content: "document text",
+      ref: "arh1.private",
+      locator: "private-locator",
+      tag: "private-tag",
+      policyFingerprint: "private-fingerprint",
+      tokenSha256: "private-token-hash",
+      cursor: "private-provider-cursor",
+      keep: "metadata"
+    }
   }) as Record<string, unknown>;
   assert.deepEqual(value, { trace_id: "synthetic", nested: { keep: "metadata" } });
 });

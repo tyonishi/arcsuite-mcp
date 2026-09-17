@@ -11,6 +11,7 @@ import { ContentSnapshotCache } from "./content/snapshotCache.ts";
 import { AuditLogger } from "./audit/auditLogger.ts";
 import { ToolRegistry } from "./mcp/tools.ts";
 import { assertOperationAllowlistSafe } from "./arcsuite/operationAllowlist.ts";
+import { OpaqueHandleService } from "./mcp/opaqueHandles.ts";
 
 const DEFAULT_STARTUP_VALIDATION_RETRY_DELAY_MS = 5_000;
 
@@ -44,7 +45,8 @@ export async function buildRuntime(
     maxExtractedChars: config.maxExtractedChars
   }, contentCache);
   const audit = new AuditLogger(config.auditLogPath);
-  const tools = new ToolRegistry(config, scopes, adapter, sessions, bridge, audit);
+  const handles = config.opaqueRefs ? new OpaqueHandleService(config.opaqueRefs) : null;
+  const tools = new ToolRegistry(config, scopes, adapter, sessions, bridge, audit, handles);
   let readyState: { ok: boolean; message?: string } = { ok: !config.validateOnStartup, message: config.validateOnStartup ? "validation pending" : undefined };
   let validationInFlight: Promise<boolean> | undefined;
   let validationRetryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -112,7 +114,7 @@ export async function buildRuntime(
     validationRetryStopped = true;
     clearValidationRetry();
   };
-  return { config, scopes, adapter, tools, server, validate, stopValidationRetry, bridge };
+  return { config, scopes, adapter, tools, server, validate, stopValidationRetry, bridge, handles };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

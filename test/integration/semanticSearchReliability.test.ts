@@ -596,7 +596,7 @@ test("provider empty IDs remain a successful zero result", async () => {
   rt.stopValidationRetry();
 });
 
-test("search response keeps the public top-level shape with applied query", async () => {
+test("legacy search response keeps the exact public top-level shape with applied query", async () => {
   const rt = await runtime();
   const id = "rep:mock:EXAMPLE_CABINET:synthetic-1";
   installSearch(rt.adapter, [id], [document(id, baseAttributes)]);
@@ -609,6 +609,7 @@ test("search response keeps the public top-level shape with applied query", asyn
   assert.equal(result.next_cursor, null);
   assert.ok(Array.isArray(result.failures));
   assert.ok(Array.isArray(result.results));
+  assert.equal(result.results.some((item: any) => Object.hasOwn(item, "result_ref")), false);
   rt.stopValidationRetry();
 });
 

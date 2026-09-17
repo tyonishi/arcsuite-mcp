@@ -19,6 +19,7 @@ export type ToolSchemaLimits = Readonly<{
 // are enforced by the semantic registry.
 const contentLabel = z.string().min(1).max(256).optional();
 const pagingCursor = z.string().min(1).max(4096).optional();
+const opaqueRef = z.string().min(1).max(1024);
 const semanticFilterOperator = z.enum(["eq", "like", "gte", "lte"]);
 const semanticFilterScalar = z.union([z.string().min(1).max(255), z.number().finite(), z.boolean()]);
 const semanticFilterValue = z.union([
@@ -29,22 +30,36 @@ const semanticFilterValue = z.union([
 function createToolInputSchemas(limits: ToolSchemaLimits) {
   const limit = z.number().int().min(1).max(limits.searchMaxLimit).optional();
   const revisionNumber = z.number().int().min(MIN_REVISION_NUMBER).max(MAX_REVISION_NUMBER).optional();
+  const search = z.object({
+    scope,
+    query: z.string().min(1).max(200).optional(),
+    query_mode: z.enum(["and", "or"]).optional(),
+    filters: z.record(z.string(), semanticFilterValue).optional(),
+    limit,
+    include_path: z.boolean().optional(),
+    cursor: pagingCursor,
+    text_search_mode: z.enum(["none", "stemming", "thesaurus"]).optional(),
+    response_contract: z.enum(["legacy", "opaque_refs_v1"])
+      .optional()
+      .describe("Initial searches only. Omit for the exact legacy response; cannot be combined with cursor.")
+  }).strict().refine((value) => value.cursor === undefined || value.response_contract === undefined, {
+    message: "response_contract cannot be combined with cursor"
+  });
+  const refReadCommon = {
+    result_ref: opaqueRef,
+    revision_number: revisionNumber,
+    content_label: contentLabel,
+    max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
+  };
   return {
     arcsuite_describe_capabilities: z.object({}).strict(),
     arcsuite_validate_document_integrity: z.object({
       document_id: documentId,
       include_evidence: z.boolean().default(false)
     }).strict(),
-    arcsuite_search_documents: z.object({
-      scope,
-      query: z.string().min(1).max(200).optional(),
-      query_mode: z.enum(["and", "or"]).optional(),
-      filters: z.record(z.string(), semanticFilterValue).optional(),
-      limit,
-      include_path: z.boolean().optional(),
-      cursor: pagingCursor,
-      text_search_mode: z.enum(["none", "stemming", "thesaurus"]).optional()
-    }).strict(),
+    arcsuite_search_documents: search,
+    arcsuite_continue_search: z.object({ continuation_ref: opaqueRef }).strict(),
+    arcsuite_replay_search: z.object({ search_ref: opaqueRef, target_scope: scope }).strict(),
     arcsuite_get_document: z.object({
       document_id: documentId,
       revision_number: revisionNumber,
@@ -53,6 +68,15 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
     arcsuite_get_documents: z.object({
       scope,
       document_ids: z.array(documentId).min(1).max(limits.batchMaxIds),
+      include_path: z.boolean().optional()
+    }).strict(),
+    arcsuite_get_document_by_ref: z.object({
+      result_ref: opaqueRef,
+      revision_number: revisionNumber,
+      include_path: z.boolean().optional()
+    }).strict(),
+    arcsuite_get_documents_by_ref: z.object({
+      result_refs: z.array(opaqueRef).min(1).max(limits.batchMaxIds),
       include_path: z.boolean().optional()
     }).strict(),
     arcsuite_list_folder: z.object({
@@ -76,8 +100,14 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
       }).strict()
     ]),
     arcsuite_list_document_revisions: z.object({ document_id: documentId, limit }).strict(),
+    arcsuite_list_document_revisions_by_ref: z.object({ result_ref: opaqueRef, limit }).strict(),
     arcsuite_get_document_content_info: z.object({
       document_id: documentId,
+      revision_number: revisionNumber,
+      content_label: contentLabel
+    }).strict(),
+    arcsuite_get_document_content_info_by_ref: z.object({
+      result_ref: opaqueRef,
       revision_number: revisionNumber,
       content_label: contentLabel
     }).strict(),
@@ -118,6 +148,32 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
         cursor: z.string().min(1).max(4096),
         max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
       }).strict()
+    ]),
+    arcsuite_read_document_by_ref: z.union([
+      z.object({
+        ...refReadCommon,
+        start_page: z.never().optional(),
+        end_page: z.never().optional(),
+        cursor: z.never().optional()
+      }).strict(),
+      z.object({
+        ...refReadCommon,
+        start_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
+        end_page: z.never().optional(),
+        cursor: z.never().optional()
+      }).strict(),
+      z.object({
+        ...refReadCommon,
+        start_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
+        end_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
+        cursor: z.never().optional()
+      }).strict().refine((value) => value.end_page >= value.start_page, { message: "end_page must be >= start_page" }),
+      z.object({
+        ...refReadCommon,
+        start_page: z.never().optional(),
+        end_page: z.never().optional(),
+        cursor: z.string().min(1).max(4096)
+      }).strict()
     ])
   } as const;
 }
@@ -156,10 +212,14 @@ export type ToolInputName = keyof typeof toolInputSchemas;
 
 export function toolInputSchemaForProfile(name: ToolInputName, allowedScopes: string[], limits: ToolSchemaLimits = TOOL_SCHEMA_HARD_LIMITS) {
   const schema = schemasForLimits(limits)[name];
+  if (name === "arcsuite_replay_search") {
+    if (!allowedScopes.length) return (schema as any).safeExtend({ target_scope: z.never() });
+    return (schema as any).safeExtend({ target_scope: z.enum(allowedScopes as [string, ...string[]]) });
+  }
   if (!isScopeTool(name)) return schema;
-  if (!allowedScopes.length) return (schema as any).extend({ scope: z.never() });
+  if (!allowedScopes.length) return (schema as any).safeExtend({ scope: z.never() });
   const scopeEnum = z.enum(allowedScopes as [string, ...string[]]);
-  return (schema as any).extend({ scope: scopeEnum });
+  return (schema as any).safeExtend({ scope: scopeEnum });
 }
 
 function isScopeTool(name: ToolInputName): name is "arcsuite_search_documents" | "arcsuite_get_documents" | "arcsuite_list_folder" {

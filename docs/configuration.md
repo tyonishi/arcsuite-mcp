@@ -18,6 +18,14 @@ scope registry. Tool callers cannot override these values.
 | `MCP_DEV_BEARER_TOKEN` | none | Development-only single profile |
 | `MCP_CURSOR_HMAC_SECRET_FILE` | none | Non-empty HMAC key file for read and paging cursors; required in production |
 | `MCP_CURSOR_HMAC_SECRET` | none | Controlled non-production fallback for cursor HMAC; ignored in production |
+| `MCP_OPAQUE_REFS_ENABLED` | `false` | Explicitly enable P1 opaque ref issuance; legacy search remains unchanged while disabled |
+| `MCP_OPAQUE_REF_KEYS_JSON_FILE` | none | Secret keyring file required when opaque refs are enabled in production |
+| `MCP_OPAQUE_REF_KEYS_JSON` | none | Controlled non-production keyring fallback; ignored in production |
+| `MCP_OPAQUE_REF_TTL_SECONDS` | `600` | Opaque ref lifetime; hard maximum `86400` |
+| `MCP_OPAQUE_REF_MAX_ENTRIES` | `1000` | Process-local hard capacity; while enabled it must reserve at least `MCP_SEARCH_MAX_LIMIT + 2` entries for every eligible profile |
+| `MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE` | `floor(global capacity / eligible profiles)` | Strict per-profile handle-record share; must fit one maximum search authority set and cannot exceed the derived reserved share |
+| `MCP_OPAQUE_REF_CONTRACT_GENERATION` | `1` | Non-secret envelope/record compatibility generation |
+| `MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION` | `1` | Non-secret credential-context epoch used in policy binding |
 | `MCP_VALIDATE_ON_STARTUP` | `true` | Validate adapter health and configured schema before readiness |
 | `MCP_ALLOWED_HOSTNAMES` | `localhost,127.0.0.1` | Host/DNS-rebinding allowlist |
 | `MCP_ALLOWED_ORIGIN_HOSTNAMES` | `localhost,127.0.0.1` | Browser Origin allowlist |
@@ -38,6 +46,7 @@ scope registry. Tool callers cannot override these values.
 | `MCP_PAGING_MAX_SNAPSHOTS` | `100` | Maximum in-memory paging snapshots |
 | `MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT` | `10` | Maximum paging snapshots for one client profile |
 | `MCP_PAGING_MAX_TOTAL_IDS` | `10000` | Global ID budget across paging snapshots |
+| `MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT` | `min(global ID budget, 2 * snapshot ID limit)` | Per-profile ID budget across normal and retained paging authority; cannot exceed the global budget |
 | `MCP_CONTENT_CACHE_TTL_SECONDS` | `600` | Extracted-content snapshot lifetime |
 | `MCP_CONTENT_CACHE_MAX_ENTRIES` | `64` | Global extracted-content entry limit |
 | `MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT` | `16` | Extracted-content entries per client profile |
@@ -72,7 +81,8 @@ per MCP read response, 50 search/list results per page, 1,000 Hard Reference
 candidates, 100 batch IDs, 5,000
 IDs in one paging snapshot, 1,000 paging snapshots, 100 paging snapshots per
 client, 100,000 total cached paging IDs, 256 MiB extracted-content cache,
-86,400 seconds for cursor/cache TTLs, 100,000 requests per minute, and a
+10,000 process-local handle records, 86,400 seconds for cursor/cache/ref TTLs,
+100,000 requests per minute, and a
 1,000-token burst. These caps are repository safety bounds, not a substitute
 for deployment resource limits. The Java adapter also caps internal JSON
 requests at 2,000,000 bytes and the gateway caps a materialized adapter JSON
@@ -83,6 +93,67 @@ limits for batch IDs, search/list/revision/Hard Reference page sizes, and read
 characters. A request above one of those deployment limits is rejected by the
 registered schema before tool dispatch; the runtime parsers enforce the same
 limits as defense in depth.
+
+## P1/P2 opaque semantic refs
+
+Opaque refs are disabled by default. A legacy-only deployment requires no new
+secret and starts with the same configuration as before. Enabling the feature
+requires both `MCP_OPAQUE_REFS_ENABLED=true` and a valid keyring. Production
+accepts key material only from `MCP_OPAQUE_REF_KEYS_JSON_FILE`; the inline JSON
+form exists for controlled non-production tests.
+
+Handle records are owned internally by the authenticated client profile. A
+profile that reaches its per-profile capacity can evict only its own
+least-recently-used records. The global capacity remains a hard process bound;
+when it is full and the allocating profile has too few records to reclaim, the
+entire ref set is rejected before publication rather than evicting another
+profile's valid records. The owner is never included in the public ref envelope.
+
+When `MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE` is omitted, the server reserves a
+strict equal share of the global capacity for each configured profile that can
+mint refs through `arcsuite_search_documents`. A single eligible profile may
+use the full global capacity; with multiple eligible profiles the default is
+`floor(MCP_OPAQUE_REF_MAX_ENTRIES / eligible profile count)`, and unused shares
+are not borrowed across profiles. An explicit per-profile value cannot exceed
+that reserved share. Each share must fit one maximum initial authority set
+(`MCP_SEARCH_MAX_LIMIT + 2`, covering the search ref, an optional continuation
+ref, and result refs), otherwise enabled startup fails closed and the operator
+must increase the global capacity or reduce the configured search/profile
+bounds. Token-profile and capacity changes take effect only after restart.
+
+The keyring has one active issuance key and at most one retained validation
+key. Each secret is canonical unpadded base64url encoding of 32 to 64 random
+bytes:
+
+```json
+{
+  "active_kid": "handle-key-current",
+  "keys": [
+    {
+      "kid": "handle-key-current",
+      "secret_base64url": "<base64url-encoded-32-to-64-byte-secret>"
+    }
+  ]
+}
+```
+
+Duplicate or unknown key IDs, a missing active key, malformed/short keys, or an
+invalid enabled configuration fail startup closed. The handle keyring is
+independent of `MCP_CURSOR_HMAC_SECRET_FILE`; the server derives separate
+envelope-authentication, store-index, and policy-fingerprint keys. Do not log
+the file, derived keys, refs, locators, authentication tags, or policy
+fingerprints.
+
+Configuration is startup-only. Changing the keyring, contract generation,
+credential-context generation, token profiles, or scope policy requires a
+restart. P1/P2 use a process-local bounded store, so restart or deploy invalidates
+all refs. Recovery is to repeat the semantic search.
+
+P2 ref-native tools are exposed only when opaque refs are enabled and the
+authenticated token profile lists each exact tool name in `allowedTools`.
+Enabling opaque refs does not grant any P2 tool automatically. Operators must
+keep the gateway runtime count at exactly one; no replica discovery, sticky
+routing, or shared-store fallback is implemented.
 
 ## Scope registry
 
@@ -279,6 +350,12 @@ object IDs. The initial request uses ArcSuite ID-only list/search operations;
 later pages use the stored ID snapshot rather than re-running the search.
 Paging cursors are HMAC protected and bound to the client profile, semantic
 scope, result kind, snapshot, page size, offset, and expiry.
+
+Normal and retained search authorities share the global snapshot and ID
+budgets. Per-profile pressure evicts only that profile's least-recently-used
+eligible authority. If a new allocation cannot fit within the global bound
+without evicting another profile, the allocation fails and existing foreign
+authority remains intact.
 
 `MCP_SEARCH_MAX_LIMIT` and `MCP_HARD_REFERENCE_MAX_CANDIDATES` must not exceed
 `MCP_PAGING_SNAPSHOT_MAX_IDS`, so accepted page sizes and authorized candidate

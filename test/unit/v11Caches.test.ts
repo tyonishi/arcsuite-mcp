@@ -5,6 +5,41 @@ import { ContentSnapshotCache } from "../../src/content/snapshotCache.ts";
 
 const secret = Buffer.from("0123456789abcdef0123456789abcdef", "utf8");
 
+function searchPage(store: PagingSnapshotStore, clientProfileId: string, suffix: string, count = 3) {
+  const appliedQuery: any = { operator: "and", filters: { operator: "and", predicates: [] }, text: null };
+  return store.create({
+    clientProfileId,
+    scopeId: "scope_a",
+    kind: "search",
+    ids: Array.from({ length: count }, (_, index) => `rep:a:${suffix}-${index + 1}`),
+    pageSize: 1,
+    context: {
+      includePath: false,
+      searchVerificationPlan: [],
+      searchAppliedQuery: appliedQuery,
+      responseContract: "opaque_refs_v1",
+      searchAuthority: { scopeId: "scope_a", appliedQuery, includePath: false, pageSize: 1 }
+    }
+  });
+}
+
+function pagingUsage(store: PagingSnapshotStore) {
+  const internal = store as unknown as {
+    snapshots: Map<string, { clientProfileId: string; ids: string[] }>;
+    retainedSearchSnapshots: Map<string, { clientProfileId: string; ids: string[] }>;
+    totalIds: number;
+    retainedSearchTotalIds: number;
+  };
+  const all = [...internal.snapshots.values(), ...internal.retainedSearchSnapshots.values()];
+  return {
+    count: all.length,
+    normalCount: internal.snapshots.size,
+    retainedCount: internal.retainedSearchSnapshots.size,
+    countFor: (clientProfileId: string) => all.filter((snapshot) => snapshot.clientProfileId === clientProfileId).length,
+    ids: internal.totalIds + internal.retainedSearchTotalIds
+  };
+}
+
 test("paging snapshots preserve order and bind cursors to profile scope and kind", () => {
   const store = new PagingSnapshotStore(secret, 600, 10, 10, 5, 100);
   const first = store.create({
@@ -133,6 +168,195 @@ test("search snapshots retain an immutable private verification plan without cha
     pageSize: 1,
     context: { includePath: false } as any
   }), /VERIFICATION_PLAN/);
+});
+
+test("ref-native search paging is non-destructive, bounded, and independent of legacy final-page deletion", () => {
+  const store = new PagingSnapshotStore(secret, 600, 10, 2, 2, 20);
+  const appliedQuery: any = { operator: "and", filters: { operator: "and", predicates: [] }, text: { terms: ["x"], operator: "and", mode: "none" } };
+  const searchAuthority: any = { scopeId: "scope_a", appliedQuery, includePath: false, pageSize: 1 };
+  const create = (ids: string[]) => store.create({
+    clientProfileId: "client-a",
+    scopeId: "scope_a",
+    kind: "search" as const,
+    ids,
+    pageSize: 1,
+    context: {
+      includePath: false,
+      searchVerificationPlan: [],
+      searchAppliedQuery: appliedQuery,
+      responseContract: "opaque_refs_v1" as const,
+      searchAuthority
+    }
+  });
+
+  const first = create(["rep:a:1", "rep:a:2"]);
+  const retained = store.continuationAuthority(first.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a" });
+  const legacyFinal = store.next(first.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" });
+  assert.equal(legacyFinal.nextCursor, null);
+  const one = store.resolveContinuationAuthority(retained, { clientProfileId: "client-a", scopeId: "scope_a" });
+  const two = store.resolveContinuationAuthority(retained, { clientProfileId: "client-a", scopeId: "scope_a" });
+  assert.deepEqual(one.page.ids, ["rep:a:2"]);
+  assert.deepEqual(two.page.ids, one.page.ids);
+
+  const replacement = create(["rep:a:3", "rep:a:4"]);
+  store.continuationAuthority(replacement.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a" });
+  assert.throws(
+    () => store.resolveContinuationAuthority(retained, { clientProfileId: "client-a", scopeId: "scope_a" }),
+    /PAGING_REF_AUTHORITY_UNAVAILABLE/
+  );
+});
+
+test("normal and retained paging authorities share global client and ID capacity", () => {
+  const global = new PagingSnapshotStore(secret, 600, 10, 2, 2, 100);
+  const globalFirst = searchPage(global, "client-a", "global-a");
+  const globalAuthority = global.continuationAuthority(globalFirst.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a" });
+  assert.throws(() => searchPage(global, "client-b", "global-b"), /PAGING_CACHE_LIMIT/);
+  assert.equal(pagingUsage(global).count, 2, "normal and retained entries must share maxSnapshots");
+  assert.deepEqual(
+    global.resolveContinuationAuthority(globalAuthority, { clientProfileId: "client-a", scopeId: "scope_a" }).page.ids,
+    ["rep:a:global-a-2"],
+    "global snapshot pressure must reject the allocator instead of evicting another profile"
+  );
+
+  const perClient = new PagingSnapshotStore(secret, 600, 10, 4, 2, 100);
+  const clientFirst = searchPage(perClient, "client-a", "client-a-first");
+  perClient.continuationAuthority(clientFirst.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a" });
+  searchPage(perClient, "client-a", "client-a-second");
+  assert.equal(pagingUsage(perClient).countFor("client-a"), 2,
+    "normal and retained entries must share maxSnapshotsPerClient");
+
+  const byIds = new PagingSnapshotStore(secret, 600, 6, 10, 10, 6);
+  const idsFirst = searchPage(byIds, "client-a", "ids-a");
+  byIds.continuationAuthority(idsFirst.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a" });
+  assert.equal(pagingUsage(byIds).count, 2, "a retained copy is a second combined paging entry");
+  assert.equal(pagingUsage(byIds).ids, 6, "retained copies must participate in combined ID accounting");
+  assert.throws(() => searchPage(byIds, "client-b", "ids-b"), /PAGING_CACHE_LIMIT/);
+  assert.equal(pagingUsage(byIds).ids, 6, "normal and retained entries must share maxTotalIds");
+
+  const constrained = new PagingSnapshotStore(secret, 600, 3, 1, 1, 3);
+  const protectedLegacy = searchPage(constrained, "client-a", "protected");
+  assert.throws(
+    () => constrained.continuationAuthority(protectedLegacy.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a" }),
+    /PAGING_REF_CACHE_LIMIT/
+  );
+  assert.deepEqual(
+    constrained.next(protectedLegacy.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" }).ids,
+    ["rep:a:protected-2"],
+    "a failed retained-copy insertion must not evict its source legacy authority"
+  );
+  assert.equal(pagingUsage(constrained).normalCount, 1, "failed retained-copy insertion must preserve its source");
+  assert.equal(pagingUsage(constrained).retainedCount, 0, "failed insertion must leave no partial retained authority");
+});
+
+test("expired normal and retained paging entries are pruned before combined capacity decisions", () => {
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    const store = new PagingSnapshotStore(secret, 1, 6, 2, 2, 6);
+    const expired = searchPage(store, "client-b", "expired");
+    store.continuationAuthority(expired.nextCursor!, { clientProfileId: "client-b", scopeId: "scope_a" });
+    now += 2_000;
+    const current = searchPage(store, "client-a", "current");
+    const usage = pagingUsage(store);
+    assert.equal(usage.count, 1);
+    assert.equal(usage.ids, 3);
+    assert.deepEqual(
+      store.next(current.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" }).ids,
+      ["rep:a:current-2"]
+    );
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("per-client ID pressure evicts only that client's least-recently-used snapshot", () => {
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    const store = new PagingSnapshotStore(secret, 600, 3, 10, 10, 30, 6);
+    const victim = searchPage(store, "client-b", "victim");
+    now += 1;
+    const first = searchPage(store, "client-a", "first");
+    now += 1;
+    const second = searchPage(store, "client-a", "second");
+    now += 1;
+    const touched = store.next(first.nextCursor!, {
+      clientProfileId: "client-a",
+      scopeId: "scope_a",
+      kind: "search"
+    });
+    now += 1;
+    searchPage(store, "client-a", "third");
+
+    assert.throws(
+      () => store.next(second.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" }),
+      /PAGING_SNAPSHOT_EXPIRED/
+    );
+    assert.deepEqual(
+      store.next(touched.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" }).ids,
+      ["rep:a:first-3"]
+    );
+    assert.deepEqual(
+      store.next(victim.nextCursor!, { clientProfileId: "client-b", scopeId: "scope_a", kind: "search" }).ids,
+      ["rep:a:victim-2"]
+    );
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("failed global allocation does not partially evict the allocator or another profile", () => {
+  const store = new PagingSnapshotStore(secret, 600, 6, 5, 5, 9, 9);
+  const victim = searchPage(store, "client-b", "victim", 3);
+  const victimAuthority = store.continuationAuthority(victim.nextCursor!, {
+    clientProfileId: "client-b",
+    scopeId: "scope_a"
+  });
+  const allocator = searchPage(store, "client-a", "allocator", 3);
+
+  assert.throws(() => searchPage(store, "client-a", "too-large", 6), /PAGING_CACHE_LIMIT/);
+  assert.equal(pagingUsage(store).ids, 9);
+  assert.equal(pagingUsage(store).count, 3);
+  assert.deepEqual(
+    store.next(allocator.nextCursor!, { clientProfileId: "client-a", scopeId: "scope_a", kind: "search" }).ids,
+    ["rep:a:allocator-2"]
+  );
+  assert.deepEqual(
+    store.resolveContinuationAuthority(victimAuthority, { clientProfileId: "client-b", scopeId: "scope_a" }).page.ids,
+    ["rep:a:victim-2"]
+  );
+});
+
+test("paging pressure from one profile cannot evict another profile's retained continuation", () => {
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    const store = new PagingSnapshotStore(secret, 600, 3, 4, 4, 9, 6);
+    const victimPage = searchPage(store, "client-b", "victim");
+    now += 1;
+    const victimAuthority = store.continuationAuthority(victimPage.nextCursor!, {
+      clientProfileId: "client-b",
+      scopeId: "scope_a"
+    });
+
+    for (const suffix of ["pressure-1", "pressure-2", "pressure-3"]) {
+      now += 1;
+      searchPage(store, "client-a", suffix);
+    }
+
+    assert.deepEqual(
+      store.resolveContinuationAuthority(victimAuthority, {
+        clientProfileId: "client-b",
+        scopeId: "scope_a"
+      }).page.ids,
+      ["rep:a:victim-2"]
+    );
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("content snapshots are isolated by client scope document revision and variant", () => {

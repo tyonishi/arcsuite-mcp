@@ -23,6 +23,13 @@ authority.
 | `arcsuite_list_document_revisions` | `document_id` | Revision metadata |
 | `arcsuite_get_document_content_info` | `document_id`; optional semantic `content_label` | File name/type/size/extractor support for one configured label; may warm a private short-lived extracted-content snapshot; never binary |
 | `arcsuite_read_document` | `document_id`; optional semantic `content_label` | Bounded extracted text, cache indicator, and optional signed content cursor |
+| `arcsuite_continue_search` | `continuation_ref` only | Freshly verified next logical page without exposing a legacy cursor |
+| `arcsuite_replay_search` | `search_ref`, `target_scope` | Exact semantic-query replay after source and target scope authorization |
+| `arcsuite_get_document_by_ref` | `result_ref` | Freshly verified semantic metadata without caller-supplied document identity |
+| `arcsuite_get_documents_by_ref` | same-scope `result_refs` | Atomic pre-dispatch validation and bounded batch metadata |
+| `arcsuite_list_document_revisions_by_ref` | `result_ref` | Fresh provider revision metadata |
+| `arcsuite_get_document_content_info_by_ref` | `result_ref`; optional revision/semantic label | Current content metadata after identity and scope revalidation |
+| `arcsuite_read_document_by_ref` | `result_ref`; optional bounded read controls | Bounded extracted text after fresh identity and content-membership proof |
 
 The registered `tools/list` schemas reflect the effective configuration for
 batch size (`MCP_BATCH_MAX_IDS`), page size (`MCP_SEARCH_MAX_LIMIT`), and read
@@ -273,6 +280,71 @@ The server stores a bounded ID snapshot plus a private immutable verification
 plan for semantic searches. `snapshot_limited=true` means the bounded snapshot
 itself hit its configured maximum; no additional pages beyond that snapshot are
 promised. The plan is never placed in the cursor or returned to the caller.
+
+### Opt-in opaque refs
+
+`arcsuite_search_documents` keeps the exact legacy response by default. An
+initial search may explicitly request the additive P1 contract:
+
+```json
+{
+  "scope": "example_documents",
+  "query": "annual report",
+  "response_contract": "opaque_refs_v1"
+}
+```
+
+`response_contract` accepts `legacy` or `opaque_refs_v1`. Omitted means
+`legacy`. It is initial-search-only and cannot be sent with `cursor`. A legacy
+cursor continuation inherits the contract selected by its initial search; the
+caller cannot switch contracts during pagination.
+
+When explicitly selected and enabled by the operator, `opaque_refs_v1` adds
+`search_ref` and `continuation_ref` at the top level and `result_ref` to each
+verified result. `search_ref` is emitted even for a successful zero-result
+search. `continuation_ref` is non-null only when `next_cursor` is non-null.
+Failures and rejected or unverified provider objects never receive a result
+ref. Existing fields, including `document_id`, `next_cursor`, and
+`applied_query`, are unchanged.
+
+Refs are short-lived authenticated authority references, not credentials.
+Possession does not grant access. Every P2 ref-native operation rechecks the
+current bearer, the individual tool permission, the source scope, the keyed
+policy binding, and fresh provider identity/root/type/scope authority.
+If the feature is disabled, an `opaque_refs_v1` request fails before provider
+dispatch and is never silently downgraded to legacy.
+
+`arcsuite_continue_search` accepts only `continuation_ref`. The same valid ref
+selects the same logical page on retry, while each call freshly hydrates and
+verifies that page. It returns a new equivalent `search_ref` for the same
+canonical search semantics, result refs, and the next continuation ref or
+`null`; it never returns `next_cursor`. Child continuation expiry cannot exceed
+the original paging authority expiry. Legacy cursor final-page deletion and
+all legacy search fields remain unchanged.
+
+`arcsuite_replay_search` accepts only a canonical `search_ref` plus an explicit
+authorized `target_scope`. Every stored semantic predicate, operator, text
+term/mode, page size, and include-path choice is recanonicalized against the
+target scope before search dispatch. Any unsupported type, operator, value, or
+text mode fails with `replay_query_incompatible`; predicates are never dropped
+or broadened. A successful replay is a fresh search authority and may receive a
+new bounded TTL. Zero results are a successful replay with a valid search ref.
+
+The five result-ref tools share one authority resolver. A result ref supplies
+the exact previously verified identity; callers cannot add a scope or document
+ID. Current metadata is hydrated from ArcSuite, exact identity and object class
+are compared, and cabinet/root/type plus stored deterministic predicates are
+revalidated. Batch refs must bind to one semantic scope and all refs are
+validated before batch dispatch. Ref-native metadata removes `document_id` and
+uses `result_ref` for chaining. Existing legacy tools remain supported and
+unchanged.
+
+Malformed, expired, evicted, wrong-kind, wrong-profile, or policy-mismatched
+refs collapse to `ARCSUITE_REF_UNAVAILABLE` with `recovery=search_again`.
+Immediate provider ACL-revocation propagation is not claimed: P2 performs a
+fresh provider hydration using the current provider session semantics, whose
+revocation timing still requires licensed live qualification. Dify v4.3 is not
+integrated in P2.
 
 ## Batch metadata
 

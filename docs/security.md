@@ -1,5 +1,22 @@
 # Security model
 
+## Opaque ref consumption
+
+Opaque refs are non-credentials. P2 validates their bounded authenticated
+envelope and process-local record only after current bearer and exact-tool
+authorization, then recomputes the current profile/scope policy binding. Search
+replay authorizes both source and target scopes before dispatch. Result reads
+freshly hydrate provider metadata and revalidate exact identity, cabinet/root,
+object type, and deterministic semantic predicates; stored records never carry
+an `authorized=true` decision. Wrong-kind and unavailable states share the
+oracle-resistant `ARCSUITE_REF_UNAVAILABLE` response.
+
+The result capability class covers only the finite read-only P2 result tools.
+Each concrete tool remains independently gated by `allowedTools`, so metadata
+permission does not grant content-read permission. Immediate ArcSuite ACL
+revocation timing is not claimed; current provider-session behavior is reused
+without adding a cached authorization decision.
+
 ## Defense in depth
 
 - Host and Origin allowlists protect plain Node HTTP against DNS rebinding and

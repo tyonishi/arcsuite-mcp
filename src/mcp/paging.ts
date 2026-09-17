@@ -1,6 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { CanonicalSemanticPredicate } from "../semantic/attributeMapper.ts";
 import type { AppliedQuery } from "./appliedQuery.ts";
+import type { CanonicalSearchAuthority, ContinuationPageAuthority } from "./opaqueHandles.ts";
 
 export type PagingKind = "search" | "folder" | "hard_reference";
 
@@ -10,6 +11,8 @@ export type PagingSnapshotContext = {
   includePath: boolean;
   searchVerificationPlan?: readonly CanonicalSemanticPredicate[];
   searchAppliedQuery?: AppliedQuery;
+  responseContract?: "legacy" | "opaque_refs_v1";
+  searchAuthority?: CanonicalSearchAuthority;
 };
 
 type PagingSnapshot = {
@@ -47,27 +50,41 @@ export type PagingPage = {
 
 export class PagingSnapshotStore {
   private readonly snapshots = new Map<string, PagingSnapshot>();
+  private readonly retainedSearchSnapshots = new Map<string, PagingSnapshot>();
   private totalIds = 0;
+  private retainedSearchTotalIds = 0;
   private readonly secret: Buffer;
   private readonly ttlSeconds: number;
   private readonly maxIdsPerSnapshot: number;
   private readonly maxSnapshots: number;
   private readonly maxSnapshotsPerClient: number;
   private readonly maxTotalIds: number;
+  private readonly maxTotalIdsPerClient: number;
 
-  constructor(secret: Buffer, ttlSeconds: number, maxIdsPerSnapshot: number, maxSnapshots: number, maxSnapshotsPerClient: number, maxTotalIds: number) {
+  constructor(
+    secret: Buffer,
+    ttlSeconds: number,
+    maxIdsPerSnapshot: number,
+    maxSnapshots: number,
+    maxSnapshotsPerClient: number,
+    maxTotalIds: number,
+    maxTotalIdsPerClient: number = maxTotalIds
+  ) {
     this.secret = secret;
     this.ttlSeconds = ttlSeconds;
     this.maxIdsPerSnapshot = maxIdsPerSnapshot;
     this.maxSnapshots = maxSnapshots;
     this.maxSnapshotsPerClient = maxSnapshotsPerClient;
     this.maxTotalIds = maxTotalIds;
+    this.maxTotalIdsPerClient = maxTotalIdsPerClient;
     if (secret.length < 16) throw new Error("Paging cursor HMAC secret must be at least 16 bytes");
-    for (const [name, value] of Object.entries({ ttlSeconds, maxIdsPerSnapshot, maxSnapshots, maxSnapshotsPerClient, maxTotalIds })) {
+    for (const [name, value] of Object.entries({ ttlSeconds, maxIdsPerSnapshot, maxSnapshots, maxSnapshotsPerClient, maxTotalIds, maxTotalIdsPerClient })) {
       if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid paging limit: ${name}`);
     }
     if (maxSnapshotsPerClient > maxSnapshots) throw new Error("Paging per-client snapshot limit cannot exceed global snapshot limit");
     if (maxIdsPerSnapshot > maxTotalIds) throw new Error("Paging snapshot ID limit cannot exceed global ID limit");
+    if (maxTotalIdsPerClient > maxTotalIds) throw new Error("Paging per-client ID limit cannot exceed global ID limit");
+    if (maxIdsPerSnapshot > maxTotalIdsPerClient) throw new Error("Paging snapshot ID limit cannot exceed per-client ID limit");
   }
 
   create(input: { clientProfileId: string; scopeId: string; kind: PagingKind; ids: string[]; pageSize: number; context: PagingSnapshotContext; upstreamLimited?: boolean }): PagingPage {
@@ -83,13 +100,13 @@ export class PagingSnapshotStore {
     const first = boundedIds.slice(0, input.pageSize);
     if (boundedIds.length <= input.pageSize) return { ids: first, nextCursor: null, snapshotLimited, pageSize: input.pageSize, context: cloneContext(input.context) };
 
-    this.makeRoom(input.clientProfileId, boundedIds.length);
     const now = Date.now();
     const snapshot: PagingSnapshot = {
       id: randomUUID(), clientProfileId: input.clientProfileId, scopeId: input.scopeId, kind: input.kind,
       ids: boundedIds, pageSize: input.pageSize, context: cloneContext(input.context), snapshotLimited,
       createdAt: now, expiresAt: now + this.ttlSeconds * 1000, lastAccessAt: now
     };
+    this.makeCombinedRoom(input.clientProfileId, boundedIds.length, undefined, "PAGING_CACHE_LIMIT");
     this.snapshots.set(snapshot.id, snapshot);
     this.totalIds += snapshot.ids.length;
     return { ids: first, nextCursor: this.createCursor(snapshot, input.pageSize), snapshotLimited, pageSize: snapshot.pageSize, context: cloneContext(snapshot.context) };
@@ -114,7 +131,95 @@ export class PagingSnapshotStore {
     return page;
   }
 
-  clear(): void { this.snapshots.clear(); this.totalIds = 0; }
+  continuationAuthority(
+    cursor: string,
+    expected: { clientProfileId: string; scopeId: string }
+  ): ContinuationPageAuthority {
+    this.pruneExpired();
+    const payload = this.parseCursor(cursor);
+    if (payload.client_profile_id !== expected.clientProfileId
+      || payload.scope_id !== expected.scopeId
+      || payload.kind !== "search") throw new Error("PAGING_CURSOR_SCOPE_MISMATCH");
+    const snapshot = this.snapshots.get(payload.snapshot_id);
+    if (!snapshot || snapshot.expiresAt <= Date.now()) {
+      if (snapshot) this.remove(snapshot.id);
+      throw new Error("PAGING_SNAPSHOT_EXPIRED");
+    }
+    if (snapshot.clientProfileId !== expected.clientProfileId
+      || snapshot.scopeId !== expected.scopeId
+      || snapshot.kind !== "search"
+      || payload.page_size !== snapshot.pageSize
+      || payload.offset < 0
+      || payload.offset >= snapshot.ids.length
+      || !snapshot.context.searchVerificationPlan
+      || !snapshot.context.searchAppliedQuery
+      || !snapshot.context.searchAuthority
+      || snapshot.context.responseContract !== "opaque_refs_v1") throw new Error("INVALID_PAGING_CURSOR");
+    const authorityId = randomUUID();
+    const retained: PagingSnapshot = {
+      ...snapshot,
+      id: authorityId,
+      ids: [...snapshot.ids],
+      context: cloneContext(snapshot.context),
+      lastAccessAt: Date.now()
+    };
+    this.makeCombinedRoom(
+      expected.clientProfileId,
+      snapshot.ids.length,
+      { pool: "normal", id: snapshot.id },
+      "PAGING_REF_CACHE_LIMIT"
+    );
+    this.retainedSearchSnapshots.set(authorityId, retained);
+    this.retainedSearchTotalIds += retained.ids.length;
+    return deepFreezeClone({
+      authorityId,
+      offset: payload.offset,
+      expiresAt: Math.floor(snapshot.expiresAt / 1000)
+    });
+  }
+
+  resolveContinuationAuthority(
+    authority: ContinuationPageAuthority,
+    expected: { clientProfileId: string; scopeId: string }
+  ): { page: PagingPage; nextAuthority?: ContinuationPageAuthority } {
+    this.pruneExpired();
+    const snapshot = this.retainedSearchSnapshots.get(authority.authorityId);
+    if (!snapshot || snapshot.expiresAt <= Date.now()) {
+      if (snapshot) this.removeRetainedSearch(snapshot.id);
+      throw new Error("PAGING_REF_AUTHORITY_UNAVAILABLE");
+    }
+    if (snapshot.clientProfileId !== expected.clientProfileId
+      || snapshot.scopeId !== expected.scopeId
+      || snapshot.kind !== "search"
+      || Math.floor(snapshot.expiresAt / 1000) !== authority.expiresAt
+      || !Number.isSafeInteger(authority.offset)
+      || authority.offset < 0
+      || authority.offset >= snapshot.ids.length
+      || !snapshot.context.searchVerificationPlan
+      || !snapshot.context.searchAppliedQuery
+      || !snapshot.context.searchAuthority) throw new Error("PAGING_REF_AUTHORITY_UNAVAILABLE");
+    snapshot.lastAccessAt = Date.now();
+    const end = Math.min(snapshot.ids.length, authority.offset + snapshot.pageSize);
+    return {
+      page: {
+        ids: snapshot.ids.slice(authority.offset, end),
+        nextCursor: null,
+        snapshotLimited: snapshot.snapshotLimited,
+        pageSize: snapshot.pageSize,
+        context: cloneContext(snapshot.context)
+      },
+      ...(end < snapshot.ids.length
+        ? { nextAuthority: { authorityId: authority.authorityId, offset: end, expiresAt: authority.expiresAt } }
+        : {})
+    };
+  }
+
+  clear(): void {
+    this.snapshots.clear();
+    this.retainedSearchSnapshots.clear();
+    this.totalIds = 0;
+    this.retainedSearchTotalIds = 0;
+  }
 
   private createCursor(snapshot: PagingSnapshot, offset: number): string {
     const payload: PagingCursorPayload = {
@@ -140,18 +245,67 @@ export class PagingSnapshotStore {
   }
 
   private sign(body: string): string { return createHmac("sha256", this.secret).update(`paging-v1.${body}`).digest("base64url"); }
-  private pruneExpired(): void { const now = Date.now(); for (const snapshot of this.snapshots.values()) if (snapshot.expiresAt <= now) this.remove(snapshot.id); }
+  private pruneExpired(): void {
+    const now = Date.now();
+    for (const snapshot of this.snapshots.values()) if (snapshot.expiresAt <= now) this.remove(snapshot.id);
+    for (const snapshot of this.retainedSearchSnapshots.values()) if (snapshot.expiresAt <= now) this.removeRetainedSearch(snapshot.id);
+  }
 
-  private makeRoom(clientProfileId: string, incomingIds: number): void {
-    const byAge = () => [...this.snapshots.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt || a.createdAt - b.createdAt);
-    while ([...this.snapshots.values()].filter((s) => s.clientProfileId === clientProfileId).length >= this.maxSnapshotsPerClient) {
-      const victim = byAge().find((s) => s.clientProfileId === clientProfileId); if (!victim) break; this.remove(victim.id);
+  private makeCombinedRoom(
+    clientProfileId: string,
+    incomingIds: number,
+    protectedEntry: { pool: "normal" | "retained"; id: string } | undefined,
+    limitError: "PAGING_CACHE_LIMIT" | "PAGING_REF_CACHE_LIMIT"
+  ): void {
+    type Entry = { pool: "normal" | "retained"; snapshot: PagingSnapshot };
+    const entries = (): Entry[] => [
+      ...[...this.snapshots.values()].map((snapshot) => ({ pool: "normal" as const, snapshot })),
+      ...[...this.retainedSearchSnapshots.values()].map((snapshot) => ({ pool: "retained" as const, snapshot }))
+    ];
+    const isProtected = (entry: Entry): boolean => protectedEntry !== undefined
+      && entry.pool === protectedEntry.pool
+      && entry.snapshot.id === protectedEntry.id;
+    const byAge = (candidates: Entry[]): Entry[] => candidates
+      .sort((left, right) => left.snapshot.lastAccessAt - right.snapshot.lastAccessAt
+        || left.snapshot.createdAt - right.snapshot.createdAt
+        || (left.pool < right.pool ? -1 : left.pool > right.pool ? 1 : 0)
+        || (left.snapshot.id < right.snapshot.id ? -1 : left.snapshot.id > right.snapshot.id ? 1 : 0));
+    const removeEntry = (entry: Entry): void => {
+      if (entry.pool === "normal") this.remove(entry.snapshot.id);
+      else this.removeRetainedSearch(entry.snapshot.id);
+    };
+    const current = entries();
+    let combinedCount = current.length;
+    let clientCount = current.filter((entry) => entry.snapshot.clientProfileId === clientProfileId).length;
+    let combinedIds = this.totalIds + this.retainedSearchTotalIds;
+    let clientIds = current
+      .filter((entry) => entry.snapshot.clientProfileId === clientProfileId)
+      .reduce((sum, entry) => sum + entry.snapshot.ids.length, 0);
+    const fits = (): boolean => combinedCount + 1 <= this.maxSnapshots
+      && clientCount + 1 <= this.maxSnapshotsPerClient
+      && combinedIds + incomingIds <= this.maxTotalIds
+      && clientIds + incomingIds <= this.maxTotalIdsPerClient;
+    const eligible = byAge(current.filter((entry) => entry.snapshot.clientProfileId === clientProfileId && !isProtected(entry)));
+    const victims: Entry[] = [];
+    for (const candidate of eligible) {
+      if (fits()) break;
+      victims.push(candidate);
+      combinedCount -= 1;
+      clientCount -= 1;
+      combinedIds -= candidate.snapshot.ids.length;
+      clientIds -= candidate.snapshot.ids.length;
     }
-    while (this.snapshots.size >= this.maxSnapshots || this.totalIds + incomingIds > this.maxTotalIds) { const victim = byAge()[0]; if (!victim) break; this.remove(victim.id); }
-    if (this.snapshots.size >= this.maxSnapshots || this.totalIds + incomingIds > this.maxTotalIds) throw new Error("PAGING_CACHE_LIMIT");
+    if (!fits()) throw new Error(limitError);
+    for (const victim of victims) removeEntry(victim);
   }
 
   private remove(id: string): void { const snapshot = this.snapshots.get(id); if (!snapshot) return; this.totalIds -= snapshot.ids.length; this.snapshots.delete(id); }
+  private removeRetainedSearch(id: string): void {
+    const snapshot = this.retainedSearchSnapshots.get(id);
+    if (!snapshot) return;
+    this.retainedSearchTotalIds -= snapshot.ids.length;
+    this.retainedSearchSnapshots.delete(id);
+  }
 }
 
 function cloneContext(context: PagingSnapshotContext): PagingSnapshotContext {

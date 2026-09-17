@@ -4,11 +4,13 @@ export class McpToolError extends Error {
   readonly stableCode: string;
   readonly category: string;
   readonly retryable: boolean;
-  constructor(stableCode: string, category: string, retryable: boolean, message = stableCode) {
+  readonly recovery?: string;
+  constructor(stableCode: string, category: string, retryable: boolean, message = stableCode, recovery?: string) {
     super(message);
     this.stableCode = stableCode;
     this.category = category;
     this.retryable = retryable;
+    this.recovery = recovery;
   }
 }
 

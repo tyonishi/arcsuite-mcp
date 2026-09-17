@@ -340,6 +340,14 @@ test("hard-reference tool schema requires a target and rejects caller-controlled
   assert.equal(schema.safeParse({ document_id: "rep:mock:RELATIONSHIPS:1", limit: 1, cursor: "opaque" }).success, false);
 });
 
+test("search schema exposes response negotiation only on initial searches", () => {
+  const schema = toolInputSchemas.arcsuite_search_documents;
+  assert.equal(schema.safeParse({ scope: "example_documents", query: "synthetic", response_contract: "legacy" }).success, true);
+  assert.equal(schema.safeParse({ scope: "example_documents", query: "synthetic", response_contract: "opaque_refs_v1" }).success, true);
+  assert.equal(schema.safeParse({ scope: "example_documents", query: "synthetic", response_contract: "unknown" }).success, false);
+  assert.equal(schema.safeParse({ scope: "example_documents", cursor: "opaque", response_contract: "opaque_refs_v1" }).success, false);
+});
+
 test("scope registry rejects string enum literals outside adapter constraints", async () => {
   const base = {
     description: "Synthetic string enum scope",

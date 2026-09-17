@@ -14,6 +14,18 @@ const baseEnv = {
   MCP_CURSOR_HMAC_SECRET: "0123456789abcdef0123456789abcdef"
 };
 
+function tokenProfiles(...profiles: Array<{ clientProfileId: string; allowedTools: string[] }>): string {
+  return JSON.stringify({
+    tokens: profiles.map(({ clientProfileId, allowedTools }, index) => ({
+      tokenSha256: createHash("sha256").update(`synthetic-token-${index}`).digest("hex"),
+      clientProfileId,
+      allowedScopes: ["example_documents"],
+      allowedTools,
+      rateLimit: { requestsPerMinute: 60, burst: 10 }
+    }))
+  });
+}
+
 test("configuration rejects request and content limits above hard bounds", () => {
   assert.throws(() => loadConfig({ ...baseEnv, MCP_MAX_REQUEST_BYTES: String(4 * 1024 * 1024 + 1) }), /MCP_MAX_REQUEST_BYTES/);
   assert.throws(() => loadConfig({ ...baseEnv, MCP_MAX_CONTENT_BYTES: String(100 * 1024 * 1024 + 1) }), /MCP_MAX_CONTENT_BYTES/);
@@ -78,6 +90,38 @@ test("configuration keeps search page sizes compatible with paging snapshots", (
   assert.equal(config.pagingSnapshotMaxIds, 5);
 });
 
+test("paging per-client ID capacity is bounded and fits one retained continuation flow", () => {
+  const defaults = loadConfig(baseEnv);
+  assert.equal(defaults.pagingSnapshotMaxTotalIdsPerClient, 2_000);
+
+  const configured = loadConfig({
+    ...baseEnv,
+    MCP_SEARCH_DEFAULT_LIMIT: "5",
+    MCP_SEARCH_MAX_LIMIT: "5",
+    MCP_PAGING_SNAPSHOT_MAX_IDS: "5",
+    MCP_PAGING_MAX_TOTAL_IDS: "20",
+    MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT: "12"
+  });
+  assert.equal(configured.pagingSnapshotMaxTotalIdsPerClient, 12);
+
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_SEARCH_DEFAULT_LIMIT: "5",
+    MCP_SEARCH_MAX_LIMIT: "5",
+    MCP_PAGING_SNAPSHOT_MAX_IDS: "5",
+    MCP_PAGING_MAX_TOTAL_IDS: "20",
+    MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT: "9"
+  }), /source and retained continuation authority/);
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_SEARCH_DEFAULT_LIMIT: "5",
+    MCP_SEARCH_MAX_LIMIT: "5",
+    MCP_PAGING_SNAPSHOT_MAX_IDS: "5",
+    MCP_PAGING_MAX_TOTAL_IDS: "20",
+    MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT: "21"
+  }), /cannot exceed MCP_PAGING_MAX_TOTAL_IDS/);
+});
+
 test("hard-reference candidates have a bounded default and cannot exceed snapshot capacity", () => {
   const defaults = loadConfig(baseEnv);
   assert.equal(defaults.hardReferenceMaxCandidates, 200);
@@ -87,4 +131,175 @@ test("hard-reference candidates have a bounded default and cannot exceed snapsho
 
   assert.throws(() => loadConfig({ ...baseEnv, MCP_HARD_REFERENCE_MAX_CANDIDATES: "1001" }), /MCP_HARD_REFERENCE_MAX_CANDIDATES/);
   assert.throws(() => loadConfig({ ...baseEnv, MCP_HARD_REFERENCE_MAX_CANDIDATES: "6", MCP_SEARCH_DEFAULT_LIMIT: "5", MCP_SEARCH_MAX_LIMIT: "5", MCP_PAGING_SNAPSHOT_MAX_IDS: "5" }), /MCP_HARD_REFERENCE_MAX_CANDIDATES cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS/);
+});
+
+test("opaque refs are disabled without adding a legacy startup secret requirement", () => {
+  const config = loadConfig(baseEnv);
+  assert.equal(config.opaqueRefs, null);
+});
+
+test("enabled opaque refs require a bounded valid keyring", () => {
+  const enabled = { ...baseEnv, MCP_OPAQUE_REFS_ENABLED: "true" };
+  assert.throws(() => loadConfig(enabled), /MCP_OPAQUE_REF_KEYS_JSON/);
+  assert.throws(() => loadConfig({ ...enabled, MCP_OPAQUE_REF_KEYS_JSON: "not-json" }), /opaque ref keyring/i);
+  assert.throws(() => loadConfig({
+    ...enabled,
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "missing", keys: [{ kid: "present", secret_base64url: Buffer.alloc(32).toString("base64url") }] })
+  }), /active/i);
+  assert.throws(() => loadConfig({
+    ...enabled,
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "duplicate", keys: [
+      { kid: "duplicate", secret_base64url: Buffer.alloc(32, 1).toString("base64url") },
+      { kid: "duplicate", secret_base64url: Buffer.alloc(32, 2).toString("base64url") }
+    ] })
+  }), /duplicate/i);
+  assert.throws(() => loadConfig({
+    ...enabled,
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "short", keys: [{ kid: "short", secret_base64url: Buffer.alloc(16).toString("base64url") }] })
+  }), /32/);
+
+  const config = loadConfig({
+    ...enabled,
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 3).toString("base64url") }] }),
+    MCP_OPAQUE_REF_TTL_SECONDS: "600",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "100",
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: "52",
+    MCP_OPAQUE_REF_CONTRACT_GENERATION: "1",
+    MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION: "7"
+  });
+  assert.equal(config.opaqueRefs?.activeKid, "active-1");
+  assert.equal(config.opaqueRefs?.ttlSeconds, 600);
+  assert.equal(config.opaqueRefs?.capacity, 100);
+  assert.equal(config.opaqueRefs?.capacityPerProfile, 52);
+  assert.equal(config.opaqueRefs?.contractGeneration, 1);
+  assert.equal(config.opaqueRefs?.credentialContextGeneration, 7);
+});
+
+test("opaque ref capacity can hold one maximum search page and its top-level refs", () => {
+  const keyring = JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 5).toString("base64url") }] });
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_SEARCH_MAX_LIMIT: "50",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "51"
+  }), /MCP_SEARCH_MAX_LIMIT \+ 2/);
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_SEARCH_MAX_LIMIT: "50",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "100",
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: "51"
+  }), /MCP_SEARCH_MAX_LIMIT \+ 2/);
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_OPAQUE_REF_MAX_ENTRIES: "100",
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: "101"
+  }), /cannot exceed MCP_OPAQUE_REF_MAX_ENTRIES/);
+
+  const defaultPartition = loadConfig({
+    ...baseEnv,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_OPAQUE_REF_MAX_ENTRIES: "100"
+  });
+  assert.equal(defaultPartition.opaqueRefs?.capacityPerProfile, 100);
+});
+
+test("opaque ref default capacity reserves one complete authority set per eligible profile", () => {
+  const keyring = JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 6).toString("base64url") }] });
+  const profiles = tokenProfiles(
+    { clientProfileId: "synthetic-profile-a", allowedTools: ["arcsuite_search_documents"] },
+    { clientProfileId: "synthetic-profile-b", allowedTools: ["arcsuite_search_documents"] }
+  );
+  const config = loadConfig({
+    ...baseEnv,
+    MCP_DEV_BEARER_TOKEN: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: profiles,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_SEARCH_DEFAULT_LIMIT: "2",
+    MCP_SEARCH_MAX_LIMIT: "2",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "8"
+  });
+
+  assert.equal(config.opaqueRefs?.capacity, 8);
+  assert.equal(config.opaqueRefs?.capacityPerProfile, 4);
+});
+
+test("opaque ref reservation derives strict shares only from profiles that can mint refs", () => {
+  const keyring = JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 7).toString("base64url") }] });
+  const configured = (profiles: string, capacity: number, perProfile?: number) => loadConfig({
+    ...baseEnv,
+    MCP_DEV_BEARER_TOKEN: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: profiles,
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring,
+    MCP_SEARCH_DEFAULT_LIMIT: "2",
+    MCP_SEARCH_MAX_LIMIT: "2",
+    MCP_OPAQUE_REF_MAX_ENTRIES: String(capacity),
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: perProfile === undefined ? undefined : String(perProfile)
+  });
+  const eligible = (id: string) => ({ clientProfileId: id, allowedTools: ["arcsuite_search_documents"] });
+  const ineligible = (id: string) => ({ clientProfileId: id, allowedTools: ["arcsuite_describe_capabilities"] });
+
+  assert.equal(configured(tokenProfiles(eligible("single"), ineligible("observer")), 8).opaqueRefs?.capacityPerProfile, 8);
+  assert.equal(configured(tokenProfiles(eligible("a"), eligible("b"), eligible("c")), 13).opaqueRefs?.capacityPerProfile, 4);
+  assert.throws(
+    () => configured(tokenProfiles(eligible("a"), eligible("b"), eligible("c")), 11),
+    /reserve MCP_SEARCH_MAX_LIMIT \+ 2 entries/
+  );
+  assert.equal(configured(tokenProfiles(eligible("a"), eligible("b")), 8, 4).opaqueRefs?.capacityPerProfile, 4);
+  assert.throws(
+    () => configured(tokenProfiles(eligible("a"), eligible("b")), 8, 5),
+    /reserved share/
+  );
+});
+
+test("disabled opaque refs do not enforce reservation feasibility", () => {
+  const profiles = tokenProfiles(
+    { clientProfileId: "synthetic-profile-a", allowedTools: ["arcsuite_search_documents"] },
+    { clientProfileId: "synthetic-profile-b", allowedTools: ["arcsuite_search_documents"] }
+  );
+  const config = loadConfig({
+    ...baseEnv,
+    MCP_DEV_BEARER_TOKEN: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: profiles,
+    MCP_OPAQUE_REFS_ENABLED: "false",
+    MCP_SEARCH_DEFAULT_LIMIT: "2",
+    MCP_SEARCH_MAX_LIMIT: "2",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "4"
+  });
+  assert.equal(config.opaqueRefs, null);
+});
+
+test("production opaque refs accept secret material only from a file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arcsuite-mcp-handle-config-"));
+  const keyFile = join(dir, "handle-keys.json");
+  const tokenSha256 = createHash("sha256").update("production-token").digest("hex");
+  const productionTokens = JSON.stringify({ tokens: [{
+    tokenSha256,
+    clientProfileId: "production-client",
+    allowedScopes: ["example_documents"],
+    allowedTools: ["arcsuite_search_documents"],
+    rateLimit: { requestsPerMinute: 1, burst: 1 }
+  }] });
+  const keyring = JSON.stringify({ active_kid: "active-1", keys: [{ kid: "active-1", secret_base64url: Buffer.alloc(32, 4).toString("base64url") }] });
+  const env = {
+    ...baseEnv,
+    NODE_ENV: "production",
+    MCP_DEV_BEARER_TOKEN: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: productionTokens,
+    MCP_CURSOR_HMAC_SECRET_FILE: join(dir, "cursor-secret"),
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: keyring
+  };
+  writeFileSync(env.MCP_CURSOR_HMAC_SECRET_FILE, "0123456789abcdef0123456789abcdef");
+  assert.throws(() => loadConfig(env), /MCP_OPAQUE_REF_KEYS_JSON_FILE/);
+  writeFileSync(keyFile, keyring);
+  const config = loadConfig({ ...env, MCP_OPAQUE_REF_KEYS_JSON_FILE: keyFile });
+  assert.equal(config.opaqueRefs?.activeKid, "active-1");
 });

@@ -21,10 +21,20 @@ import { ContentBridge, type ContentInfo } from "../content/contentBridge.ts";
 import type { ContentCacheContext } from "../content/snapshotCache.ts";
 import { AuditLogger } from "../audit/auditLogger.ts";
 import { PagingSnapshotStore } from "./paging.ts";
-import { buildAppliedQuery } from "./appliedQuery.ts";
+import { buildAppliedQuery, type AppliedQuery } from "./appliedQuery.ts";
 import { McpToolError, toMcpToolError } from "./errors.ts";
 import { assertExactKeys, assertObject, boolValue, enumValue, intValue, optionalInt, optionalString, stringValue } from "../util/json.ts";
 import { CONTENT_LABEL_PRIMARY_ALIAS, isSemanticContentLabelAlias, samePhysicalContentLabel } from "../semantic/contentLabels.ts";
+import {
+  OpaqueHandleService,
+  type CanonicalSearchAuthority,
+  type ContinuationHandleRecord,
+  type ContinuationPageAuthority,
+  type HandlePolicyContext,
+  type OpaqueHandleIssue,
+  type ResultHandleRecord,
+  type SearchHandleRecord
+} from "./opaqueHandles.ts";
 
 export type ToolDefinition = {
   name: string;
@@ -41,6 +51,16 @@ const RAW_ARCSUITE_KEYS = /^(cabinet|cabinetId|cabinet_id|attr|attribute|attribu
 
 const MAX_INTEGRITY_CERTIFICATES = 64;
 const MAX_INTEGRITY_EVIDENCE = 64;
+
+const P2_TOOL_NAMES = new Set([
+  "arcsuite_continue_search",
+  "arcsuite_replay_search",
+  "arcsuite_get_document_by_ref",
+  "arcsuite_get_documents_by_ref",
+  "arcsuite_list_document_revisions_by_ref",
+  "arcsuite_get_document_content_info_by_ref",
+  "arcsuite_read_document_by_ref"
+]);
 
 class ContentLabelNotFoundError extends Error {
   constructor() { super("CONTENT_LABEL_NOT_FOUND"); }
@@ -82,6 +102,7 @@ export class ToolRegistry {
   private readonly contentBridge: ContentBridge;
   private readonly audit: AuditLogger;
   private readonly paging: PagingSnapshotStore;
+  private readonly handles: OpaqueHandleService | null;
 
   constructor(
     config: AppConfig,
@@ -89,7 +110,8 @@ export class ToolRegistry {
     adapter: ArcSuiteAdapterClient,
     sessions: AdapterSessionManager,
     contentBridge: ContentBridge,
-    audit: AuditLogger
+    audit: AuditLogger,
+    handles: OpaqueHandleService | null = null
   ) {
     this.config = config;
     this.scopes = scopes;
@@ -97,22 +119,26 @@ export class ToolRegistry {
     this.sessions = sessions;
     this.contentBridge = contentBridge;
     this.audit = audit;
+    this.handles = handles;
     this.paging = new PagingSnapshotStore(
       config.cursorSecret,
       config.pagingTtlSeconds,
       config.pagingSnapshotMaxIds,
       config.pagingSnapshotMaxSnapshots,
       config.pagingSnapshotMaxSnapshotsPerClient,
-      config.pagingSnapshotMaxTotalIds
+      config.pagingSnapshotMaxTotalIds,
+      config.pagingSnapshotMaxTotalIdsPerClient
     );
   }
 
   list(profile: TokenProfile): ToolDefinition[] {
-    return buildDefinitions(profile, this.scopes, this.config).filter((tool) => profile.allowedTools.includes(tool.name));
+    return buildDefinitions(profile, this.scopes, this.config).filter((tool) => profile.allowedTools.includes(tool.name)
+      && (this.handles !== null || !P2_TOOL_NAMES.has(tool.name)));
   }
 
   async call(profile: TokenProfile, name: string, rawArgs: unknown): Promise<ToolCallResult> {
     if (!profile.allowedTools.includes(name)) throw new McpToolError("ARCSUITE_FORBIDDEN", "tool_not_allowed", false);
+    if (P2_TOOL_NAMES.has(name) && !this.handles) throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
     const traceId = randomUUID();
     const started = Date.now();
     let scopeId: string | undefined;
@@ -141,6 +167,9 @@ export class ToolRegistry {
         }
         case "arcsuite_search_documents": {
           const parsed = parseSearchArgs(args, this.config);
+          if (parsed.responseContract === "opaque_refs_v1" && !this.handles) {
+            throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+          }
           scopeId = parsed.scope;
           const scope = this.allowedScope(profile, parsed.scope);
           if (parsed.textSearchMode !== "none" && !parsed.query) throw new TypeError("text_search_mode requires a text query");
@@ -157,6 +186,12 @@ export class ToolRegistry {
             const attrConditions = verificationPlan.map((predicate) => predicate.condition);
             const words = parsed.query ? tokenizeQuery(parsed.query) : [];
             const appliedQuery = buildAppliedQuery(verificationPlan, words, parsed.queryMode, parsed.textSearchMode);
+            const searchAuthority: CanonicalSearchAuthority = {
+              scopeId: parsed.scope,
+              appliedQuery,
+              includePath: parsed.includePath,
+              pageSize: parsed.limit
+            };
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
             this.recordSoapOperation(soapOperations, "searchRepositoryObjectIds");
             const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
@@ -186,7 +221,13 @@ export class ToolRegistry {
               kind: "search",
               ids,
               pageSize: parsed.limit,
-              context: { includePath: parsed.includePath, searchVerificationPlan: verificationPlan, searchAppliedQuery: appliedQuery },
+              context: {
+                includePath: parsed.includePath,
+                searchVerificationPlan: verificationPlan,
+                searchAppliedQuery: appliedQuery,
+                responseContract: parsed.responseContract,
+                ...(parsed.responseContract === "opaque_refs_v1" ? { searchAuthority } : {})
+              },
               upstreamLimited: ids.length > snapshotLimit
             });
           }
@@ -199,7 +240,7 @@ export class ToolRegistry {
           searchOutcome = pageData.failures.length && pageData.results.length === 0
             ? "hydration_failure"
             : pageData.results.length ? "matches" : "zero";
-          data = {
+          const legacyData: Record<string, unknown> = {
             scope: parsed.scope,
             count: pageData.results.length,
             limit: page.pageSize,
@@ -210,6 +251,141 @@ export class ToolRegistry {
             failures: pageData.failures,
             results: pageData.results
           };
+          const responseContract = page.context.responseContract ?? "legacy";
+          if (responseContract === "opaque_refs_v1") {
+            if (!this.handles || !page.context.searchAuthority) {
+              throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+            }
+            const policyContext: HandlePolicyContext = { profile, scopeId: parsed.scope, scope };
+            const continuationAuthority = page.nextCursor
+              ? this.paging.continuationAuthority(page.nextCursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.scope })
+              : undefined;
+            const refSet = this.issueSearchAuthoritySet(
+              policyContext,
+              page.context.searchAuthority,
+              pageData.results,
+              verificationPlan,
+              continuationAuthority
+                ? { cursor: page.nextCursor!, pageAuthority: continuationAuthority, maxExpiresAt: continuationAuthority.expiresAt }
+                : undefined
+            );
+            data = {
+              ...legacyData,
+              results: pageData.results.map((result, index) => ({ ...result, result_ref: refSet.resultRefs[index] })),
+              search_ref: refSet.searchRef,
+              continuation_ref: refSet.continuationRef
+            };
+          } else {
+            data = legacyData;
+          }
+          break;
+        }
+        case "arcsuite_continue_search": {
+          const parsed = parseContinueSearchArgs(args);
+          const record = this.resolveBoundHandle(profile, parsed.continuationRef, "continuation") as ContinuationHandleRecord;
+          const pageAuthority = record.pageAuthority;
+          if (!pageAuthority) throw refUnavailable();
+          scopeId = record.searchAuthority.scopeId;
+          const scope = this.allowedScope(profile, scopeId);
+          let resolvedPage;
+          try {
+            resolvedPage = this.paging.resolveContinuationAuthority(pageAuthority, {
+              clientProfileId: profile.clientProfileId,
+              scopeId
+            });
+          } catch {
+            throw refUnavailable();
+          }
+          const verificationPlan = resolvedPage.page.context.searchVerificationPlan;
+          const retainedSearchAuthority = resolvedPage.page.context.searchAuthority;
+          if (!verificationPlan || !retainedSearchAuthority
+            || JSON.stringify(retainedSearchAuthority) !== JSON.stringify(record.searchAuthority)) throw refUnavailable();
+          const pageData = await this.fetchObjectsByIds(
+            profile,
+            scope,
+            resolvedPage.page.ids,
+            record.searchAuthority.includePath,
+            soapOperations,
+            verificationPlan
+          );
+          resultCount = pageData.results.length;
+          data = this.refNativeSearchResponse(profile, scopeId, scope, record.searchAuthority, pageData, {
+            snapshotLimited: resolvedPage.page.snapshotLimited,
+            nextAuthority: resolvedPage.nextAuthority,
+            verificationPlan,
+            expiresAt: Math.min(record.expiresAt, pageAuthority.expiresAt)
+          });
+          break;
+        }
+        case "arcsuite_replay_search": {
+          const parsed = parseReplaySearchArgs(args);
+          const record = this.resolveBoundHandle(profile, parsed.searchRef, "search") as SearchHandleRecord;
+          this.allowedScope(profile, record.authority.scopeId);
+          scopeId = parsed.targetScope;
+          const targetScope = this.allowedScope(profile, parsed.targetScope);
+          const recanonicalized = this.recanonicalizeReplay(record.authority, parsed.targetScope, targetScope);
+          const snapshotLimit = this.config.pagingSnapshotMaxIds;
+          this.recordSoapOperation(soapOperations, "searchRepositoryObjectIds");
+          const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
+            clientProfileId: profile.clientProfileId,
+            attributeConditions: recanonicalized.verificationPlan.map((predicate) => predicate.condition),
+            text: recanonicalized.appliedQuery.text
+              ? { words: [...recanonicalized.appliedQuery.text.terms], operator: recanonicalized.appliedQuery.text.operator.toUpperCase() as "AND" | "OR" }
+              : undefined,
+            mode: recanonicalized.appliedQuery.operator.toUpperCase() as "AND" | "OR",
+            searchRegionIds: [targetScope.arcsuite.root_object_id ?? targetScope.arcsuite.cabinet_id],
+            depth: 0,
+            textSearchMode: (recanonicalized.appliedQuery.text?.mode ?? "none").toUpperCase() as "NONE" | "STEMMING" | "THESAURUS",
+            order: [
+              { attrId: DEFAULT_ATTRS.modifiedOn, descending: true },
+              { attrId: DEFAULT_ATTRS.name, descending: false }
+            ],
+            limit: snapshotLimit + 1,
+            options: []
+          }));
+          if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+            throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "search_ids_shape", false);
+          }
+          for (const id of ids) this.assertObjectIdInScope(targetScope, id);
+          const searchAuthority: CanonicalSearchAuthority = {
+            scopeId: parsed.targetScope,
+            appliedQuery: recanonicalized.appliedQuery,
+            includePath: record.authority.includePath,
+            pageSize: record.authority.pageSize
+          };
+          const page = this.paging.create({
+            clientProfileId: profile.clientProfileId,
+            scopeId: parsed.targetScope,
+            kind: "search",
+            ids,
+            pageSize: record.authority.pageSize,
+            context: {
+              includePath: record.authority.includePath,
+              searchVerificationPlan: recanonicalized.verificationPlan,
+              searchAppliedQuery: recanonicalized.appliedQuery,
+              responseContract: "opaque_refs_v1",
+              searchAuthority
+            },
+            upstreamLimited: ids.length > snapshotLimit
+          });
+          const pageData = await this.fetchObjectsByIds(
+            profile,
+            targetScope,
+            page.ids,
+            record.authority.includePath,
+            soapOperations,
+            recanonicalized.verificationPlan
+          );
+          const nextAuthority = page.nextCursor
+            ? this.paging.continuationAuthority(page.nextCursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.targetScope })
+            : undefined;
+          resultCount = pageData.results.length;
+          data = this.refNativeSearchResponse(profile, parsed.targetScope, targetScope, searchAuthority, pageData, {
+            snapshotLimited: page.snapshotLimited,
+            nextAuthority,
+            verificationPlan: recanonicalized.verificationPlan,
+            expiresAt: nextAuthority?.expiresAt
+          });
           break;
         }
         case "arcsuite_get_document": {
@@ -238,6 +414,21 @@ export class ToolRegistry {
           data = normalized as unknown as Record<string, unknown>;
           break;
         }
+        case "arcsuite_get_document_by_ref": {
+          const parsed = parseGetDocumentByRefArgs(args);
+          const authority = this.resolveResultAuthority(profile, parsed.resultRef);
+          scopeId = authority.record.scopeId;
+          const current = await this.hydrateResultAuthority(profile, authority, parsed.revisionNumber, parsed.includePath, soapOperations);
+          const normalized = this.decorateDocument(authority.scope, normalizeDocument(
+            current,
+            authority.scope.semantic_attributes,
+            this.scopes.contentLabelAliases(authority.scope)
+          ));
+          if (!parsed.includePath) delete normalized.path;
+          resultCount = 1;
+          data = { ...withoutDocumentIdentity(normalized), result_ref: parsed.resultRef };
+          break;
+        }
         case "arcsuite_get_documents": {
           const parsed = parseGetDocumentsArgs(args, this.config);
           scopeId = parsed.scope;
@@ -252,6 +443,61 @@ export class ToolRegistry {
             count: batch.results.length,
             failures: batch.failures,
             results: batch.results
+          };
+          break;
+        }
+        case "arcsuite_get_documents_by_ref": {
+          const parsed = parseGetDocumentsByRefArgs(args, this.config);
+          const authorities = parsed.resultRefs.map((ref) => this.resolveResultAuthority(profile, ref));
+          if (new Set(parsed.resultRefs).size !== parsed.resultRefs.length) throw new TypeError("result_refs must not contain duplicates");
+          const boundScopeId = authorities[0]?.record.scopeId;
+          if (!boundScopeId || authorities.some((authority) => authority.record.scopeId !== boundScopeId)) {
+            throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "mixed_ref_scopes", false);
+          }
+          if (new Set(authorities.map((authority) => authority.record.documentId)).size !== authorities.length) {
+            throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "duplicate_ref_identity", false);
+          }
+          scopeId = boundScopeId;
+          const scope = authorities[0].scope;
+          const batch = await this.fetchObjectsByIds(
+            profile,
+            scope,
+            authorities.map((authority) => authority.record.documentId),
+            parsed.includePath,
+            soapOperations,
+            undefined,
+            new Map(authorities.map((authority) => [authority.record.documentId, authority.record.verificationPlan!]))
+          );
+          if (batch.failures.length || batch.results.length !== authorities.length) {
+            throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "ref_target_unavailable", false);
+          }
+          const resultById = new Map<string, NormalizedDocument>();
+          for (const result of batch.results) {
+            if (resultById.has(result.document_id)) {
+              throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+            }
+            resultById.set(result.document_id, result);
+          }
+          const orderedResults = authorities.map((authority) => {
+            const result = resultById.get(authority.record.documentId);
+            if (!result || result.object_class !== authority.record.objectClass) {
+              throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
+            }
+            return result;
+          });
+          if (resultById.size !== orderedResults.length) {
+            throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+          }
+          resultCount = orderedResults.length;
+          data = {
+            scope: boundScopeId,
+            requested_count: parsed.resultRefs.length,
+            count: orderedResults.length,
+            failures: [],
+            results: orderedResults.map((result, index) => ({
+              ...withoutDocumentIdentity(result),
+              result_ref: parsed.resultRefs[index]
+            }))
           };
           break;
         }
@@ -445,6 +691,43 @@ export class ToolRegistry {
           data = { document_id: parsed.documentId, count: normalized.length, limit: parsed.limit, truncated: result.length > parsed.limit, revisions: normalized };
           break;
         }
+        case "arcsuite_list_document_revisions_by_ref": {
+          const parsed = parseRevisionsByRefArgs(args, this.config);
+          const authority = this.resolveResultAuthority(profile, parsed.resultRef);
+          scopeId = authority.record.scopeId;
+          await this.hydrateResultAuthority(profile, authority, undefined, false, soapOperations);
+          this.recordSoapOperation(soapOperations, "listRepositoryObjectRevisions");
+          const result = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.revisions({
+            clientProfileId: profile.clientProfileId,
+            id: authority.record.documentId,
+            attrIds: authority.scope.default_attr_ids,
+            options: []
+          }));
+          this.assertRepositoryObjectsInScope(authority.scope, result);
+          this.assertAllowedObjectTypes(authority.scope, result);
+          await this.verifyReturnedRootScope(profile, authority.scope, result);
+          for (const item of result) {
+            const revisionNumber = repositoryObjectRevisionNumber(item);
+            if (revisionNumber === undefined
+              || !revisionMetadataIdentityMatches(authority.record.documentId, item.id, revisionNumber)
+              || item.objectClass !== authority.record.objectClass) {
+              throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "revision_identity", false);
+            }
+          }
+          const normalized = result.map((item) => withoutDocumentIdentity(this.decorateDocument(
+            authority.scope,
+            normalizeDocument(item, authority.scope.semantic_attributes, this.scopes.contentLabelAliases(authority.scope))
+          ))).slice(0, parsed.limit);
+          resultCount = normalized.length;
+          data = {
+            result_ref: parsed.resultRef,
+            count: normalized.length,
+            limit: parsed.limit,
+            truncated: result.length > parsed.limit,
+            revisions: normalized
+          };
+          break;
+        }
         case "arcsuite_get_document_content_info": {
           const parsed = parseContentInfoArgs(args);
           const scopeMatch = this.requireScopeForObject(parsed.documentId, profile);
@@ -476,6 +759,58 @@ export class ToolRegistry {
             ? { document_id: parsed.documentId, revision_number: parsed.revisionNumber, content_label: semanticLabel.alias, ...info }
             : {
                 document_id: parsed.documentId,
+                revision_number: parsed.revisionNumber,
+                content_label: semanticLabel.alias,
+                label: semanticLabel.alias,
+                extractable: false,
+                reason: "CONTENT_LABEL_NOT_FOUND"
+              };
+          break;
+        }
+        case "arcsuite_get_document_content_info_by_ref": {
+          const parsed = parseContentInfoByRefArgs(args);
+          const authority = this.resolveResultAuthority(profile, parsed.resultRef);
+          scopeId = authority.record.scopeId;
+          await this.hydrateResultAuthority(profile, authority, parsed.revisionNumber, false, soapOperations);
+          const semanticLabel = this.resolveContentLabel(authority.scope, parsed.contentLabel ?? CONTENT_LABEL_PRIMARY_ALIAS);
+          let info: ContentInfo | undefined;
+          try {
+            const membership = await this.proveContentLabelMembership(
+              profile,
+              authority.scope,
+              authority.record.documentId,
+              parsed.revisionNumber,
+              semanticLabel.physical,
+              soapOperations
+            );
+            if (!membership.present) throw new ContentLabelNotFoundError();
+            const cacheContext = this.contentCacheContext(
+              profile,
+              authority.record.scopeId,
+              authority.scope,
+              authority.record.documentId,
+              semanticLabel.alias,
+              semanticLabel.physical,
+              membership.proof
+            );
+            info = await this.contentBridge.infoCachedOrLoad(cacheContext, async () => this.loadContent(profile, authority.scope, {
+              clientProfileId: profile.clientProfileId,
+              requestedId: membership.proof.requestedDocumentId,
+              effectiveId: membership.proof.effectiveDocumentId,
+              revisionNumber: membership.proof.provenRevisionNumber,
+              contentWireId: membership.proof.wireDocumentId,
+              contentLabel: semanticLabel.physical,
+              options: contentOptions(authority.scope),
+              traceId
+            }, membership.proof, semanticLabel.physical, membership.proof.provenRevisionNumber, soapOperations));
+          } catch (error) {
+            if (!(error instanceof ContentLabelNotFoundError)) throw error;
+          }
+          resultCount = 1;
+          data = info
+            ? { result_ref: parsed.resultRef, revision_number: parsed.revisionNumber, content_label: semanticLabel.alias, ...info }
+            : {
+                result_ref: parsed.resultRef,
                 revision_number: parsed.revisionNumber,
                 content_label: semanticLabel.alias,
                 label: semanticLabel.alias,
@@ -523,6 +858,57 @@ export class ToolRegistry {
           data = read as unknown as Record<string, unknown>;
           break;
         }
+        case "arcsuite_read_document_by_ref": {
+          const parsed = parseReadByRefArgs(args, this.config);
+          const authority = this.resolveResultAuthority(profile, parsed.resultRef);
+          scopeId = authority.record.scopeId;
+          await this.hydrateResultAuthority(profile, authority, parsed.revisionNumber, false, soapOperations);
+          const cursorLabel = parsed.cursor ? this.contentBridge.resolveCursorContentLabel(parsed.cursor) : undefined;
+          if (parsed.contentLabel !== undefined && cursorLabel !== undefined && parsed.contentLabel !== cursorLabel) {
+            throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "content_label_cursor_mismatch", false);
+          }
+          const semanticLabel = this.resolveContentLabel(authority.scope, parsed.contentLabel ?? cursorLabel ?? CONTENT_LABEL_PRIMARY_ALIAS);
+          const membership = await this.proveContentLabelMembership(
+            profile,
+            authority.scope,
+            authority.record.documentId,
+            parsed.revisionNumber,
+            semanticLabel.physical,
+            soapOperations
+          );
+          if (!membership.present) throw new ContentLabelNotFoundError();
+          const cacheContext = this.contentCacheContext(
+            profile,
+            authority.record.scopeId,
+            authority.scope,
+            authority.record.documentId,
+            semanticLabel.alias,
+            semanticLabel.physical,
+            membership.proof
+          );
+          const read = await this.contentBridge.readCachedOrLoad(cacheContext, {
+            traceId,
+            documentId: authority.record.documentId,
+            revisionNumber: parsed.revisionNumber,
+            startPage: parsed.startPage,
+            endPage: parsed.endPage,
+            cursor: parsed.cursor,
+            contentLabel: semanticLabel.alias,
+            maxChars: parsed.maxChars
+          }, async () => this.loadContent(profile, authority.scope, {
+            clientProfileId: profile.clientProfileId,
+            requestedId: membership.proof.requestedDocumentId,
+            effectiveId: membership.proof.effectiveDocumentId,
+            revisionNumber: membership.proof.provenRevisionNumber,
+            contentWireId: membership.proof.wireDocumentId,
+            contentLabel: semanticLabel.physical,
+            options: contentOptions(authority.scope),
+            traceId
+          }, membership.proof, semanticLabel.physical, membership.proof.provenRevisionNumber, soapOperations));
+          resultCount = 1;
+          data = { ...withoutDocumentIdentity(read as unknown as Record<string, unknown>), result_ref: parsed.resultRef };
+          break;
+        }
         default:
           throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "unknown_tool", false, `Unknown tool: ${name}`);
       }
@@ -552,6 +938,187 @@ export class ToolRegistry {
         latency_ms: Date.now() - started
       }).catch(() => undefined);
     }
+  }
+
+  private resolveBoundHandle(profile: TokenProfile, ref: string, kind: "search" | "continuation" | "result") {
+    if (!this.handles) throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+    return this.handles.resolveBound(ref, kind, profile, (boundScopeId) => this.scopes.get(boundScopeId));
+  }
+
+  private resolveResultAuthority(profile: TokenProfile, ref: string): { record: ResultHandleRecord; scope: SemanticScope } {
+    const record = this.resolveBoundHandle(profile, ref, "result");
+    if (record.kind !== "result" || !Array.isArray(record.verificationPlan)) throw refUnavailable();
+    return { record, scope: this.allowedScope(profile, record.scopeId) };
+  }
+
+  private async hydrateResultAuthority(
+    profile: TokenProfile,
+    authority: { record: ResultHandleRecord; scope: SemanticScope },
+    revisionNumber: number | undefined,
+    includePath: boolean,
+    operations: string[]
+  ): Promise<AdapterRepositoryObject> {
+    const { record, scope } = authority;
+    this.assertObjectIdInScope(scope, record.documentId);
+    const attrIds: typeof scope.default_attr_ids = [];
+    const seen = new Set<string>();
+    for (const attr of [
+      ...scope.default_attr_ids,
+      ...record.verificationPlan!.filter((predicate) => predicate.verification === "deterministic").map((predicate) => predicate.condition.attrId)
+    ]) {
+      const key = attrKey(attr);
+      if (!seen.has(key)) {
+        seen.add(key);
+        attrIds.push({ ...attr });
+      }
+    }
+    this.recordSoapOperation(operations, revisionNumber === undefined ? "getRepositoryObject" : "getRepositoryObjectByRevisionNumber");
+    if (includePath || scope.arcsuite.root_object_id) this.recordSoapOperation(operations, "getRepositoryObjectPath");
+    const current = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+      clientProfileId: profile.clientProfileId,
+      id: record.documentId,
+      revisionNumber,
+      resolveRef: false,
+      includePath: includePath || Boolean(scope.arcsuite.root_object_id),
+      attrIds,
+      options: []
+    }));
+    this.assertRepositoryObjectInScope(scope, current);
+    const identityMatches = revisionNumber === undefined
+      ? current.id === record.documentId
+      : revisionMetadataIdentityMatches(record.documentId, current.id, revisionNumber);
+    if (!identityMatches || current.objectClass !== record.objectClass) {
+      throw new McpToolError("ARCSUITE_FORBIDDEN", "object_identity", false);
+    }
+    this.assertAllowedObjectType(scope, current);
+    this.assertRootScope(current, scope);
+    for (const predicate of record.verificationPlan!) {
+      try {
+        verifySemanticPredicate(predicate, current.attributes);
+      } catch {
+        throw new McpToolError("ARCSUITE_FORBIDDEN", "scope_predicate", false);
+      }
+    }
+    return current;
+  }
+
+  private recanonicalizeReplay(
+    authority: CanonicalSearchAuthority,
+    targetScopeId: string,
+    targetScope: SemanticScope
+  ): { verificationPlan: CanonicalSemanticPredicate[]; appliedQuery: AppliedQuery } {
+    try {
+      if (!Number.isSafeInteger(authority.pageSize) || authority.pageSize < 1 || authority.pageSize > this.config.searchMaxLimit) {
+        throw new Error("page_size");
+      }
+      const verificationPlan = authority.appliedQuery.filters.predicates.map((predicate) => {
+        const target = targetScope.semantic_attributes[predicate.name];
+        if (!target || target.type !== predicate.type || !target.operators.includes(predicate.operator)) {
+          throw new Error("predicate");
+        }
+        return canonicalizeFilter(
+          targetScope,
+          predicate.name,
+          { operator: predicate.operator, value: predicate.value },
+          this.scopes.schemaFor(targetScopeId, predicate.name)
+        );
+      });
+      const text = authority.appliedQuery.text;
+      const textMode = text?.mode ?? "none";
+      if (!(targetScope.search?.full_text_modes ?? ["none"]).includes(textMode)) throw new Error("text_mode");
+      const appliedQuery = buildAppliedQuery(
+        verificationPlan,
+        text ? [...text.terms] : [],
+        text?.operator ?? authority.appliedQuery.operator,
+        textMode
+      );
+      if (JSON.stringify(appliedQuery) !== JSON.stringify(authority.appliedQuery)) throw new Error("semantic_drift");
+      return { verificationPlan, appliedQuery };
+    } catch {
+      throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "invalid_argument", false, "ARCSUITE_INVALID_ARGUMENT", "replay_query_incompatible");
+    }
+  }
+
+  private refNativeSearchResponse(
+    profile: TokenProfile,
+    scopeId: string,
+    scope: SemanticScope,
+    searchAuthority: CanonicalSearchAuthority,
+    pageData: { results: NormalizedDocument[]; failures: Array<{ index: number; document_id: string; code: string }> },
+    continuation: {
+      snapshotLimited: boolean;
+      nextAuthority?: ContinuationPageAuthority;
+      verificationPlan: readonly CanonicalSemanticPredicate[];
+      expiresAt?: number;
+    }
+  ): Record<string, unknown> {
+    if (!this.handles) throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+    const policyContext: HandlePolicyContext = { profile, scopeId, scope };
+    const maxExpiresAt = continuation.expiresAt;
+    const nextPageAuthority = continuation.nextAuthority;
+    if (nextPageAuthority && !maxExpiresAt) throw refUnavailable();
+    const refSet = this.issueSearchAuthoritySet(
+      policyContext,
+      searchAuthority,
+      pageData.results,
+      continuation.verificationPlan,
+      nextPageAuthority ? { pageAuthority: nextPageAuthority, maxExpiresAt } : undefined,
+      maxExpiresAt
+    );
+    const results = pageData.results.map((result, index) => ({
+      ...withoutDocumentIdentity(result),
+      result_ref: refSet.resultRefs[index]
+    }));
+    return {
+      scope: scopeId,
+      count: results.length,
+      limit: searchAuthority.pageSize,
+      truncated: Boolean(nextPageAuthority) || continuation.snapshotLimited,
+      snapshot_limited: continuation.snapshotLimited,
+      applied_query: searchAuthority.appliedQuery,
+      failures: pageData.failures.map(({ index, code }) => ({ index, code })),
+      results,
+      search_ref: refSet.searchRef,
+      continuation_ref: refSet.continuationRef
+    };
+  }
+
+  private issueSearchAuthoritySet(
+    context: HandlePolicyContext,
+    searchAuthority: CanonicalSearchAuthority,
+    results: readonly NormalizedDocument[],
+    verificationPlan: readonly CanonicalSemanticPredicate[],
+    continuation?: Readonly<{ cursor?: string; pageAuthority: ContinuationPageAuthority; maxExpiresAt?: number }>,
+    maxExpiresAt?: number
+  ): { resultRefs: string[]; searchRef: string; continuationRef: string | null } {
+    if (!this.handles) throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+    const requests: OpaqueHandleIssue[] = results.map((result) => ({
+      kind: "result",
+      input: {
+        documentId: result.document_id,
+        objectClass: result.object_class,
+        verificationPlan
+      },
+      maxExpiresAt
+    }));
+    requests.push({ kind: "search", authority: searchAuthority, maxExpiresAt });
+    if (continuation) {
+      requests.push({
+        kind: "continuation",
+        input: {
+          searchAuthority,
+          ...(continuation.cursor ? { cursor: continuation.cursor } : {}),
+          pageAuthority: continuation.pageAuthority
+        },
+        maxExpiresAt: continuation.maxExpiresAt
+      });
+    }
+    const refs = this.handles.issueMany(context, requests);
+    return {
+      resultRefs: refs.slice(0, results.length),
+      searchRef: refs[results.length],
+      continuationRef: continuation ? refs[results.length + 1] : null
+    };
   }
 
   private allowedScope(profile: TokenProfile, scopeId: string): SemanticScope {
@@ -920,7 +1487,8 @@ export class ToolRegistry {
     ids: string[],
     includePath: boolean,
     operations: string[],
-    verificationPlan?: readonly CanonicalSemanticPredicate[]
+    verificationPlan?: readonly CanonicalSemanticPredicate[],
+    verificationPlansById?: ReadonlyMap<string, readonly CanonicalSemanticPredicate[]>
   ): Promise<{ results: NormalizedDocument[]; failures: Array<{ index: number; document_id: string; code: string }> }> {
     if (!ids.length) return { results: [], failures: [] };
     for (const id of ids) this.assertObjectIdInScope(scope, id);
@@ -940,7 +1508,10 @@ export class ToolRegistry {
       attrIds.push({ ...attr });
     };
     for (const attr of scope.default_attr_ids) addAttribute(attr);
-    for (const predicate of verificationPlan ?? []) {
+    const allVerificationPredicates = verificationPlansById
+      ? [...verificationPlansById.values()].flatMap((plan) => [...plan])
+      : [...(verificationPlan ?? [])];
+    for (const predicate of allVerificationPredicates) {
       if (predicate.verification !== "deterministic") continue;
       addAttribute(predicate.condition.attrId);
     }
@@ -980,7 +1551,7 @@ export class ToolRegistry {
       coveredIndexes.add(failure.index);
     }
     if (coveredIndexes.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_coverage", false);
-    const requiresDeterministicVerification = verificationPlan?.some((predicate) => predicate.verification === "deterministic") ?? false;
+    const requiresDeterministicVerification = allVerificationPredicates.some((predicate) => predicate.verification === "deterministic");
     if (requiresDeterministicVerification && batch.failures.length) {
       throw new SearchOutcomeError("hydration_failure", "Search hydration returned per-ID failures");
     }
@@ -988,7 +1559,8 @@ export class ToolRegistry {
     this.assertAllowedObjectTypes(scope, batch.objects);
     if (includePath || scope.arcsuite.root_object_id) await this.attachRawPaths(profile, scope, batch.objects, operations);
     for (const object of batch.objects) {
-      for (const predicate of verificationPlan ?? []) {
+      const objectVerificationPlan = verificationPlansById?.get(object.id) ?? verificationPlan ?? [];
+      for (const predicate of objectVerificationPlan) {
         try {
           verifySemanticPredicate(predicate, object.attributes);
         } catch (error) {
@@ -1117,12 +1689,12 @@ function rejectRawArcSuiteFields(value: unknown): void {
 }
 
 function parseSearchArgs(args: Record<string, unknown>, config: AppConfig) {
-  assertExactKeys(args, ["scope", "query", "query_mode", "filters", "limit", "include_path", "cursor", "text_search_mode"], "search arguments");
+  assertExactKeys(args, ["scope", "query", "query_mode", "filters", "limit", "include_path", "cursor", "text_search_mode", "response_contract"], "search arguments");
   const scope = stringValue(args.scope, "scope", 1, 100);
   const cursor = optionalString(args.cursor, "cursor", 4096);
   if (cursor) {
-    for (const key of ["query", "query_mode", "filters", "limit", "include_path", "text_search_mode"]) if (args[key] !== undefined) throw new TypeError(`${key} cannot be combined with cursor`);
-    return { scope, cursor, query: undefined, queryMode: "and" as const, filters: {} as Record<string, SemanticFilterInput>, textSearchMode: "none" as const, limit: config.searchDefaultLimit, includePath: false };
+    for (const key of ["query", "query_mode", "filters", "limit", "include_path", "text_search_mode", "response_contract"]) if (args[key] !== undefined) throw new TypeError(`${key} cannot be combined with cursor`);
+    return { scope, cursor, query: undefined, queryMode: "and" as const, filters: {} as Record<string, SemanticFilterInput>, textSearchMode: "none" as const, limit: config.searchDefaultLimit, includePath: false, responseContract: "legacy" as const };
   }
   const queryValue = optionalString(args.query, "query", 200);
   const query = queryValue?.trim() || undefined;
@@ -1137,7 +1709,21 @@ function parseSearchArgs(args: Record<string, unknown>, config: AppConfig) {
   if (!query && !Object.keys(filters).length) throw new TypeError("At least query or one semantic filter is required");
   if (!query && textSearchMode !== "none") throw new TypeError("text_search_mode requires a text query");
   const limit = args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit);
-  return { scope, cursor: undefined, query, queryMode, filters, textSearchMode, limit, includePath: boolValue(args.include_path, false) };
+  const responseContract = enumValue(args.response_contract, ["legacy", "opaque_refs_v1"] as const, "legacy");
+  return { scope, cursor: undefined, query, queryMode, filters, textSearchMode, limit, includePath: boolValue(args.include_path, false), responseContract };
+}
+
+function parseContinueSearchArgs(args: Record<string, unknown>) {
+  assertExactKeys(args, ["continuation_ref"], "continue search arguments");
+  return { continuationRef: stringValue(args.continuation_ref, "continuation_ref", 1, 1024) };
+}
+
+function parseReplaySearchArgs(args: Record<string, unknown>) {
+  assertExactKeys(args, ["search_ref", "target_scope"], "replay search arguments");
+  return {
+    searchRef: stringValue(args.search_ref, "search_ref", 1, 1024),
+    targetScope: stringValue(args.target_scope, "target_scope", 1, 64)
+  };
 }
 
 function parseSemanticFilterInput(value: unknown, label: string): SemanticFilterInput {
@@ -1169,6 +1755,15 @@ function parseGetDocumentArgs(args: Record<string, unknown>) {
   };
 }
 
+function parseGetDocumentByRefArgs(args: Record<string, unknown>) {
+  assertExactKeys(args, ["result_ref", "revision_number", "include_path"], "get document by ref arguments");
+  return {
+    resultRef: stringValue(args.result_ref, "result_ref", 1, 1024),
+    revisionNumber: optionalInt(args.revision_number, "revision_number", MIN_REVISION_NUMBER, MAX_REVISION_NUMBER),
+    includePath: boolValue(args.include_path, true)
+  };
+}
+
 function parseGetDocumentsArgs(args: Record<string, unknown>, config: AppConfig) {
   assertExactKeys(args, ["scope", "document_ids", "include_path"], "get documents arguments");
   const scope = stringValue(args.scope, "scope", 1, 100);
@@ -1176,6 +1771,17 @@ function parseGetDocumentsArgs(args: Record<string, unknown>, config: AppConfig)
   const documentIds = args.document_ids.map((value, index) => repId(value, `document_ids[${index}]`));
   if (new Set(documentIds).size !== documentIds.length) throw new TypeError("document_ids must not contain duplicates");
   return { scope, documentIds, includePath: boolValue(args.include_path, false) };
+}
+
+function parseGetDocumentsByRefArgs(args: Record<string, unknown>, config: AppConfig) {
+  assertExactKeys(args, ["result_refs", "include_path"], "get documents by ref arguments");
+  if (!Array.isArray(args.result_refs) || !args.result_refs.length || args.result_refs.length > config.batchMaxIds) {
+    throw new TypeError(`result_refs must contain 1..${config.batchMaxIds} items`);
+  }
+  return {
+    resultRefs: args.result_refs.map((value, index) => stringValue(value, `result_refs[${index}]`, 1, 1024)),
+    includePath: boolValue(args.include_path, false)
+  };
 }
 
 function parseListFolderArgs(args: Record<string, unknown>, config: AppConfig) {
@@ -1288,6 +1894,14 @@ function parseRevisionsArgs(args: Record<string, unknown>, config: AppConfig) {
   return { documentId: repId(args.document_id, "document_id"), limit: args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit) };
 }
 
+function parseRevisionsByRefArgs(args: Record<string, unknown>, config: AppConfig) {
+  assertExactKeys(args, ["result_ref", "limit"], "revision by ref arguments");
+  return {
+    resultRef: stringValue(args.result_ref, "result_ref", 1, 1024),
+    limit: args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit)
+  };
+}
+
 function parseContentInfoArgs(args: Record<string, unknown>) {
   assertExactKeys(args, ["document_id", "revision_number", "content_label"], "content info arguments");
   const contentLabel = optionalString(args.content_label, "content_label", 256);
@@ -1295,6 +1909,15 @@ function parseContentInfoArgs(args: Record<string, unknown>) {
     documentId: repId(args.document_id, "document_id"),
     revisionNumber: optionalInt(args.revision_number, "revision_number", MIN_REVISION_NUMBER, MAX_REVISION_NUMBER),
     contentLabel
+  };
+}
+
+function parseContentInfoByRefArgs(args: Record<string, unknown>) {
+  assertExactKeys(args, ["result_ref", "revision_number", "content_label"], "content info by ref arguments");
+  return {
+    resultRef: stringValue(args.result_ref, "result_ref", 1, 1024),
+    revisionNumber: optionalInt(args.revision_number, "revision_number", MIN_REVISION_NUMBER, MAX_REVISION_NUMBER),
+    contentLabel: optionalString(args.content_label, "content_label", 256)
   };
 }
 
@@ -1311,6 +1934,28 @@ function parseReadArgs(args: Record<string, unknown>, config: AppConfig) {
   if (endPage !== undefined && startPage !== undefined && endPage < startPage) throw new TypeError("end_page must be >= start_page");
   const maxChars = args.max_chars === undefined ? config.readDefaultMaxChars : intValue(args.max_chars, "max_chars", 1000, config.readMaxChars);
   return { documentId: repId(args.document_id, "document_id"), revisionNumber: optionalInt(args.revision_number, "revision_number", MIN_REVISION_NUMBER, MAX_REVISION_NUMBER), contentLabel, startPage, endPage, cursor, maxChars };
+}
+
+function parseReadByRefArgs(args: Record<string, unknown>, config: AppConfig) {
+  assertExactKeys(args, ["result_ref", "revision_number", "content_label", "start_page", "end_page", "cursor", "max_chars"], "read by ref arguments");
+  const contentLabel = optionalString(args.content_label, "content_label", 256);
+  const cursor = optionalString(args.cursor, "cursor", 4096);
+  const startPage = optionalInt(args.start_page, "start_page", 1, MAX_PAGE_NUMBER);
+  const endPage = optionalInt(args.end_page, "end_page", 1, MAX_PAGE_NUMBER);
+  if (cursor !== undefined && !cursor.length) throw new TypeError("cursor must not be empty");
+  if (cursor !== undefined && startPage !== undefined) throw new TypeError("cursor and start_page cannot both be specified");
+  if (cursor !== undefined && endPage !== undefined) throw new TypeError("cursor and end_page cannot both be specified");
+  if (endPage !== undefined && startPage === undefined) throw new TypeError("end_page requires start_page");
+  if (endPage !== undefined && startPage !== undefined && endPage < startPage) throw new TypeError("end_page must be >= start_page");
+  return {
+    resultRef: stringValue(args.result_ref, "result_ref", 1, 1024),
+    revisionNumber: optionalInt(args.revision_number, "revision_number", MIN_REVISION_NUMBER, MAX_REVISION_NUMBER),
+    contentLabel,
+    startPage,
+    endPage,
+    cursor,
+    maxChars: args.max_chars === undefined ? config.readDefaultMaxChars : intValue(args.max_chars, "max_chars", 1000, config.readMaxChars)
+  };
 }
 
 function repId(value: unknown, label: string): string {
@@ -1464,8 +2109,17 @@ function tokenizeQuery(query: string): string[] {
   throw new TypeError("query contains more than 10 terms");
 }
 
+function withoutDocumentIdentity<T extends object>(value: T): Omit<T, "document_id"> {
+  const { document_id: _documentId, ...rest } = value as T & { document_id?: unknown };
+  return rest;
+}
+
+function refUnavailable(): McpToolError {
+  return new McpToolError("ARCSUITE_REF_UNAVAILABLE", "ref_unavailable", false, "ARCSUITE_REF_UNAVAILABLE", "search_again");
+}
+
 function shortSummary(name: string, data: Record<string, unknown>): string {
-  if (name === "arcsuite_read_document") {
+  if (name === "arcsuite_read_document" || name === "arcsuite_read_document_by_ref") {
     const content = String(data.content ?? "");
     return `ArcSuite document content (${String(data.file_name ?? "unknown")}; truncated=${String(data.truncated ?? false)})\n\n${content}`;
   }
@@ -1498,12 +2152,39 @@ function readDocumentJsonSchema(
   };
 }
 
+function readDocumentByRefJsonSchema(
+  resultRef: Record<string, unknown>,
+  contentLabel: Record<string, unknown>,
+  config: AppConfig
+): Record<string, unknown> {
+  const common = {
+    result_ref: resultRef,
+    revision_number: { type: "integer", minimum: MIN_REVISION_NUMBER, maximum: MAX_REVISION_NUMBER },
+    content_label: contentLabel,
+    max_chars: { type: "integer", minimum: 1000, maximum: config.readMaxChars, default: config.readDefaultMaxChars }
+  };
+  const page = { type: "integer", minimum: 1, maximum: MAX_PAGE_NUMBER };
+  const cursor = { type: "string", minLength: 1, maxLength: 4096 };
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: { ...common, start_page: page, end_page: page, cursor },
+    anyOf: [
+      { required: ["result_ref"], properties: common, not: { anyOf: [{ required: ["start_page"] }, { required: ["end_page"] }, { required: ["cursor"] }] } },
+      { required: ["result_ref", "start_page"], properties: { ...common, start_page: page }, not: { anyOf: [{ required: ["end_page"] }, { required: ["cursor"] }] } },
+      { required: ["result_ref", "start_page", "end_page"], properties: { ...common, start_page: page, end_page: page }, not: { required: ["cursor"] } },
+      { required: ["result_ref", "cursor"], properties: { ...common, cursor }, not: { anyOf: [{ required: ["start_page"] }, { required: ["end_page"] }] } }
+    ]
+  };
+}
+
 function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: AppConfig): ToolDefinition[] {
   const descriptions = scopes.describe(profile.allowedScopes);
   const scopeValues = descriptions.map((item) => item.id);
   const scopeSummary = descriptions.map((item) => `${item.id} [${item.filters.map((filter) => `${filter.name}:${filter.type}(${filter.operators.join(",")})`).join(", ") || "no semantic filters"}; text=${item.full_text_modes.join(",")}]`).join("; ");
   const scope = { type: "string", enum: scopeValues };
   const documentId = { type: "string", pattern: "^rep:", minLength: 5, maxLength: 2048 };
+  const opaqueRef = { type: "string", minLength: 1, maxLength: 1024 };
   const limit = { type: "integer", minimum: 1, maximum: config.searchMaxLimit, default: config.searchDefaultLimit };
   const contentLabelValues = [...new Set(descriptions.flatMap((item) => item.content_labels))];
   const contentLabel = {
@@ -1522,7 +2203,7 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
     {
       name: "arcsuite_search_documents",
       description: `Search an allowed semantic ArcSuite scope. Available scope/filter names: ${scopeSummary || "none"}. Use next_cursor by itself with scope to continue a stable bounded snapshot.`,
-      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: filterValue }, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 }, text_search_mode: { type: "string", enum: ["none", "stemming", "thesaurus"], default: "none" } } }
+      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: filterValue }, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 }, text_search_mode: { type: "string", enum: ["none", "stemming", "thesaurus"], default: "none" }, response_contract: { type: "string", enum: ["legacy", "opaque_refs_v1"], default: "legacy" } }, allOf: [{ if: { required: ["cursor"] }, then: { not: { required: ["response_contract"] } } }] }
     },
     {
       name: "arcsuite_get_document",
@@ -1563,6 +2244,41 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
       name: "arcsuite_validate_document_integrity",
       description: "Read ArcSuite's validation result for one authorized document and optionally report already-calculated evidence availability. Valid means only that the reported validation elements succeeded; false or missing results are reported as invalid or unverifiable.",
       inputSchema: { type: "object", additionalProperties: false, required: ["document_id"], properties: { document_id: documentId, include_evidence: { type: "boolean", default: false } } }
+    },
+    {
+      name: "arcsuite_continue_search",
+      description: "Continue a previously verified search using only continuation_ref. Current authentication, tool permission, scope permission, and result verification are rechecked.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["continuation_ref"], properties: { continuation_ref: opaqueRef } }
+    },
+    {
+      name: "arcsuite_replay_search",
+      description: "Apply the exact verified semantic search represented by search_ref to an explicitly selected authorized target scope.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["search_ref", "target_scope"], properties: { search_ref: opaqueRef, target_scope: scope } }
+    },
+    {
+      name: "arcsuite_get_document_by_ref",
+      description: "Get semantic metadata for a previously verified result using result_ref; do not provide or reconstruct document_id.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["result_ref"], properties: { result_ref: opaqueRef, revision_number: { type: "integer", minimum: MIN_REVISION_NUMBER, maximum: MAX_REVISION_NUMBER }, include_path: { type: "boolean", default: true } } }
+    },
+    {
+      name: "arcsuite_get_documents_by_ref",
+      description: `Get semantic metadata for a bounded same-scope batch of previously verified result refs. Maximum batch size: ${config.batchMaxIds}.`,
+      inputSchema: { type: "object", additionalProperties: false, required: ["result_refs"], properties: { result_refs: { type: "array", minItems: 1, maxItems: config.batchMaxIds, items: opaqueRef }, include_path: { type: "boolean", default: false } } }
+    },
+    {
+      name: "arcsuite_list_document_revisions_by_ref",
+      description: "List current provider revision metadata for a previously verified result using result_ref.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["result_ref"], properties: { result_ref: opaqueRef, limit } }
+    },
+    {
+      name: "arcsuite_get_document_content_info_by_ref",
+      description: "Inspect semantic content metadata for a previously verified result using result_ref after fresh authorization and identity verification.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["result_ref"], properties: { result_ref: opaqueRef, revision_number: { type: "integer", minimum: MIN_REVISION_NUMBER, maximum: MAX_REVISION_NUMBER }, content_label: contentLabel } }
+    },
+    {
+      name: "arcsuite_read_document_by_ref",
+      description: "Read bounded text for a previously verified result using result_ref; do not provide or reconstruct document_id.",
+      inputSchema: readDocumentByRefJsonSchema(opaqueRef, contentLabel, config)
     }
   ];
 }
