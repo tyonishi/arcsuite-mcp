@@ -12,7 +12,7 @@ const opaqueKeyring = JSON.stringify({
   keys: [{ kid: "test-active", secret_base64url: Buffer.alloc(32, 0x5a).toString("base64url") }]
 });
 
-async function runtime(enabled: boolean, overrides: Record<string, string> = {}) {
+async function runtime(enabled: boolean, overrides: Record<string, string | undefined> = {}) {
   const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-opaque-refs-"));
   const rt = await buildRuntime({
     ...process.env,
@@ -38,6 +38,14 @@ function profile() {
     allowedScopes: ["example_documents"],
     allowedTools: ["arcsuite_search_documents"],
     rateLimit: { requestsPerMinute: 120, burst: 30 }
+  };
+}
+
+function syntheticProfile(clientProfileId: string, token: string) {
+  return {
+    ...profile(),
+    tokenSha256: createHash("sha256").update(token).digest("hex"),
+    clientProfileId
   };
 }
 
@@ -210,6 +218,60 @@ test("global handle pressure rejects a search atomically without evicting anothe
         scope: rt.scopes.get("example_documents")
       }).kind, "search");
     }
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("default opaque capacity reservation prevents one eligible profile from starving another", async () => {
+  const profileA = syntheticProfile("synthetic-profile-a", "synthetic-token-a");
+  const profileB = syntheticProfile("synthetic-profile-b", "synthetic-token-b");
+  const tokenConfig = JSON.stringify({ tokens: [profileA, profileB] });
+  const { rt } = await runtime(true, {
+    MCP_DEV_BEARER_TOKEN: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: tokenConfig,
+    MCP_SEARCH_DEFAULT_LIMIT: "2",
+    MCP_SEARCH_MAX_LIMIT: "2",
+    MCP_OPAQUE_REF_MAX_ENTRIES: "8",
+    MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE: undefined
+  });
+  const ids = [
+    "rep:mock:EXAMPLE_CABINET:reserved-1",
+    "rep:mock:EXAMPLE_CABINET:reserved-2",
+    "rep:mock:EXAMPLE_CABINET:reserved-3"
+  ];
+  (rt.adapter as any).searchIds = async () => ids;
+  (rt.adapter as any).getMany = async (request: any) => ({ objects: request.ids.map(document), failures: [] });
+  const search = async (currentProfile: ReturnType<typeof syntheticProfile>) => (await rt.tools.call(
+    currentProfile,
+    "arcsuite_search_documents",
+    { scope: "example_documents", query: "synthetic", limit: 2, response_contract: "opaque_refs_v1" }
+  )).structuredContent as any;
+  try {
+    const firstA = await search(profileA);
+    const secondA = await search(profileA);
+    const firstB = await search(profileB);
+
+    assert.equal(rt.config.opaqueRefs?.capacityPerProfile, 4);
+    assert.equal(typeof firstB.search_ref, "string");
+    assert.equal(typeof firstB.continuation_ref, "string");
+    assert.equal(firstB.results.length, 2);
+    assert.ok(firstB.results.every((item: any) => typeof item.result_ref === "string"));
+    assert.equal(rt.handles?.resolve(firstB.search_ref, "search", {
+      profile: profileB,
+      scopeId: "example_documents",
+      scope: rt.scopes.get("example_documents")
+    }).kind, "search");
+    assert.throws(() => rt.handles?.resolve(firstA.search_ref, "search", {
+      profile: profileA,
+      scopeId: "example_documents",
+      scope: rt.scopes.get("example_documents")
+    }), (error: any) => error?.stableCode === "ARCSUITE_REF_UNAVAILABLE");
+    assert.equal(rt.handles?.resolve(secondA.search_ref, "search", {
+      profile: profileA,
+      scopeId: "example_documents",
+      scope: rt.scopes.get("example_documents")
+    }).kind, "search");
   } finally {
     rt.stopValidationRetry();
   }

@@ -186,7 +186,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const contentCacheMaxEntriesPerClient = positiveInteger(env.MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT ?? "16", "MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT", CONFIG_LIMITS.maxContentCacheEntriesPerClient);
   if (contentCacheMaxEntriesPerClient > contentCacheMaxEntries) throw new Error("MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT cannot exceed MCP_CONTENT_CACHE_MAX_ENTRIES");
   const contentCacheMaxBytes = positiveInteger(env.MCP_CONTENT_CACHE_MAX_BYTES ?? "16777216", "MCP_CONTENT_CACHE_MAX_BYTES", CONFIG_LIMITS.maxContentCacheBytes);
-  const opaqueRefs = loadOpaqueRefConfig(env, production);
+  const tokenProfiles = loadTokenProfiles(env);
+  const opaqueRefs = loadOpaqueRefConfig(env, production, tokenProfiles, searchMaxLimit);
   if (opaqueRefs && opaqueRefs.capacity < searchMaxLimit + 2) {
     throw new Error("MCP_OPAQUE_REF_MAX_ENTRIES must be at least MCP_SEARCH_MAX_LIMIT + 2");
   }
@@ -207,7 +208,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     adapterBaseUrl,
     adapterInternalToken,
     scopesFile: resolve(env.MCP_SCOPES_FILE ?? (mode === "mock" ? "config/scopes.mock.yaml" : "config/scopes.yaml")),
-    tokenProfiles: loadTokenProfiles(env),
+    tokenProfiles,
     searchDefaultLimit,
     searchMaxLimit,
     hardReferenceMaxCandidates,
@@ -236,7 +237,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   };
 }
 
-function loadOpaqueRefConfig(env: NodeJS.ProcessEnv, production: boolean): OpaqueHandleConfig | null {
+function loadOpaqueRefConfig(
+  env: NodeJS.ProcessEnv,
+  production: boolean,
+  tokenProfiles: readonly TokenProfile[],
+  searchMaxLimit: number
+): OpaqueHandleConfig | null {
   const enabled = strictBoolean(env.MCP_OPAQUE_REFS_ENABLED ?? "false", "MCP_OPAQUE_REFS_ENABLED");
   if (!enabled) return null;
   const file = env.MCP_OPAQUE_REF_KEYS_JSON_FILE;
@@ -275,13 +281,24 @@ function loadOpaqueRefConfig(env: NodeJS.ProcessEnv, production: boolean): Opaqu
   });
   if (!kids.has(keyring.active_kid)) throw new Error("Opaque ref active kid is missing from keys");
   const capacity = positiveInteger(env.MCP_OPAQUE_REF_MAX_ENTRIES ?? "1000", "MCP_OPAQUE_REF_MAX_ENTRIES", OPAQUE_HANDLE_LIMITS.maxCapacity);
+  const minimumAuthorityCapacity = searchMaxLimit + 2;
+  const eligibleProfileCount = tokenProfiles.filter((profile) => profile.allowedTools.includes("arcsuite_search_documents")).length;
+  const reservedCapacityPerProfile = eligibleProfileCount > 0
+    ? Math.floor(capacity / eligibleProfileCount)
+    : capacity;
+  if (reservedCapacityPerProfile < minimumAuthorityCapacity) {
+    throw new Error("MCP_OPAQUE_REF_MAX_ENTRIES must reserve MCP_SEARCH_MAX_LIMIT + 2 entries for every opaque-ref-capable profile");
+  }
   const capacityPerProfile = positiveInteger(
-    env.MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE ?? String(capacity),
+    env.MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE ?? String(reservedCapacityPerProfile),
     "MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE",
     OPAQUE_HANDLE_LIMITS.maxCapacity
   );
   if (capacityPerProfile > capacity) {
     throw new Error("MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE cannot exceed MCP_OPAQUE_REF_MAX_ENTRIES");
+  }
+  if (capacityPerProfile > reservedCapacityPerProfile) {
+    throw new Error("MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE cannot exceed the reserved share for opaque-ref-capable profiles");
   }
   return Object.freeze({
     activeKid: keyring.active_kid,

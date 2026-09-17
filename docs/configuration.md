@@ -22,8 +22,8 @@ scope registry. Tool callers cannot override these values.
 | `MCP_OPAQUE_REF_KEYS_JSON_FILE` | none | Secret keyring file required when opaque refs are enabled in production |
 | `MCP_OPAQUE_REF_KEYS_JSON` | none | Controlled non-production keyring fallback; ignored in production |
 | `MCP_OPAQUE_REF_TTL_SECONDS` | `600` | Opaque ref lifetime; hard maximum `86400` |
-| `MCP_OPAQUE_REF_MAX_ENTRIES` | `1000` | Process-local handle-record capacity; must be at least `MCP_SEARCH_MAX_LIMIT + 2` |
-| `MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE` | global capacity | Per-profile handle-record capacity; must be at least `MCP_SEARCH_MAX_LIMIT + 2` and no greater than the global capacity |
+| `MCP_OPAQUE_REF_MAX_ENTRIES` | `1000` | Process-local hard capacity; while enabled it must reserve at least `MCP_SEARCH_MAX_LIMIT + 2` entries for every eligible profile |
+| `MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE` | `floor(global capacity / eligible profiles)` | Strict per-profile handle-record share; must fit one maximum search authority set and cannot exceed the derived reserved share |
 | `MCP_OPAQUE_REF_CONTRACT_GENERATION` | `1` | Non-secret envelope/record compatibility generation |
 | `MCP_OPAQUE_REF_CREDENTIAL_CONTEXT_GENERATION` | `1` | Non-secret credential-context epoch used in policy binding |
 | `MCP_VALIDATE_ON_STARTUP` | `true` | Validate adapter health and configured schema before readiness |
@@ -108,6 +108,18 @@ least-recently-used records. The global capacity remains a hard process bound;
 when it is full and the allocating profile has too few records to reclaim, the
 entire ref set is rejected before publication rather than evicting another
 profile's valid records. The owner is never included in the public ref envelope.
+
+When `MCP_OPAQUE_REF_MAX_ENTRIES_PER_PROFILE` is omitted, the server reserves a
+strict equal share of the global capacity for each configured profile that can
+mint refs through `arcsuite_search_documents`. A single eligible profile may
+use the full global capacity; with multiple eligible profiles the default is
+`floor(MCP_OPAQUE_REF_MAX_ENTRIES / eligible profile count)`, and unused shares
+are not borrowed across profiles. An explicit per-profile value cannot exceed
+that reserved share. Each share must fit one maximum initial authority set
+(`MCP_SEARCH_MAX_LIMIT + 2`, covering the search ref, an optional continuation
+ref, and result refs), otherwise enabled startup fails closed and the operator
+must increase the global capacity or reduce the configured search/profile
+bounds. Token-profile and capacity changes take effect only after restart.
 
 The keyring has one active issuance key and at most one retained validation
 key. Each secret is canonical unpadded base64url encoding of 32 to 64 random
