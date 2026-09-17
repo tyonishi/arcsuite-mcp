@@ -247,7 +247,7 @@ final class ArcSuiteSoapClient {
 
         boolean hasResult = resultEntries.size() == 1;
         boolean hasFailure = failureEntries.size() == 1;
-        if (hasResult == hasFailure) throw integrityShapeFailure();
+        if (hasResult && hasFailure) throw integrityShapeFailure();
 
         LinkedHashMap<String,Object> out = new LinkedHashMap<>();
         if (hasFailure) {
@@ -265,7 +265,7 @@ final class ArcSuiteSoapClient {
             return out;
         }
 
-        out.put("certificates", parseIntegrityElements(resultEntries.get(0)));
+        out.put("certificates", hasResult ? parseIntegrityElements(resultEntries.get(0)) : List.of());
         out.put("failure", null);
         return out;
     }
