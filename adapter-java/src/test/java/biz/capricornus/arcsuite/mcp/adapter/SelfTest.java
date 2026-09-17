@@ -32,6 +32,8 @@ public final class SelfTest {
         contentLabelWireShapes();
         objectClassContractShapes();
         contentRequestContract();
+        materializedFileNameSanitization();
+        successfulContentMaterialization();
         typedAttributeValueShapes();
         attributeSchemaMetadataParsing();
         responseIdParsing();
@@ -868,6 +870,115 @@ public final class SelfTest {
             if (dispatches.get() != 0) throw new AssertionError("Invalid content identity reached SOAP dispatch");
         } finally {
             server.stop(0);
+        }
+    }
+
+    static void successfulContentMaterialization() throws Exception {
+        String requestedId = "rep:example:reference-001";
+        String effectiveId = "rep:example:document-001";
+        int revision = 3;
+        String originalFileName = "a\\b/c\r\n日本語.pdf";
+        byte[] expectedBytes = "synthetic-content".getBytes(StandardCharsets.UTF_8);
+        AtomicInteger revisionCalls = new AtomicInteger();
+        AtomicInteger contentCalls = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/soap", exchange -> {
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String response;
+            if (request.contains("<t:getRepositoryObjectByRevisionNumber>")) {
+                revisionCalls.incrementAndGet();
+                response = soapEnvelope("<t:getRepositoryObjectByRevisionNumberResponse>"
+                        + "<t:getRepositoryDocumentByRevisionNubmerReturn>"
+                        + "<t:id>" + effectiveId + ":" + revision + "</t:id>"
+                        + "<t:objectClass ns=\"rep\" name=\"system:document\"/>"
+                        + "<t:attributes><t:attribute ns=\"rep\" name=\"system:revisionnumber\">"
+                        + "<t:attributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"t:IntValue\">"
+                        + "<t:int>" + revision + "</t:int></t:attributeValue>"
+                        + "</t:attribute></t:attributes>"
+                        + "</t:getRepositoryDocumentByRevisionNubmerReturn>"
+                        + "</t:getRepositoryObjectByRevisionNumberResponse>");
+            } else if (request.contains("<t:getRepositoryObjectContentWithOptions>")) {
+                contentCalls.incrementAndGet();
+                response = soapEnvelope("<t:getRepositoryObjectContentWithOptionsResponse>"
+                        + "<t:getRepositoryObjectContentWithOptionsReturn>"
+                        + "<t:label ns=\"rep\" name=\"system:primary\"/>"
+                        + "<t:fileName>a\\b/c&#13;&#10;日本語.pdf</t:fileName>"
+                        + "<t:contentType>application/pdf</t:contentType>"
+                        + "<t:data>" + Base64.getEncoder().encodeToString(expectedBytes) + "</t:data>"
+                        + "</t:getRepositoryObjectContentWithOptionsReturn>"
+                        + "</t:getRepositoryObjectContentWithOptionsResponse>");
+            } else {
+                response = soapEnvelope("<soap:Fault><faultcode>soap:Client</faultcode><faultstring>Unexpected operation</faultstring></soap:Fault>");
+            }
+            byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("content-type", "text/xml; charset=utf-8");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        Path temp = Files.createTempDirectory("arcsuite-content-materialization-");
+        Path materialized = null;
+        try {
+            AdapterConfig config = new AdapterConfig(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
+                    "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
+                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0",
+                    temp, 1024 * 1024);
+            ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
+            Map<String, Object> result = client.content(Map.of(
+                    "clientProfileId", "synthetic-client",
+                    "requestedId", requestedId,
+                    "effectiveId", effectiveId,
+                    "revisionNumber", revision,
+                    "contentWireId", effectiveId + ":" + revision,
+                    "contentLabel", Map.of("ns", "rep", "name", "system:primary"),
+                    "options", List.of("errorOnOfflineContent"),
+                    "traceId", "synthetic-trace"), "synthetic-session");
+
+            materialized = Path.of(String.valueOf(result.get("filePath")));
+            if (revisionCalls.get() != 1 || contentCalls.get() != 1) {
+                throw new AssertionError("Successful content path did not perform exact revision and content operations");
+            }
+            if (!requestedId.equals(result.get("id"))
+                    || !effectiveId.equals(result.get("effectiveId"))
+                    || !(effectiveId + ":" + revision).equals(result.get("wireId"))
+                    || !Integer.valueOf(revision).equals(result.get("revisionNumber"))
+                    || !Map.of("ns", "rep", "name", "system:primary").equals(result.get("label"))) {
+                throw new AssertionError("Successful content result changed proven identity authority: " + result);
+            }
+            if (!originalFileName.equals(result.get("fileName"))) {
+                throw new AssertionError("Provider filename contract changed: " + result.get("fileName"));
+            }
+            Path normalizedTemp = temp.toAbsolutePath().normalize();
+            Path normalizedFile = materialized.toAbsolutePath().normalize();
+            if (!Files.isRegularFile(normalizedFile) || !normalizedFile.startsWith(normalizedTemp)) {
+                throw new AssertionError("Materialized file escaped the configured shared temp directory");
+            }
+            String materializedName = normalizedFile.getFileName().toString();
+            if (!materializedName.endsWith("-a_b_c__日本語.pdf")
+                    || materializedName.indexOf('\\') >= 0
+                    || materializedName.indexOf('/') >= 0
+                    || materializedName.indexOf('\r') >= 0
+                    || materializedName.indexOf('\n') >= 0
+                    || materializedName.indexOf(0) >= 0) {
+                throw new AssertionError("Unsafe characters survived materialized filename sanitization: " + materializedName);
+            }
+            if (!java.util.Arrays.equals(expectedBytes, Files.readAllBytes(normalizedFile))) {
+                throw new AssertionError("Materialized content bytes changed");
+            }
+        } finally {
+            server.stop(0);
+            if (materialized != null) Files.deleteIfExists(materialized);
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    static void materializedFileNameSanitization() {
+        String original = "a\\b/c\r\nd\0日本語.pdf";
+        String sanitized = ArcSuiteSoapClient.sanitizeMaterializedFileName(original);
+        if (!"a_b_c__d_日本語.pdf".equals(sanitized)) {
+            throw new AssertionError("Materialized filename sanitizer changed unexpected characters: " + sanitized);
         }
     }
 
