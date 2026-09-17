@@ -241,13 +241,15 @@ final class ArcSuiteSoapClient {
         if (responseChildren.size() != 2 || responseChildren.get(0) != containers.get(0)
                 || responseChildren.get(1) != failuresContainers.get(0)) throw integrityShapeFailure();
 
+        assertNoUnexpectedText(containers.get(0));
+        assertNoUnexpectedText(failuresContainers.get(0));
         List<Element> resultEntries = boundedNamedChildren(containers.get(0), "results", 2, "ARCSUITE_UPSTREAM_ERROR");
         List<Element> failureEntries = boundedNamedChildren(failuresContainers.get(0), "failure", 2, "ARCSUITE_UPSTREAM_ERROR");
         if (resultEntries.size() > 1 || failureEntries.size() > 1) throw integrityShapeFailure();
 
         boolean hasResult = resultEntries.size() == 1;
         boolean hasFailure = failureEntries.size() == 1;
-        if (hasResult == hasFailure) throw integrityShapeFailure();
+        if (hasResult && hasFailure) throw integrityShapeFailure();
 
         LinkedHashMap<String,Object> out = new LinkedHashMap<>();
         if (hasFailure) {
@@ -265,7 +267,7 @@ final class ArcSuiteSoapClient {
             return out;
         }
 
-        out.put("certificates", parseIntegrityElements(resultEntries.get(0)));
+        out.put("certificates", hasResult ? parseIntegrityElements(resultEntries.get(0)) : List.of());
         out.put("failure", null);
         return out;
     }
