@@ -381,6 +381,282 @@ test("all result-ref operations use stored identity and return ref-native identi
   }
 });
 
+test("legacy and ref-native revision lists request and verify explicit revision authority", async () => {
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  const originalRevisions = adapter.revisions.bind(adapter);
+  const revisionRequests: any[] = [];
+  const baseId = "rep:mock:EXAMPLE_CABINET:1001";
+  try {
+    const search: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      filters: { document_number: "DOC-000001" },
+      response_contract: "opaque_refs_v1"
+    })).structuredContent;
+    const resultRef = search.results[0].result_ref;
+    const scope = rt.scopes.get("example_documents");
+    const defaultsBefore = structuredClone(scope.default_attr_ids);
+    assert.equal(scope.default_attr_ids.some((attr) => attr.ns === "rep" && attr.name === "system:revisionnumber"), false);
+
+    adapter.revisions = async (request: any) => {
+      revisionRequests.push(structuredClone(request));
+      const [item] = await originalRevisions(request);
+      return [{
+        ...item,
+        id: `${request.id}:1`,
+        attributes: {
+          ...item.attributes,
+          "rep:system:revisionnumber": { type: "int", value: 1 }
+        }
+      }];
+    };
+    const legacyProfile = profile({
+      allowedTools: [...profile().allowedTools, "arcsuite_list_document_revisions"]
+    });
+    const legacy: any = (await rt.tools.call(legacyProfile, "arcsuite_list_document_revisions", {
+      document_id: baseId,
+      limit: 2
+    })).structuredContent;
+    const refNative: any = (await rt.tools.call(profile(), "arcsuite_list_document_revisions_by_ref", {
+      result_ref: resultRef,
+      limit: 2
+    })).structuredContent;
+
+    assert.equal(legacy.revisions[0].revision_number, 1);
+    assert.equal(refNative.revisions[0].revision_number, 1);
+    assert.equal(Object.hasOwn(refNative.revisions[0], "document_id"), false);
+    assert.equal(revisionRequests.length, 2);
+    for (const request of revisionRequests) {
+      assert.equal(
+        request.attrIds.filter((attr: any) => attr.ns === "rep" && attr.name === "system:revisionnumber").length,
+        1,
+        "revisionnumber must be requested exactly once independently of scope defaults"
+      );
+    }
+    assert.deepEqual(scope.default_attr_ids, defaultsBefore, "revision-list request construction must not mutate scope defaults");
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("ref-native revision lists fail closed on missing, mismatched, or wrong-class revision authority", async (t) => {
+  const cases = [
+    {
+      name: "missing revision number",
+      mutate: (item: any, baseId: string) => {
+        const attributes = { ...item.attributes };
+        delete attributes["rep:system:revisionnumber"];
+        return { ...item, id: `${baseId}:1`, attributes };
+      }
+    },
+    {
+      name: "identity suffix mismatch",
+      mutate: (item: any, baseId: string) => ({
+        ...item,
+        id: `${baseId}:2`,
+        attributes: { ...item.attributes, "rep:system:revisionnumber": { type: "int", value: 1 } }
+      })
+    },
+    {
+      name: "object class mismatch",
+      mutate: (item: any, baseId: string) => ({
+        ...item,
+        id: `${baseId}:1`,
+        objectClass: "folder",
+        nativeObjectClass: { ns: "rep", name: "system:folder" },
+        attributes: { ...item.attributes, "rep:system:revisionnumber": { type: "int", value: 1 } }
+      })
+    }
+  ] as const;
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const rt = await runtime();
+      const adapter: any = rt.adapter;
+      const originalRevisions = adapter.revisions.bind(adapter);
+      try {
+        const search = await opaqueSearch(rt, 1);
+        const resultRef = search.results[0].result_ref;
+        adapter.revisions = async (request: any) => {
+          const [item] = await originalRevisions(request);
+          return [scenario.mutate(item, request.id)];
+        };
+        await assert.rejects(
+          () => rt.tools.call(profile(), "arcsuite_list_document_revisions_by_ref", { result_ref: resultRef, limit: 2 }),
+          (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR"
+            && error?.category === "revision_identity"
+        );
+      } finally {
+        rt.stopValidationRetry();
+      }
+    });
+  }
+});
+
+test("current content authority uses currentrevisionnumber for legacy and ref-native tools", async (t) => {
+  for (const scenario of [
+    { name: "live current object without revisionnumber", includeRevision: false },
+    { name: "compatible current object with matching revisionnumber", includeRevision: true }
+  ] as const) {
+    await t.test(scenario.name, async () => {
+      const rt = await runtime();
+      const adapter: any = rt.adapter;
+      const originalGet = adapter.get.bind(adapter);
+      try {
+        const search: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+          scope: "example_documents",
+          filters: { document_number: "DOC-000001" },
+          response_contract: "opaque_refs_v1"
+        })).structuredContent;
+        adapter.get = async (request: any) => {
+          const object = await originalGet(request);
+          if (request.revisionNumber !== undefined) return object;
+          const attributes: Record<string, unknown> = {
+            ...object.attributes,
+            "rep:system:currentrevisionnumber": { type: "int", value: 3 }
+          };
+          if (scenario.includeRevision) {
+            attributes["rep:system:revisionnumber"] = { type: "int", value: 3 };
+          } else {
+            delete attributes["rep:system:revisionnumber"];
+          }
+          return { ...object, attributes };
+        };
+        const legacyProfile = profile({
+          allowedTools: [...profile().allowedTools, "arcsuite_get_document_content_info"]
+        });
+        const legacy: any = (await rt.tools.call(legacyProfile, "arcsuite_get_document_content_info", {
+          document_id: "rep:mock:EXAMPLE_CABINET:1001"
+        })).structuredContent;
+        const refNative: any = (await rt.tools.call(profile(), "arcsuite_get_document_content_info_by_ref", {
+          result_ref: search.results[0].result_ref
+        })).structuredContent;
+        assert.equal(legacy.extractable, true);
+        assert.equal(refNative.extractable, true);
+      } finally {
+        rt.stopValidationRetry();
+      }
+    });
+  }
+});
+
+test("current content authority fails closed when current revision evidence is missing or inconsistent", async (t) => {
+  const scenarios = [
+    {
+      name: "current and historical attributes disagree",
+      mutate: (attributes: Record<string, unknown>) => ({
+        ...attributes,
+        "rep:system:currentrevisionnumber": { type: "int", value: 3 },
+        "rep:system:revisionnumber": { type: "int", value: 2 }
+      }),
+      category: "content_revision_mismatch"
+    },
+    {
+      name: "current revision attribute is absent",
+      mutate: (attributes: Record<string, unknown>) => {
+        const changed: Record<string, unknown> = {
+          ...attributes,
+          "rep:system:revisionnumber": { type: "int", value: 3 }
+        };
+        delete changed["rep:system:currentrevisionnumber"];
+        return changed;
+      },
+      category: "content_revision_missing"
+    }
+  ] as const;
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const rt = await runtime();
+      const adapter: any = rt.adapter;
+      const originalGet = adapter.get.bind(adapter);
+      const originalContent = adapter.content.bind(adapter);
+      let contentDispatches = 0;
+      try {
+        const search = await opaqueSearch(rt, 1);
+        adapter.get = async (request: any) => {
+          const object = await originalGet(request);
+          if (request.revisionNumber !== undefined) return object;
+          return { ...object, attributes: scenario.mutate(object.attributes) };
+        };
+        adapter.content = async (...args: unknown[]) => {
+          contentDispatches += 1;
+          return originalContent(...args);
+        };
+        await assert.rejects(
+          () => rt.tools.call(profile(), "arcsuite_get_document_content_info_by_ref", {
+            result_ref: search.results[0].result_ref
+          }),
+          (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR"
+            && error?.category === scenario.category
+        );
+        assert.equal(contentDispatches, 0);
+      } finally {
+        rt.stopValidationRetry();
+      }
+    });
+  }
+});
+
+test("historical content authority never falls back to currentrevisionnumber", async (t) => {
+  const scenarios = [
+    {
+      name: "historical revisionnumber absent",
+      mutate: (attributes: Record<string, unknown>) => {
+        const changed: Record<string, unknown> = {
+          ...attributes,
+          "rep:system:currentrevisionnumber": { type: "int", value: 2 }
+        };
+        delete changed["rep:system:revisionnumber"];
+        return changed;
+      },
+      category: "content_revision_missing"
+    },
+    {
+      name: "historical revisionnumber mismatch",
+      mutate: (attributes: Record<string, unknown>) => ({
+        ...attributes,
+        "rep:system:currentrevisionnumber": { type: "int", value: 2 },
+        "rep:system:revisionnumber": { type: "int", value: 3 }
+      }),
+      category: "content_revision_mismatch"
+    }
+  ] as const;
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const rt = await runtime();
+      const adapter: any = rt.adapter;
+      const originalGet = adapter.get.bind(adapter);
+      const originalContent = adapter.content.bind(adapter);
+      let contentDispatches = 0;
+      try {
+        const search = await opaqueSearch(rt, 1);
+        adapter.get = async (request: any) => {
+          const object = await originalGet(request);
+          if (request.revisionNumber !== 2) return object;
+          return { ...object, attributes: scenario.mutate(object.attributes) };
+        };
+        adapter.content = async (...args: unknown[]) => {
+          contentDispatches += 1;
+          return originalContent(...args);
+        };
+        await assert.rejects(
+          () => rt.tools.call(profile(), "arcsuite_get_document_content_info_by_ref", {
+            result_ref: search.results[0].result_ref,
+            revision_number: 2
+          }),
+          (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR"
+            && error?.category === scenario.category
+        );
+        assert.equal(contentDispatches, 0);
+      } finally {
+        rt.stopValidationRetry();
+      }
+    });
+  }
+});
+
 test("each result-ref public tool requires current allowedTools before provider dispatch", async () => {
   const rt = await runtime();
   const observed = observeProvider(rt);
