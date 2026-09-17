@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildRuntime } from "../../src/server.ts";
+import { ARCSUITE_SEMANTIC_OBJECT_CLASSES } from "../../src/arcsuite/constants.ts";
 
 const targetId = "rep:mock:EXAMPLE_CABINET:1001";
 const otherTargetId = "rep:mock:EXAMPLE_CABINET:1002";
@@ -110,6 +111,41 @@ test("incoming hard-reference tool returns only safe semantic relationship metad
   assert.equal(JSON.stringify(audit).includes("folder-a"), false);
 });
 
+test("Hard Reference native class aliases are exact and the live lowercase form remains private", async () => {
+  assert.equal(ARCSUITE_SEMANTIC_OBJECT_CLASSES["rep:system:hardreference"], "hardReference");
+  assert.equal(ARCSUITE_SEMANTIC_OBJECT_CLASSES["rep:system:hardReference"], "hardReference");
+  assert.equal(ARCSUITE_SEMANTIC_OBJECT_CLASSES["rep:system:reference"], "reference");
+  assert.equal(ARCSUITE_SEMANTIC_OBJECT_CLASSES["rep:system:HARDREFERENCE"], undefined);
+
+  const rt = await runtime();
+  const adapter: any = rt.adapter;
+  installCandidates(adapter, [referenceIds[0]]);
+  const originalGetMany = adapter.getMany.bind(adapter);
+  adapter.getMany = async (request: any) => {
+    const result = await originalGetMany(request);
+    result.objects = result.objects.map((object: any) => object.id === referenceIds[0]
+      ? { ...object, nativeObjectClass: { ns: "rep", name: "system:hardreference" } }
+      : object);
+    return result;
+  };
+  const originalGet = adapter.get.bind(adapter);
+  adapter.get = async (request: any) => {
+    const object = await originalGet(request);
+    return request.id === referenceIds[0]
+      ? { ...object, nativeObjectClass: { ns: "rep", name: "system:hardreference" } }
+      : object;
+  };
+
+  const data: any = (await rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId })).structuredContent;
+  assert.equal(data.count, 1);
+  assert.equal(data.results[0].object_class, "reference");
+  assert.equal(Object.hasOwn(data.results[0], "id"), false);
+  assert.equal(Object.hasOwn(data.results[0], "nativeObjectClass"), false);
+  assert.equal(Object.hasOwn(data.results[0], "native_object_class"), false);
+  assert.equal(JSON.stringify(data).includes("system:hardreference"), false);
+  assert.equal(JSON.stringify(data).includes(referenceIds[0]), false);
+});
+
 test("Hard Reference candidates require the native hardReference class independently of document scope types", async () => {
   const rt = await runtime();
   const adapter: any = rt.adapter;
@@ -120,23 +156,28 @@ test("Hard Reference candidates require the native hardReference class independe
   );
 });
 
-test("Hard Reference batch hydration rejects a class change as an upstream contract error", async () => {
-  const rt = await runtime();
-  const adapter: any = rt.adapter;
-  installCandidates(adapter, [referenceIds[0]]);
-  const originalGetMany = adapter.getMany.bind(adapter);
-  adapter.getMany = async (request: any) => {
-    const result = await originalGetMany(request);
-    result.objects = result.objects.map((object: any) => object.id === referenceIds[0]
-      ? { ...object, objectClass: "reference", nativeObjectClass: { ns: "rep", name: "system:reference" } }
-      : object);
-    return result;
-  };
+test("Hard Reference batch hydration rejects non-Hard-Reference native classes as upstream contract errors", async () => {
+  for (const { objectClass, nativeName } of [
+    { objectClass: "reference", nativeName: "system:reference" },
+    { objectClass: "unknown", nativeName: "system:HARDREFERENCE" }
+  ]) {
+    const rt = await runtime();
+    const adapter: any = rt.adapter;
+    installCandidates(adapter, [referenceIds[0]]);
+    const originalGetMany = adapter.getMany.bind(adapter);
+    adapter.getMany = async (request: any) => {
+      const result = await originalGetMany(request);
+      result.objects = result.objects.map((object: any) => object.id === referenceIds[0]
+        ? { ...object, objectClass, nativeObjectClass: { ns: "rep", name: nativeName } }
+        : object);
+      return result;
+    };
 
-  await assert.rejects(
-    () => rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId }),
-    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "hard_reference_class"
-  );
+    await assert.rejects(
+      () => rt.tools.call(profile(), "arcsuite_list_hard_references", { document_id: targetId }),
+      (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR" && error?.category === "hard_reference_class"
+    );
+  }
 });
 
 test("Hard Reference path hydration rejects a class change as an upstream contract error", async () => {

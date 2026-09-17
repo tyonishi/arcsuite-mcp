@@ -26,7 +26,8 @@ export const ARCSUITE_SEMANTIC_OBJECT_CLASSES: Readonly<Record<string, string>> 
   "rep:system:externalDocument": "externalDocument",
   "rep:system:dynamicExternalDocument": "dynamicExternalDocument",
   "rep:system:reference": "reference",
-  "rep:system:hardReference": "hardReference"
+  "rep:system:hardReference": "hardReference",
+  "rep:system:hardreference": "hardReference"
 });
 export const CONTENT_LABEL_PRIMARY = { ns: "rep", name: "system:primary" } as const;
 
