@@ -61,6 +61,7 @@ export type AppConfig = {
   pagingSnapshotMaxSnapshots: number;
   pagingSnapshotMaxSnapshotsPerClient: number;
   pagingSnapshotMaxTotalIds: number;
+  pagingSnapshotMaxTotalIdsPerClient: number;
   contentCacheTtlSeconds: number;
   contentCacheMaxEntries: number;
   contentCacheMaxEntriesPerClient: number;
@@ -168,8 +169,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const pagingSnapshotMaxSnapshots = positiveInteger(env.MCP_PAGING_MAX_SNAPSHOTS ?? "100", "MCP_PAGING_MAX_SNAPSHOTS", CONFIG_LIMITS.maxPagingSnapshots);
   const pagingSnapshotMaxSnapshotsPerClient = positiveInteger(env.MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT ?? "10", "MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT", CONFIG_LIMITS.maxPagingSnapshotsPerClient);
   const pagingSnapshotMaxTotalIds = positiveInteger(env.MCP_PAGING_MAX_TOTAL_IDS ?? "10000", "MCP_PAGING_MAX_TOTAL_IDS", CONFIG_LIMITS.maxPagingTotalIds);
+  const pagingSnapshotMinTotalIdsPerClient = Math.min(pagingSnapshotMaxTotalIds, pagingSnapshotMaxIds * 2);
+  const pagingSnapshotMaxTotalIdsPerClient = positiveInteger(
+    env.MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT ?? String(pagingSnapshotMinTotalIdsPerClient),
+    "MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT",
+    CONFIG_LIMITS.maxPagingTotalIds
+  );
   if (pagingSnapshotMaxSnapshotsPerClient > pagingSnapshotMaxSnapshots) throw new Error("MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT cannot exceed MCP_PAGING_MAX_SNAPSHOTS");
   if (pagingSnapshotMaxIds > pagingSnapshotMaxTotalIds) throw new Error("MCP_PAGING_SNAPSHOT_MAX_IDS cannot exceed MCP_PAGING_MAX_TOTAL_IDS");
+  if (pagingSnapshotMaxTotalIdsPerClient > pagingSnapshotMaxTotalIds) throw new Error("MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT cannot exceed MCP_PAGING_MAX_TOTAL_IDS");
+  if (pagingSnapshotMaxTotalIdsPerClient < pagingSnapshotMinTotalIdsPerClient) throw new Error("MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT must fit one source and retained continuation authority");
   if (searchMaxLimit > pagingSnapshotMaxIds) throw new Error("MCP_SEARCH_MAX_LIMIT cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS");
   if (hardReferenceMaxCandidates > pagingSnapshotMaxIds) throw new Error("MCP_HARD_REFERENCE_MAX_CANDIDATES cannot exceed MCP_PAGING_SNAPSHOT_MAX_IDS");
   const contentCacheTtlSeconds = positiveInteger(env.MCP_CONTENT_CACHE_TTL_SECONDS ?? "600", "MCP_CONTENT_CACHE_TTL_SECONDS", CONFIG_LIMITS.maxCursorTtlSeconds);
@@ -217,6 +226,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     pagingSnapshotMaxSnapshots,
     pagingSnapshotMaxSnapshotsPerClient,
     pagingSnapshotMaxTotalIds,
+    pagingSnapshotMaxTotalIdsPerClient,
     contentCacheTtlSeconds,
     contentCacheMaxEntries,
     contentCacheMaxEntriesPerClient,

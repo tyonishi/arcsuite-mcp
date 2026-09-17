@@ -195,6 +195,63 @@ test("continuation_ref is the only authority and is idempotent on the final page
   }
 });
 
+test("another profile's opaque searches cannot evict a valid continuation authority", async () => {
+  const rt = await runtime(true, resolve("config/scopes.mock.yaml"), {
+    MCP_PAGING_SNAPSHOT_MAX_IDS: "3",
+    MCP_PAGING_MAX_SNAPSHOTS: "4",
+    MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT: "4",
+    MCP_PAGING_MAX_TOTAL_IDS: "9",
+    MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT: "6"
+  });
+  const ids = [
+    "rep:mock:EXAMPLE_CABINET:1001",
+    "rep:mock:EXAMPLE_CABINET:1002",
+    "rep:mock:EXAMPLE_CABINET:1003"
+  ];
+  (rt.adapter as any).searchIds = async () => ids;
+  const victim = profile({
+    clientProfileId: "synthetic-profile-b",
+    tokenSha256: createHash("sha256").update("synthetic-token-b").digest("hex")
+  });
+  const allocator = profile({
+    clientProfileId: "synthetic-profile-a",
+    tokenSha256: createHash("sha256").update("synthetic-token-a").digest("hex")
+  });
+  try {
+    const victimSearch: any = (await rt.tools.call(victim, "arcsuite_search_documents", {
+      scope: "example_documents",
+      query: "DOC",
+      limit: 1,
+      response_contract: "opaque_refs_v1"
+    })).structuredContent;
+    assert.equal(typeof victimSearch.continuation_ref, "string");
+
+    let rejectedAllocations = 0;
+    for (let index = 0; index < 2; index += 1) {
+      try {
+        await rt.tools.call(allocator, "arcsuite_search_documents", {
+          scope: "example_documents",
+          query: "DOC",
+          limit: 1,
+          response_contract: "opaque_refs_v1"
+        });
+      } catch (error) {
+        rejectedAllocations += 1;
+        assert.equal((error as any)?.stableCode, "ARCSUITE_UPSTREAM_ERROR");
+      }
+    }
+    assert.ok(rejectedAllocations >= 1, "unsafe global pressure must reject the allocating profile");
+
+    const continued: any = (await rt.tools.call(victim, "arcsuite_continue_search", {
+      continuation_ref: victimSearch.continuation_ref
+    })).structuredContent;
+    assert.equal(continued.results.length, 1);
+    assert.equal(typeof continued.results[0].result_ref, "string");
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
 test("wrong-kind refs fail every result-ref public tool before provider dispatch", async () => {
   const rt = await runtime();
   const observed = observeProvider(rt);

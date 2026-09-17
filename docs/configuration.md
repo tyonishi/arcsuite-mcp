@@ -46,6 +46,7 @@ scope registry. Tool callers cannot override these values.
 | `MCP_PAGING_MAX_SNAPSHOTS` | `100` | Maximum in-memory paging snapshots |
 | `MCP_PAGING_MAX_SNAPSHOTS_PER_CLIENT` | `10` | Maximum paging snapshots for one client profile |
 | `MCP_PAGING_MAX_TOTAL_IDS` | `10000` | Global ID budget across paging snapshots |
+| `MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT` | `min(global ID budget, 2 * snapshot ID limit)` | Per-profile ID budget across normal and retained paging authority; cannot exceed the global budget |
 | `MCP_CONTENT_CACHE_TTL_SECONDS` | `600` | Extracted-content snapshot lifetime |
 | `MCP_CONTENT_CACHE_MAX_ENTRIES` | `64` | Global extracted-content entry limit |
 | `MCP_CONTENT_CACHE_MAX_ENTRIES_PER_CLIENT` | `16` | Extracted-content entries per client profile |
@@ -337,6 +338,12 @@ object IDs. The initial request uses ArcSuite ID-only list/search operations;
 later pages use the stored ID snapshot rather than re-running the search.
 Paging cursors are HMAC protected and bound to the client profile, semantic
 scope, result kind, snapshot, page size, offset, and expiry.
+
+Normal and retained search authorities share the global snapshot and ID
+budgets. Per-profile pressure evicts only that profile's least-recently-used
+eligible authority. If a new allocation cannot fit within the global bound
+without evicting another profile, the allocation fails and existing foreign
+authority remains intact.
 
 `MCP_SEARCH_MAX_LIMIT` and `MCP_HARD_REFERENCE_MAX_CANDIDATES` must not exceed
 `MCP_PAGING_SNAPSHOT_MAX_IDS`, so accepted page sizes and authorized candidate

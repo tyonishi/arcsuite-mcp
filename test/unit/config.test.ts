@@ -78,6 +78,38 @@ test("configuration keeps search page sizes compatible with paging snapshots", (
   assert.equal(config.pagingSnapshotMaxIds, 5);
 });
 
+test("paging per-client ID capacity is bounded and fits one retained continuation flow", () => {
+  const defaults = loadConfig(baseEnv);
+  assert.equal(defaults.pagingSnapshotMaxTotalIdsPerClient, 2_000);
+
+  const configured = loadConfig({
+    ...baseEnv,
+    MCP_SEARCH_DEFAULT_LIMIT: "5",
+    MCP_SEARCH_MAX_LIMIT: "5",
+    MCP_PAGING_SNAPSHOT_MAX_IDS: "5",
+    MCP_PAGING_MAX_TOTAL_IDS: "20",
+    MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT: "12"
+  });
+  assert.equal(configured.pagingSnapshotMaxTotalIdsPerClient, 12);
+
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_SEARCH_DEFAULT_LIMIT: "5",
+    MCP_SEARCH_MAX_LIMIT: "5",
+    MCP_PAGING_SNAPSHOT_MAX_IDS: "5",
+    MCP_PAGING_MAX_TOTAL_IDS: "20",
+    MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT: "9"
+  }), /source and retained continuation authority/);
+  assert.throws(() => loadConfig({
+    ...baseEnv,
+    MCP_SEARCH_DEFAULT_LIMIT: "5",
+    MCP_SEARCH_MAX_LIMIT: "5",
+    MCP_PAGING_SNAPSHOT_MAX_IDS: "5",
+    MCP_PAGING_MAX_TOTAL_IDS: "20",
+    MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT: "21"
+  }), /cannot exceed MCP_PAGING_MAX_TOTAL_IDS/);
+});
+
 test("hard-reference candidates have a bounded default and cannot exceed snapshot capacity", () => {
   const defaults = loadConfig(baseEnv);
   assert.equal(defaults.hardReferenceMaxCandidates, 200);

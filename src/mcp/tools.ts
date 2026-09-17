@@ -126,7 +126,8 @@ export class ToolRegistry {
       config.pagingSnapshotMaxIds,
       config.pagingSnapshotMaxSnapshots,
       config.pagingSnapshotMaxSnapshotsPerClient,
-      config.pagingSnapshotMaxTotalIds
+      config.pagingSnapshotMaxTotalIds,
+      config.pagingSnapshotMaxTotalIdsPerClient
     );
   }
 

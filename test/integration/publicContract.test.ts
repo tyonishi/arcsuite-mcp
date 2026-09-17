@@ -56,6 +56,7 @@ async function listTools(
     MCP_READ_DEFAULT_MAX_CHARS: "20000",
     MCP_READ_MAX_CHARS: "50000",
     MCP_PAGING_SNAPSHOT_MAX_IDS: "1000",
+    MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT: undefined,
     MCP_ALLOWED_HOSTNAMES: "127.0.0.1,localhost",
     MCP_ALLOWED_ORIGIN_HOSTNAMES: "127.0.0.1,localhost",
     ...(p2 ? {
