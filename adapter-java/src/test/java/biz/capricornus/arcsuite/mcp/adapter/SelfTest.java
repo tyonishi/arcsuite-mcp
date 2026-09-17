@@ -487,6 +487,16 @@ public final class SelfTest {
         if (!List.of().equals(emptyValidation.get("certificates")) || emptyValidation.get("failure") != null) {
             throw new AssertionError("WSDL-valid empty validation response must remain structured: " + emptyValidation);
         }
+        Map<String, Object> whitespaceOnlyValidation = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(
+                validationResponse("\n  \t", "\n    ")));
+        if (!List.of().equals(whitespaceOnlyValidation.get("certificates"))
+                || whitespaceOnlyValidation.get("failure") != null) {
+            throw new AssertionError("Whitespace-only validation containers must remain empty: " + whitespaceOnlyValidation);
+        }
+        assertIntegrityResponseFailure(validationResponse("unexpected", ""), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse("", "unexpected"), "ARCSUITE_UPSTREAM_ERROR");
+        assertIntegrityResponseFailure(validationResponse(
+                "unexpected<t:results><t:certValidElements/></t:results>", ""), "ARCSUITE_UPSTREAM_ERROR");
         assertIntegrityResponseFailure(validationResponse(
                 "<t:results><t:certValidElements/></t:results><t:results><t:certValidElements/></t:results>", ""), "ARCSUITE_UPSTREAM_ERROR");
         assertIntegrityResponseFailure(validationResponse("",

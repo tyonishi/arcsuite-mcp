@@ -241,6 +241,8 @@ final class ArcSuiteSoapClient {
         if (responseChildren.size() != 2 || responseChildren.get(0) != containers.get(0)
                 || responseChildren.get(1) != failuresContainers.get(0)) throw integrityShapeFailure();
 
+        assertNoUnexpectedText(containers.get(0));
+        assertNoUnexpectedText(failuresContainers.get(0));
         List<Element> resultEntries = boundedNamedChildren(containers.get(0), "results", 2, "ARCSUITE_UPSTREAM_ERROR");
         List<Element> failureEntries = boundedNamedChildren(failuresContainers.get(0), "failure", 2, "ARCSUITE_UPSTREAM_ERROR");
         if (resultEntries.size() > 1 || failureEntries.size() > 1) throw integrityShapeFailure();
