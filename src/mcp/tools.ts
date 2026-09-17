@@ -771,7 +771,7 @@ export class ToolRegistry {
           const parsed = parseContentInfoByRefArgs(args);
           const authority = this.resolveResultAuthority(profile, parsed.resultRef);
           scopeId = authority.record.scopeId;
-          await this.hydrateResultAuthority(profile, authority, undefined, false, soapOperations);
+          await this.hydrateResultAuthority(profile, authority, parsed.revisionNumber, false, soapOperations);
           const semanticLabel = this.resolveContentLabel(authority.scope, parsed.contentLabel ?? CONTENT_LABEL_PRIMARY_ALIAS);
           let info: ContentInfo | undefined;
           try {
@@ -862,7 +862,7 @@ export class ToolRegistry {
           const parsed = parseReadByRefArgs(args, this.config);
           const authority = this.resolveResultAuthority(profile, parsed.resultRef);
           scopeId = authority.record.scopeId;
-          await this.hydrateResultAuthority(profile, authority, undefined, false, soapOperations);
+          await this.hydrateResultAuthority(profile, authority, parsed.revisionNumber, false, soapOperations);
           const cursorLabel = parsed.cursor ? this.contentBridge.resolveCursorContentLabel(parsed.cursor) : undefined;
           if (parsed.contentLabel !== undefined && cursorLabel !== undefined && parsed.contentLabel !== cursorLabel) {
             throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "content_label_cursor_mismatch", false);

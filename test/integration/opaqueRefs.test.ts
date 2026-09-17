@@ -130,7 +130,7 @@ test("opaque zero-result search emits only a valid search ref", async () => {
   }
 });
 
-test("verified results receive distinct identity-bound refs and failures never do", async () => {
+test("initial opaque search preserves legacy bootstrap identities while adding verified refs", async () => {
   const { rt } = await runtime(true);
   const ids = ["rep:mock:EXAMPLE_CABINET:opaque-1", "rep:mock:EXAMPLE_CABINET:opaque-2", "rep:mock:EXAMPLE_CABINET:opaque-failed"];
   (rt.adapter as any).searchIds = async () => ids;
@@ -144,6 +144,9 @@ test("verified results receive distinct identity-bound refs and failures never d
     })).structuredContent;
     assert.equal(data.results.length, 2);
     assert.equal(data.failures.length, 1);
+    assert.equal(Object.hasOwn(data, "next_cursor"), true);
+    assert.equal(Object.hasOwn(data.results[0], "document_id"), true);
+    assert.equal(data.failures[0].document_id, ids[2]);
     assert.equal(Object.hasOwn(data.failures[0], "result_ref"), false);
     assert.equal(new Set(data.results.map((item: any) => item.result_ref)).size, 2);
     for (const result of data.results) {

@@ -769,6 +769,110 @@ test("predicate mismatch stops ref-native content work after base hydration", as
   }
 });
 
+test("requested historical revisions revalidate stored predicates before metadata or content dispatch", async (t) => {
+  const cases = [
+    {
+      tool: "arcsuite_get_document_by_ref",
+      args: (resultRef: string) => ({ result_ref: resultRef, revision_number: 2 }),
+      protectsContent: false
+    },
+    {
+      tool: "arcsuite_get_document_content_info_by_ref",
+      args: (resultRef: string) => ({ result_ref: resultRef, revision_number: 2 }),
+      protectsContent: true
+    },
+    {
+      tool: "arcsuite_read_document_by_ref",
+      args: (resultRef: string) => ({ result_ref: resultRef, revision_number: 2, max_chars: 1000 }),
+      protectsContent: true
+    }
+  ] as const;
+
+  for (const toolCase of cases) {
+    await t.test(toolCase.tool, async () => {
+      const rt = await runtime();
+      let contentDispatches = 0;
+      const hydratedRevisions: Array<number | undefined> = [];
+      try {
+        const search: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+          scope: "example_documents",
+          filters: { approved: true },
+          response_contract: "opaque_refs_v1"
+        })).structuredContent;
+        assert.equal(search.results.length, 1);
+        const resultRef = search.results[0].result_ref;
+        const originalGet = (rt.adapter as any).get.bind(rt.adapter);
+        const originalContent = (rt.adapter as any).content.bind(rt.adapter);
+        (rt.adapter as any).get = async (request: any) => {
+          hydratedRevisions.push(request.revisionNumber);
+          const object = await originalGet(request);
+          if (request.revisionNumber !== 2) return object;
+          return {
+            ...object,
+            attributes: {
+              ...object.attributes,
+              "rep:user:approved": { type: "boolean", value: false }
+            }
+          };
+        };
+        (rt.adapter as any).content = async (...args: unknown[]) => {
+          contentDispatches += 1;
+          return originalContent(...args);
+        };
+
+        await assert.rejects(
+          () => rt.tools.call(profile(), toolCase.tool, toolCase.args(resultRef)),
+          (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN"
+            && error?.category === "scope_predicate",
+          `${toolCase.tool} must apply the stored predicate to the exact requested revision`
+        );
+        assert.equal(
+          hydratedRevisions.includes(2),
+          true,
+          `${toolCase.tool} must provider-hydrate the exact requested revision`
+        );
+        if (toolCase.protectsContent) {
+          assert.equal(contentDispatches, 0, `${toolCase.tool} must not dispatch content after revision predicate failure`);
+        }
+      } finally {
+        rt.stopValidationRetry();
+      }
+    });
+  }
+});
+
+test("matching historical revisions remain available through ref-native metadata and content tools", async () => {
+  for (const { tool, args } of [
+    {
+      tool: "arcsuite_get_document_by_ref",
+      args: (resultRef: string) => ({ result_ref: resultRef, revision_number: 2 })
+    },
+    {
+      tool: "arcsuite_get_document_content_info_by_ref",
+      args: (resultRef: string) => ({ result_ref: resultRef, revision_number: 2 })
+    },
+    {
+      tool: "arcsuite_read_document_by_ref",
+      args: (resultRef: string) => ({ result_ref: resultRef, revision_number: 2, max_chars: 1000 })
+    }
+  ] as const) {
+    const rt = await runtime();
+    try {
+      const search: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+        scope: "example_documents",
+        filters: { approved: true },
+        response_contract: "opaque_refs_v1"
+      })).structuredContent;
+      const resultRef = search.results[0].result_ref;
+      const response: any = (await rt.tools.call(profile(), tool, args(resultRef))).structuredContent;
+      assert.equal(response.result_ref, resultRef);
+      assert.equal(response.revision_number, 2);
+    } finally {
+      rt.stopValidationRetry();
+    }
+  }
+});
+
 test("continuation children do not extend expiry and legacy final-page consumption remains destructive", async () => {
   const rt = await runtime();
   const ids = [
