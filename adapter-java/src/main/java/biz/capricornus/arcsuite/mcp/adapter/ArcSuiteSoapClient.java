@@ -488,7 +488,7 @@ final class ArcSuiteSoapClient {
         byte[] bytes=resolveData(typesChild(c,"data"),r.attachments());
         if(bytes.length>config.maxContentBytes()) throw new AdapterException("ARCSUITE_LIMIT_EXCEEDED","Content exceeds configured maximum size");
         String traceId=requiredString(req,"traceId").replaceAll("[^A-Za-z0-9._-]","_");
-        String safeName=fileName.replaceAll("[\\\\/\\r\\n\\0]","_");
+        String safeName=sanitizeMaterializedFileName(fileName);
         Path path=config.sharedTempDir().resolve(traceId+"-"+UUID.randomUUID()+"-"+safeName).normalize();
         if(!path.startsWith(config.sharedTempDir())) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","Unsafe temp path");
         try { Files.write(path,bytes,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE); }
@@ -497,6 +497,15 @@ final class ArcSuiteSoapClient {
         out.put("id",requestId); out.put("effectiveId",effectiveId); out.put("wireId",wireId); out.put("revisionNumber",revision); out.put("label",returnedLabel);
         out.put("fileName",fileName); out.put("contentType",contentType); out.put("sizeBytes",bytes.length); out.put("filePath",path.toString());
         return out;
+    }
+
+    static String sanitizeMaterializedFileName(String fileName) {
+        return fileName
+                .replace('\\', '_')
+                .replace('/', '_')
+                .replace('\r', '_')
+                .replace('\n', '_')
+                .replace((char) 0, '_');
     }
 
     static String revisionWireId(String baseId, int revision) {
