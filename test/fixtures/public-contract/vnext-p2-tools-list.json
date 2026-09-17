@@ -1,5 +1,13 @@
 {
-  "previous_p1_sha256": "c80c867e1a4750ca6d238dd14cd2e67c66ceb9e6be375718536cd2c3116ee867",
+  "previous_p1_sha256": "f022741e4114310a15ca2e961e7d02c165b0edecb81d236db71902f55699e3ec",
+  "schema_compatibility_delta": {
+    "previous_sha256": "3cbe801e51854d3330789fd53ac28c9e4e72d223c6bfcfc71bd640a195727b21",
+    "changed_tool_input_schemas": [
+      "arcsuite_read_document",
+      "arcsuite_list_hard_references",
+      "arcsuite_read_document_by_ref"
+    ]
+  },
   "transport": "authenticated_streamable_http",
   "result_keys": ["tools"],
   "modern_result_keys": ["_meta", "cacheScope", "resultType", "tools", "ttlMs"],
@@ -37,5 +45,5 @@
     ],
     "removed_tools": []
   },
-  "canonical_tools_sha256": "3cbe801e51854d3330789fd53ac28c9e4e72d223c6bfcfc71bd640a195727b21"
+  "canonical_tools_sha256": "e449155c3d883e31b9597ed7e5b754119caec6d5ee3e6bf640aaf156458a045c"
 }

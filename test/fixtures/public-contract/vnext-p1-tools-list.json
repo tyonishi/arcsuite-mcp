@@ -1,5 +1,12 @@
 {
   "baseline_commit": "0cb23c37949600bf9c7e5e8c3705bd7388177df8",
+  "schema_compatibility_delta": {
+    "previous_sha256": "c80c867e1a4750ca6d238dd14cd2e67c66ceb9e6be375718536cd2c3116ee867",
+    "changed_tool_input_schemas": [
+      "arcsuite_read_document",
+      "arcsuite_list_hard_references"
+    ]
+  },
   "transport": "authenticated_streamable_http",
   "result_keys": ["tools"],
   "modern_result_keys": ["_meta", "cacheScope", "resultType", "tools", "ttlMs"],
@@ -25,5 +32,5 @@
     "new_tools": [],
     "removed_tools": []
   },
-  "canonical_tools_sha256": "c80c867e1a4750ca6d238dd14cd2e67c66ceb9e6be375718536cd2c3116ee867"
+  "canonical_tools_sha256": "f022741e4114310a15ca2e961e7d02c165b0edecb81d236db71902f55699e3ec"
 }

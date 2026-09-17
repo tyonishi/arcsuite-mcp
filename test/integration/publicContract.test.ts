@@ -7,7 +7,6 @@ import { join, resolve } from "node:path";
 import { buildRuntime } from "../../src/server.ts";
 import fixture from "../fixtures/public-contract/vnext-p1-tools-list.json" with { type: "json" };
 import p2Fixture from "../fixtures/public-contract/vnext-p2-tools-list.json" with { type: "json" };
-import baselineFixture from "../fixtures/public-contract/round3-tools-list.json" with { type: "json" };
 
 const P2_TOOLS = p2Fixture.intentional_public_contract_delta.new_tools;
 const opaqueKeyring = JSON.stringify({
@@ -30,7 +29,8 @@ function hashTools(tools: unknown): string {
 async function listTools(
   protocolVersion: "2025-03-26" | "2026-07-28",
   p2 = false,
-  inheritedEnv: NodeJS.ProcessEnv = process.env
+  inheritedEnv: NodeJS.ProcessEnv = process.env,
+  runtimeOverrides: NodeJS.ProcessEnv = {}
 ) {
   const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-public-contract-"));
   const runtime = await buildRuntime({
@@ -69,7 +69,8 @@ async function listTools(
         allowedTools: [...fixture.tool_names, ...P2_TOOLS],
         rateLimit: { requestsPerMinute: 120, burst: 30 }
       }] })
-    } : {})
+    } : {}),
+    ...runtimeOverrides
   });
   try {
     await new Promise<void>((resolveListen) => runtime.server.listen(0, "127.0.0.1", resolveListen));
@@ -106,6 +107,37 @@ async function listTools(
   }
 }
 
+test("published read schemas are top-level objects with visible required identities and dynamic bounds", async () => {
+  const listed = await listTools("2025-03-26", true, process.env, {
+    MCP_READ_DEFAULT_MAX_CHARS: "1500",
+    MCP_READ_MAX_CHARS: "2000"
+  });
+  assert.equal(listed.status, 200);
+  const byName = (name: string) => listed.result.tools.find((tool: { name: string }) => tool.name === name).inputSchema;
+  for (const [name, identity] of [
+    ["arcsuite_read_document", "document_id"],
+    ["arcsuite_read_document_by_ref", "result_ref"]
+  ] as const) {
+    const schema = byName(name);
+    assert.equal(schema.type, "object", name);
+    assert.equal(schema.additionalProperties, false, name);
+    assert.ok(schema.properties[identity], `${name}: ${identity}`);
+    assert.ok(schema.required.includes(identity), `${name}: required ${identity}`);
+    for (const property of ["start_page", "end_page", "cursor", "max_chars"]) {
+      assert.ok(schema.properties[property], `${name}: ${property}`);
+    }
+    assert.equal(schema.properties.max_chars.maximum, 2000, `${name}: configured max_chars`);
+    assert.equal(Object.hasOwn(schema, "anyOf"), false, `${name}: root anyOf`);
+    assert.equal(Object.hasOwn(schema, "oneOf"), false, `${name}: root oneOf`);
+  }
+  const hardReferences = byName("arcsuite_list_hard_references");
+  assert.equal(hardReferences.type, "object");
+  assert.ok(hardReferences.properties.document_id);
+  assert.ok(hardReferences.required.includes("document_id"));
+  assert.equal(Object.hasOwn(hardReferences, "anyOf"), false);
+  assert.equal(Object.hasOwn(hardReferences, "oneOf"), false);
+});
+
 for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
   test(`authenticated HTTP tools/list matches the P1 additive public contract (${protocolVersion})`, async () => {
     const listed = await listTools(protocolVersion);
@@ -119,13 +151,13 @@ for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
     assert.deepEqual(search.inputSchema.properties.response_contract.enum, fixture.intentional_public_contract_delta.allowed_values);
     assert.equal(search.inputSchema.properties.response_contract.description.includes("Initial searches only"), true);
     assert.deepEqual(fixture.intentional_public_contract_delta.changed_tool_input_schemas, ["arcsuite_search_documents"]);
+    assert.deepEqual(fixture.schema_compatibility_delta.changed_tool_input_schemas, [
+      "arcsuite_read_document",
+      "arcsuite_list_hard_references"
+    ]);
     assert.deepEqual(fixture.intentional_public_contract_delta.new_tools, []);
     assert.deepEqual(fixture.intentional_public_contract_delta.removed_tools, []);
-    const legacyProjection = structuredClone(listed.result.tools);
-    const projectedSearch = legacyProjection.find((tool: { name: string }) => tool.name === "arcsuite_search_documents");
-    delete projectedSearch.inputSchema.properties.response_contract;
-    assert.equal(hashTools(legacyProjection), baselineFixture.canonical_tools_sha256,
-      "removing response_contract must restore the exact previous public tools/list contract");
+    assert.equal(fixture.schema_compatibility_delta.previous_sha256, "c80c867e1a4750ca6d238dd14cd2e67c66ceb9e6be375718536cd2c3116ee867");
   });
 }
 
@@ -158,7 +190,14 @@ for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
     assert.deepEqual(listed.result.tools.slice(0, fixture.tool_count), (await listTools(protocolVersion)).result.tools,
       "P2 must not change any P1 tool schema or description");
     assert.deepEqual(listed.result.tools.slice(fixture.tool_count).map((tool: { name: string }) => tool.name), P2_TOOLS);
+    assert.equal(p2Fixture.previous_p1_sha256, fixture.canonical_tools_sha256);
     assert.deepEqual(p2Fixture.intentional_public_contract_delta.changed_existing_tool_input_schemas, []);
+    assert.deepEqual(p2Fixture.schema_compatibility_delta.changed_tool_input_schemas, [
+      "arcsuite_read_document",
+      "arcsuite_list_hard_references",
+      "arcsuite_read_document_by_ref"
+    ]);
+    assert.equal(p2Fixture.schema_compatibility_delta.previous_sha256, "3cbe801e51854d3330789fd53ac28c9e4e72d223c6bfcfc71bd640a195727b21");
     assert.deepEqual(p2Fixture.intentional_public_contract_delta.removed_tools, []);
   });
 }

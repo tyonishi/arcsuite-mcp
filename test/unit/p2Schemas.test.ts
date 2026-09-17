@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { toolInputSchemas } from "../../src/mcp/sdkSchemas.ts";
+import { toolInputSchemaForProfile, toolInputSchemas } from "../../src/mcp/sdkSchemas.ts";
 
 test("P2 search-authority schemas accept only opaque refs and semantic target intent", () => {
   assert.equal(toolInputSchemas.arcsuite_continue_search.safeParse({ continuation_ref: "ref" }).success, true);
@@ -31,9 +31,33 @@ test("P2 result schemas never accept document_id or caller-selected scope", () =
 
 test("P2 read-by-ref keeps bounded legacy content paging choices", () => {
   const schema = toolInputSchemas.arcsuite_read_document_by_ref;
+  for (const input of [
+    { result_ref: "ref" },
+    { result_ref: "ref", max_chars: 1000 },
+    { result_ref: "ref", start_page: 1 },
+    { result_ref: "ref", start_page: 1, end_page: 2 },
+    { result_ref: "ref", cursor: "cursor" }
+  ]) {
+    assert.equal(schema.safeParse(input).success, true, JSON.stringify(input));
+  }
   assert.equal(schema.safeParse({ result_ref: "ref", start_page: 1, end_page: 2, max_chars: 1000 }).success, true);
   assert.equal(schema.safeParse({ result_ref: "ref", cursor: "cursor", max_chars: 1000 }).success, true);
   assert.equal(schema.safeParse({ result_ref: "ref", cursor: "cursor", start_page: 1 }).success, false);
+  assert.equal(schema.safeParse({ result_ref: "ref", cursor: "cursor", end_page: 2 }).success, false);
+  assert.equal(schema.safeParse({ result_ref: "ref", start_page: 5, end_page: 4 }).success, false);
   assert.equal(schema.safeParse({ result_ref: "ref", end_page: 2 }).success, false);
+  assert.equal(schema.safeParse({ result_ref: "ref", unknown: true }).success, false);
   assert.equal(schema.safeParse({ result_ref: "x".repeat(1025) }).success, false);
+  assert.equal(schema.safeParse({ result_ref: "ref", start_page: 1_000_001 }).success, false);
+  assert.equal(schema.safeParse({ result_ref: "ref", cursor: "x".repeat(4097) }).success, false);
+});
+
+test("P2 read-by-ref preserves deployment-specific max_chars validation", () => {
+  const schema = toolInputSchemaForProfile("arcsuite_read_document_by_ref", [], {
+    searchMaxLimit: 5,
+    batchMaxIds: 3,
+    readMaxChars: 2000
+  });
+  assert.equal(schema.safeParse({ result_ref: "ref", max_chars: 2000 }).success, true);
+  assert.equal(schema.safeParse({ result_ref: "ref", max_chars: 2001 }).success, false);
 });

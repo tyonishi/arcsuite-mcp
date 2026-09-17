@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -92,11 +93,14 @@ test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
   for (const name of ["arcsuite_get_document", "arcsuite_get_document_content_info", "arcsuite_read_document"]) {
     const tool: any = list.json.result.tools.find((item: any) => item.name === name);
     if (name === "arcsuite_read_document") {
-      assert.equal(tool.inputSchema.anyOf.length, 4);
-      assert.ok(tool.inputSchema.anyOf.every((branch: any) => branch.properties.revision_number.minimum === 1
-        && branch.properties.revision_number.maximum === 2147483647));
-      const pageBranches = tool.inputSchema.anyOf.filter((branch: any) => branch.properties.start_page?.type === "integer" || branch.properties.end_page?.type === "integer");
-      assert.ok(pageBranches.every((branch: any) => (branch.properties.start_page ?? branch.properties.end_page).maximum === 1_000_000));
+      assert.equal(tool.inputSchema.type, "object");
+      assert.equal(Object.hasOwn(tool.inputSchema, "anyOf"), false);
+      assert.equal(Object.hasOwn(tool.inputSchema, "oneOf"), false);
+      assert.ok(tool.inputSchema.required.includes("document_id"));
+      assert.equal(tool.inputSchema.properties.revision_number.minimum, 1);
+      assert.equal(tool.inputSchema.properties.revision_number.maximum, 2147483647);
+      assert.equal(tool.inputSchema.properties.start_page.maximum, 1_000_000);
+      assert.equal(tool.inputSchema.properties.end_page.maximum, 1_000_000);
     } else {
       assert.equal(tool.inputSchema.properties.revision_number.minimum, 1);
       assert.equal(tool.inputSchema.properties.revision_number.maximum, 2147483647);
@@ -127,12 +131,13 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   ]);
   assert.deepEqual(search.inputSchema.properties.response_contract.enum, ["legacy", "opaque_refs_v1"]);
   const hardReferences = tools.find((tool: { name: string }) => tool.name === "arcsuite_list_hard_references");
-  const hardReferenceBranches = hardReferences.inputSchema.anyOf;
-  assert.equal(hardReferenceBranches.length, 2);
-  assert.ok(hardReferenceBranches.every((branch: any) => branch.required.includes("document_id")));
-  assert.ok(hardReferenceBranches.every((branch: any) => branch.additionalProperties === false));
-  assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.cursor?.not && !branch.properties.limit?.not));
-  assert.ok(hardReferenceBranches.some((branch: any) => branch.properties.limit?.not && !branch.properties.cursor?.not));
+  assert.equal(hardReferences.inputSchema.type, "object");
+  assert.equal(hardReferences.inputSchema.additionalProperties, false);
+  assert.deepEqual(hardReferences.inputSchema.required, ["document_id"]);
+  assert.ok(hardReferences.inputSchema.properties.limit);
+  assert.ok(hardReferences.inputSchema.properties.cursor);
+  assert.equal(Object.hasOwn(hardReferences.inputSchema, "anyOf"), false);
+  assert.equal(Object.hasOwn(hardReferences.inputSchema, "oneOf"), false);
   const integrity = tools.find((tool: { name: string }) => tool.name === "arcsuite_validate_document_integrity");
   assert.deepEqual(integrity.inputSchema.required, ["document_id"]);
   assert.equal(integrity.inputSchema.properties.include_evidence.default, false);
@@ -194,13 +199,16 @@ test("tools/list advertises effective request limits and rejects over-limit call
   assert.equal(byName("arcsuite_search_documents").inputSchema.properties.limit.maximum, 5);
   assert.equal(byName("arcsuite_list_folder").inputSchema.properties.limit.maximum, 5);
   assert.equal(byName("arcsuite_list_document_revisions").inputSchema.properties.limit.maximum, 5);
-  assert.ok(byName("arcsuite_list_hard_references").inputSchema.anyOf.every((branch: any) => branch.properties.limit?.maximum === 5 || branch.properties.limit?.not));
+  assert.equal(byName("arcsuite_list_hard_references").inputSchema.properties.limit.maximum, 5);
   const readSchema = byName("arcsuite_read_document").inputSchema;
-  assert.ok(readSchema.anyOf.every((branch: any) => branch.properties.max_chars.maximum === 2000));
-  assert.ok(readSchema.anyOf.filter((branch: any) => branch.properties.start_page?.type === "integer" || branch.properties.end_page?.type === "integer")
-    .every((branch: any) => (branch.properties.start_page ?? branch.properties.end_page).maximum === 1_000_000));
-  assert.ok(readSchema.anyOf.every((branch: any) => branch.properties.revision_number.minimum === 1
-    && branch.properties.revision_number.maximum === 2147483647));
+  assert.equal(readSchema.type, "object");
+  assert.equal(readSchema.properties.max_chars.maximum, 2000);
+  assert.equal(readSchema.properties.start_page.maximum, 1_000_000);
+  assert.equal(readSchema.properties.end_page.maximum, 1_000_000);
+  assert.equal(readSchema.properties.revision_number.minimum, 1);
+  assert.equal(readSchema.properties.revision_number.maximum, 2147483647);
+  assert.equal(Object.hasOwn(readSchema, "anyOf"), false);
+  assert.equal(Object.hasOwn(readSchema, "oneOf"), false);
   const forbiddenPageKeys = (branch: any): string[] => {
     if (Array.isArray(branch.not?.anyOf)) return branch.not.anyOf.flatMap((item: any) => item.required ?? []).sort();
     if (Array.isArray(branch.not?.required)) return [...branch.not.required].sort();
@@ -213,10 +221,10 @@ test("tools/list advertises effective request limits and rejects over-limit call
     ["cursor", "end_page", "start_page"]
   ].sort((a, b) => a.join().localeCompare(b.join()));
   const sortForbiddenPageKeys = (value: string[][]) => value.sort((a, b) => a.join().localeCompare(b.join()));
-  assert.deepEqual(sortForbiddenPageKeys(readSchema.anyOf.map(forbiddenPageKeys)), expectedForbiddenPageKeys);
+  assert.equal(readSchema.allOf.length, 2);
   const manualReadSchema: any = rt.tools.list(rt.config.tokenProfiles[0]).find((tool) => tool.name === "arcsuite_read_document");
   assert.deepEqual(sortForbiddenPageKeys(manualReadSchema.inputSchema.anyOf.map(forbiddenPageKeys)), expectedForbiddenPageKeys);
-  assert.ok(readSchema.anyOf.some((branch: any) => branch.required.includes("start_page") && branch.required.includes("end_page")));
+  assert.ok(readSchema.required.includes("document_id"));
   const revisionDefinition: any = rt.tools.list(rt.config.tokenProfiles[0]).find((tool) => tool.name === "arcsuite_list_document_revisions");
   assert.equal(revisionDefinition.inputSchema.properties.limit.default, 4);
 
@@ -292,11 +300,72 @@ test("tools/list advertises effective request limits and rejects over-limit call
     invoke(15, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", start_page: 1, end_page: 2, cursor: "opaque" }),
     invoke(16, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", end_page: 2 }),
     invoke(17, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", start_page: 1_000_001 }),
-    invoke(18, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", cursor: "opaque", start_page: 1 })
+    invoke(18, "arcsuite_read_document", { document_id: "rep:mock:EXAMPLE_CABINET:1001", cursor: "opaque", start_page: 1 }),
+    invoke(19, "arcsuite_list_hard_references", { document_id: "rep:mock:EXAMPLE_CABINET:1001", limit: 1, cursor: "opaque" })
   ]);
   assert.ok(rejected.every((response) => response.json.error || response.json.result?.isError));
   assert.equal(runtimeCalls.length, callsBeforeOverLimit, "invalid tool input must not reach ToolRegistry.call");
   assert.deepEqual(providerCalls, { searchIds: 1, listIds: 1, revisions: 2, hardReferences: 1, getMany: 4, content: 1 });
+});
+
+test("ref-native read combinations are accepted or rejected before runtime dispatch exactly as advertised", async (t) => {
+  const token = "http-token";
+  const { rt, base } = await start({
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({
+      active_kid: "http-test",
+      keys: [{ kid: "http-test", secret_base64url: Buffer.alloc(32, 0x42).toString("base64url") }]
+    }),
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: JSON.stringify({ tokens: [{
+      tokenSha256: createHash("sha256").update(token).digest("hex"),
+      clientProfileId: "http-p2-profile",
+      allowedScopes: ["example_documents"],
+      allowedTools: ["arcsuite_read_document_by_ref"],
+      rateLimit: { requestsPerMinute: 120, burst: 30 }
+    }] })
+  });
+  t.after(() => rt.server.close());
+
+  let runtimeCalls = 0;
+  const originalToolCall = rt.tools.call.bind(rt.tools);
+  (rt.tools as any).call = async (profile: unknown, name: string, args: unknown) => {
+    runtimeCalls += 1;
+    return originalToolCall(profile as any, name, args);
+  };
+  const invoke = (id: number, arguments_: Record<string, unknown>) => rpc(base, {
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: { name: "arcsuite_read_document_by_ref", arguments: arguments_ }
+  });
+
+  let id = 1;
+  for (const arguments_ of [
+    { result_ref: "synthetic-ref" },
+    { result_ref: "synthetic-ref", max_chars: 1000 },
+    { result_ref: "synthetic-ref", start_page: 1 },
+    { result_ref: "synthetic-ref", start_page: 1, end_page: 2 },
+    { result_ref: "synthetic-ref", cursor: "synthetic-cursor" }
+  ]) {
+    const before = runtimeCalls;
+    const response = await invoke(id++, arguments_);
+    assert.equal(response.status, 200);
+    assert.equal(response.json.result?.isError, true, JSON.stringify(response.json));
+    assert.equal(runtimeCalls, before + 1, JSON.stringify(arguments_));
+  }
+
+  for (const arguments_ of [
+    { result_ref: "synthetic-ref", cursor: "synthetic-cursor", start_page: 1 },
+    { result_ref: "synthetic-ref", cursor: "synthetic-cursor", end_page: 2 },
+    { result_ref: "synthetic-ref", start_page: 5, end_page: 4 },
+    { result_ref: "synthetic-ref", end_page: 5 },
+    { result_ref: "synthetic-ref", unknown: true }
+  ]) {
+    const before = runtimeCalls;
+    const response = await invoke(id++, arguments_);
+    assert.ok(response.json.error || response.json.result?.isError, JSON.stringify(response.json));
+    assert.equal(runtimeCalls, before, JSON.stringify(arguments_));
+  }
 });
 
 test("actual tools/call enforces the advertised revision maximum before provider dispatch", async (t) => {
