@@ -8,6 +8,7 @@ import type {
   AdapterIntegrityCertificateResult,
   AdapterIntegrityValidationResult,
   AdapterRepositoryObject,
+  AttributeId,
   NormalizedDocument,
   PhysicalContentLabel
 } from "../arcsuite/types.ts";
@@ -678,7 +679,7 @@ export class ToolRegistry {
           const result = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.revisions({
             clientProfileId: profile.clientProfileId,
             id: parsed.documentId,
-            attrIds: scopeMatch.scope.default_attr_ids,
+            attrIds: revisionListAttributeIds(scopeMatch.scope),
             options: []
           }));
           this.assertRepositoryObjectsInScope(scopeMatch.scope, result);
@@ -700,14 +701,14 @@ export class ToolRegistry {
           const result = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.revisions({
             clientProfileId: profile.clientProfileId,
             id: authority.record.documentId,
-            attrIds: authority.scope.default_attr_ids,
+            attrIds: revisionListAttributeIds(authority.scope),
             options: []
           }));
           this.assertRepositoryObjectsInScope(authority.scope, result);
           this.assertAllowedObjectTypes(authority.scope, result);
           await this.verifyReturnedRootScope(profile, authority.scope, result);
           for (const item of result) {
-            const revisionNumber = repositoryObjectRevisionNumber(item);
+            const revisionNumber = repositoryObjectHistoricalRevisionNumber(item);
             if (revisionNumber === undefined
               || !revisionMetadataIdentityMatches(authority.record.documentId, item.id, revisionNumber)
               || item.objectClass !== authority.record.objectClass) {
@@ -1387,10 +1388,10 @@ export class ToolRegistry {
         throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_identity", false);
       }
     }
-    const provenRevisionNumber = repositoryObjectRevisionNumber(object);
-    if (provenRevisionNumber === undefined) {
-      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_missing", false);
-    }
+    const provenRevisionNumber = revisionNumber === undefined
+      ? repositoryObjectCurrentRevisionNumber(object)
+      : repositoryObjectHistoricalRevisionNumber(object);
+    if (provenRevisionNumber === undefined) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_missing", false);
     if (revisionNumber !== undefined && provenRevisionNumber !== revisionNumber) {
       throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_mismatch", false);
     }
@@ -1672,11 +1673,39 @@ function contentOptions(scope: SemanticScope): string[] {
   return ["errorOnOfflineContent"];
 }
 
-function repositoryObjectRevisionNumber(object: AdapterRepositoryObject): number | undefined {
-  const value = object.attributes["rep:system:revisionnumber"];
+function revisionAttributeNumber(object: AdapterRepositoryObject, key: string): number | undefined {
+  const value = object.attributes[key];
   if ((value?.type === "int" || value?.type === "long")
     && Number.isSafeInteger(value.value) && value.value >= MIN_REVISION_NUMBER && value.value <= MAX_REVISION_NUMBER) return value.value;
   return undefined;
+}
+
+function repositoryObjectHistoricalRevisionNumber(object: AdapterRepositoryObject): number | undefined {
+  return revisionAttributeNumber(object, "rep:system:revisionnumber");
+}
+
+function repositoryObjectCurrentRevisionNumber(object: AdapterRepositoryObject): number {
+  const current = revisionAttributeNumber(object, "rep:system:currentrevisionnumber");
+  if (current === undefined) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_missing", false);
+  if (object.attributes["rep:system:revisionnumber"] !== undefined) {
+    const historical = repositoryObjectHistoricalRevisionNumber(object);
+    if (historical === undefined || historical !== current) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "content_revision_mismatch", false);
+    }
+  }
+  return current;
+}
+
+function revisionListAttributeIds(scope: SemanticScope): AttributeId[] {
+  const attrIds: AttributeId[] = [];
+  const seen = new Set<string>();
+  for (const attr of [...scope.default_attr_ids, DEFAULT_ATTRS.revisionNumber]) {
+    const key = attrKey(attr);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    attrIds.push({ ...attr });
+  }
+  return attrIds;
 }
 
 function rejectRawArcSuiteFields(value: unknown): void {
