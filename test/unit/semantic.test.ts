@@ -340,6 +340,28 @@ test("hard-reference tool schema requires a target and rejects caller-controlled
   assert.equal(schema.safeParse({ document_id: "rep:mock:RELATIONSHIPS:1", limit: 1, cursor: "opaque" }).success, false);
 });
 
+test("legacy read schema preserves all paging modes and fail-closed combinations", () => {
+  const schema = toolInputSchemas.arcsuite_read_document;
+  for (const input of [
+    { document_id: "rep:mock:EXAMPLE_CABINET:1" },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", max_chars: 1000 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", start_page: 1 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", start_page: 1, end_page: 2 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", cursor: "opaque" }
+  ]) {
+    assert.equal(schema.safeParse(input).success, true, JSON.stringify(input));
+  }
+  for (const input of [
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", cursor: "opaque", start_page: 1 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", cursor: "opaque", end_page: 2 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", start_page: 5, end_page: 4 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", end_page: 2 },
+    { document_id: "rep:mock:EXAMPLE_CABINET:1", unknown: true }
+  ]) {
+    assert.equal(schema.safeParse(input).success, false, JSON.stringify(input));
+  }
+});
+
 test("search schema exposes response negotiation only on initial searches", () => {
   const schema = toolInputSchemas.arcsuite_search_documents;
   assert.equal(schema.safeParse({ scope: "example_documents", query: "synthetic", response_contract: "legacy" }).success, true);

@@ -27,9 +27,44 @@ const semanticFilterValue = z.union([
   z.object({ operator: semanticFilterOperator, value: semanticFilterScalar }).strict()
 ]);
 
+// Keep root schemas as objects so MCP clients can discover their parameters.
+// Zod refinements remain the runtime authority; metadata mirrors the
+// cross-field rules that JSON Schema can express without a root union.
+const readPagingJsonSchema = {
+  allOf: [
+    {
+      if: { required: ["cursor"] },
+      then: { not: { anyOf: [{ required: ["start_page"] }, { required: ["end_page"] }] } }
+    },
+    {
+      if: { required: ["end_page"] },
+      then: { required: ["start_page"] }
+    }
+  ]
+};
+
+const hardReferencePagingJsonSchema = {
+  allOf: [{
+    if: { required: ["cursor"] },
+    then: { not: { required: ["limit"] } }
+  }]
+};
+
+function readPagingIssue(value: { start_page?: number; end_page?: number; cursor?: string }): string | undefined {
+  if (value.cursor !== undefined && value.start_page !== undefined) return "cursor and start_page cannot both be specified";
+  if (value.cursor !== undefined && value.end_page !== undefined) return "cursor and end_page cannot both be specified";
+  if (value.end_page !== undefined && value.start_page === undefined) return "end_page requires start_page";
+  if (value.end_page !== undefined && value.start_page !== undefined && value.end_page < value.start_page) {
+    return "end_page must be >= start_page";
+  }
+  return undefined;
+}
+
 function createToolInputSchemas(limits: ToolSchemaLimits) {
   const limit = z.number().int().min(1).max(limits.searchMaxLimit).optional();
   const revisionNumber = z.number().int().min(MIN_REVISION_NUMBER).max(MAX_REVISION_NUMBER).optional();
+  const pageNumber = z.number().int().min(1).max(MAX_PAGE_NUMBER).optional();
+  const maxChars = z.number().int().min(1000).max(limits.readMaxChars).optional();
   const search = z.object({
     scope,
     query: z.string().min(1).max(200).optional(),
@@ -49,7 +84,7 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
     result_ref: opaqueRef,
     revision_number: revisionNumber,
     content_label: contentLabel,
-    max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
+    max_chars: maxChars
   };
   return {
     arcsuite_describe_capabilities: z.object({}).strict(),
@@ -86,19 +121,15 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
       include_path: z.boolean().optional(),
       cursor: pagingCursor
     }).strict(),
-    // Keep limit/cursor mutual exclusion in the JSON Schema exposed by tools/list.
-    arcsuite_list_hard_references: z.union([
-      z.object({
-        document_id: documentId,
-        limit,
-        cursor: z.never().optional()
-      }).strict(),
-      z.object({
-        document_id: documentId,
-        limit: z.never().optional(),
-        cursor: pagingCursor
-      }).strict()
-    ]),
+    arcsuite_list_hard_references: z.object({
+      document_id: documentId,
+      limit,
+      cursor: pagingCursor
+    }).strict().superRefine((value, context) => {
+      if (value.limit !== undefined && value.cursor !== undefined) {
+        context.addIssue({ code: "custom", message: "limit cannot be combined with cursor" });
+      }
+    }).meta(hardReferencePagingJsonSchema),
     arcsuite_list_document_revisions: z.object({ document_id: documentId, limit }).strict(),
     arcsuite_list_document_revisions_by_ref: z.object({ result_ref: opaqueRef, limit }).strict(),
     arcsuite_get_document_content_info: z.object({
@@ -111,70 +142,27 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
       revision_number: revisionNumber,
       content_label: contentLabel
     }).strict(),
-    arcsuite_read_document: z.union([
-      z.object({
-        document_id: documentId,
-        revision_number: revisionNumber,
-        content_label: contentLabel,
-        start_page: z.never().optional(),
-        end_page: z.never().optional(),
-        cursor: z.never().optional(),
-        max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
-      }).strict(),
-      z.object({
-        document_id: documentId,
-        revision_number: revisionNumber,
-        content_label: contentLabel,
-        start_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
-        end_page: z.never().optional(),
-        cursor: z.never().optional(),
-        max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
-      }).strict(),
-      z.object({
-        document_id: documentId,
-        revision_number: revisionNumber,
-        content_label: contentLabel,
-        start_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
-        end_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
-        cursor: z.never().optional(),
-        max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
-      }).strict().refine((value) => value.end_page >= value.start_page, { message: "end_page must be >= start_page" }),
-      z.object({
-        document_id: documentId,
-        revision_number: revisionNumber,
-        content_label: contentLabel,
-        start_page: z.never().optional(),
-        end_page: z.never().optional(),
-        cursor: z.string().min(1).max(4096),
-        max_chars: z.number().int().min(1000).max(limits.readMaxChars).optional()
-      }).strict()
-    ]),
-    arcsuite_read_document_by_ref: z.union([
-      z.object({
-        ...refReadCommon,
-        start_page: z.never().optional(),
-        end_page: z.never().optional(),
-        cursor: z.never().optional()
-      }).strict(),
-      z.object({
-        ...refReadCommon,
-        start_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
-        end_page: z.never().optional(),
-        cursor: z.never().optional()
-      }).strict(),
-      z.object({
-        ...refReadCommon,
-        start_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
-        end_page: z.number().int().min(1).max(MAX_PAGE_NUMBER),
-        cursor: z.never().optional()
-      }).strict().refine((value) => value.end_page >= value.start_page, { message: "end_page must be >= start_page" }),
-      z.object({
-        ...refReadCommon,
-        start_page: z.never().optional(),
-        end_page: z.never().optional(),
-        cursor: z.string().min(1).max(4096)
-      }).strict()
-    ])
+    arcsuite_read_document: z.object({
+      document_id: documentId,
+      revision_number: revisionNumber,
+      content_label: contentLabel,
+      start_page: pageNumber,
+      end_page: pageNumber,
+      cursor: pagingCursor,
+      max_chars: maxChars
+    }).strict().superRefine((value, context) => {
+      const issue = readPagingIssue(value);
+      if (issue) context.addIssue({ code: "custom", message: issue });
+    }).meta(readPagingJsonSchema),
+    arcsuite_read_document_by_ref: z.object({
+      ...refReadCommon,
+      start_page: pageNumber,
+      end_page: pageNumber,
+      cursor: pagingCursor
+    }).strict().superRefine((value, context) => {
+      const issue = readPagingIssue(value);
+      if (issue) context.addIssue({ code: "custom", message: issue });
+    }).meta(readPagingJsonSchema)
   } as const;
 }
 
