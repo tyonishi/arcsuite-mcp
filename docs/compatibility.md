@@ -209,4 +209,5 @@ validation suite. Closure Remediation Round 2 is also implemented, including
 current content authority, strict WSDL response shapes, bounded materialization,
 and MCP revision-schema parity. This records implementation evidence plus the
 narrow S4 validation-only live qualification above; it does not claim broad
-operator-environment or client qualification.
+operator-environment or client qualification. An independent Final
+Cross-Cutting Audit remains pending before v1.2 closure.

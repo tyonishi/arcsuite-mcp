@@ -67,7 +67,7 @@
   response parsing, one Java-owned read retry, output-budget OOXML extraction,
   and MCP schemas generated from effective configured limits. Synthetic
   cross-boundary regression tests and the complete local validation suite
-  pass; independent final cross-cutting re-audit and live ArcSuite
+  pass; independent final cross-cutting re-audit and broader live ArcSuite
   qualification remain pending.
 - Implemented Closure Remediation Round 2: current authority revalidation for
   content caches/cursors, exact batch path identity, namespace-exact semantic
@@ -76,7 +76,7 @@
   bounded JSON/text/XML materialization, parser-level OOXML DTD/entity
   rejection, and actual MCP schema/runtime revision parity. The local
   cross-cutting review and regression suite pass; an independent Astra High
-  re-audit and live ArcSuite qualification remain pending.
+  re-audit and broader live ArcSuite qualification remain pending.
 - Added one read-only ArcSuite operation for incoming Hard Reference discovery;
   TypeScript and Java operation allowlists remain in parity.
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and

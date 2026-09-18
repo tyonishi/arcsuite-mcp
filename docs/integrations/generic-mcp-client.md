@@ -63,5 +63,6 @@ Synthetic request example:
 
 The validation-only path has been qualified in an operator-controlled live
 ArcSuite environment. The optional evidence-provider path is
-`NOT_AVAILABLE_IN_TEST_DATA` and must be qualified separately where suitable
-evidence-bearing test data exists.
+`NOT_AVAILABLE_IN_TEST_DATA`. Operators should separately qualify the evidence
+path for the target environment and intended document corpus before enabling
+it.

@@ -65,8 +65,9 @@ full-text modes, relationship reads, paging, batch-read, cache, and deep-link
 behavior. S1–S4 implementation is present and covered by synthetic tests. S4
 validation-only behavior is also qualified in an operator-controlled live
 ArcSuite environment. The evidence-provider live path is
-`NOT_AVAILABLE_IN_TEST_DATA`, not failed or passed. Broader cross-cutting and
-client-specific live qualification remains environment-dependent.
+`NOT_AVAILABLE_IN_TEST_DATA`, not failed or passed. The independent Final
+Cross-Cutting Audit remains pending. Broader client-specific live
+qualification remains environment-dependent.
 
 ## Architecture
 
