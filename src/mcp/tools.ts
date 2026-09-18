@@ -518,7 +518,7 @@ export class ToolRegistry {
             page = this.paging.next(parsed.cursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.scope, kind: "folder" });
           } else {
             const locationId = parsed.folderId ?? scope.arcsuite.root_object_id ?? scope.arcsuite.cabinet_id;
-            if (parsed.folderId) await this.verifyObjectScope(profile, scope, parsed.folderId);
+            if (parsed.folderId) await this.authorizeFolderNavigationTarget(profile, scope, parsed.folderId, soapOperations);
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
             const candidateIds = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.listIds({
               clientProfileId: profile.clientProfileId,
@@ -544,7 +544,7 @@ export class ToolRegistry {
               upstreamLimited: candidateIds.length > snapshotLimit
             });
           }
-          const pageData = await this.fetchObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations);
+          const pageData = await this.fetchFolderNavigationObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations);
           objectIds = pageData.results.map((item) => item.document_id);
           resultCount = pageData.results.length;
           data = {
@@ -1231,6 +1231,35 @@ export class ToolRegistry {
     this.assertRootScope(obj, scope);
   }
 
+  private async authorizeFolderNavigationTarget(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    objectId: string,
+    operations: string[]
+  ): Promise<void> {
+    this.assertObjectIdInScope(scope, objectId);
+    this.recordSoapOperation(operations, "getRepositoryObject");
+    this.recordSoapOperation(operations, "getRepositoryObjectPath");
+    const object = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+      clientProfileId: profile.clientProfileId,
+      id: objectId,
+      resolveRef: false,
+      includePath: true,
+      attrIds: [DEFAULT_ATTRS.name],
+      options: []
+    }));
+    if (!isRepositoryObject(object)) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "repository_object_shape", false);
+    }
+    this.assertRepositoryObjectInScope(scope, object);
+    this.assertObjectIdInScope(scope, object.id, objectId);
+    if (!isExactDrawerObject(object) && object.objectClass !== "folder") {
+      throw new McpToolError("ARCSUITE_FORBIDDEN", "object_type_not_allowed", false);
+    }
+    this.assertFolderNavigationResultType(scope, object);
+    this.assertRootScope(object, scope);
+  }
+
   private async authorizeHardReferenceTarget(
     profile: TokenProfile,
     scope: SemanticScope,
@@ -1660,6 +1689,95 @@ export class ToolRegistry {
       return { index: failure.index, document_id: ids[failure.index], code: failure.code };
     });
     return { results: normalized, failures };
+  }
+
+  private async fetchFolderNavigationObjectsByIds(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    ids: string[],
+    includePath: boolean,
+    operations: string[]
+  ): Promise<{ results: NormalizedDocument[]; failures: Array<{ index: number; document_id: string; code: string }> }> {
+    if (!ids.length) return { results: [], failures: [] };
+    for (const id of ids) this.assertObjectIdInScope(scope, id);
+    const root = scope.arcsuite.root_object_id;
+    const options = root ? ["getRepositoryObjects.searchMode", `getRepositoryObjects.searchMode.searchRegion=${root}`] : [];
+    this.recordSoapOperation(operations, "getRepositoryObjects");
+    const batch = validateRepositoryObjectBatch(ids, await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.getMany({
+      clientProfileId: profile.clientProfileId,
+      ids,
+      resolveRef: false,
+      attrIds: scope.default_attr_ids,
+      options
+    })));
+    this.assertRepositoryObjectsInScope(scope, batch.objects);
+    for (const object of batch.objects) this.assertFolderNavigationResultType(scope, object);
+    if (includePath || scope.arcsuite.root_object_id) {
+      await this.attachFolderNavigationPaths(profile, scope, batch.objects, operations);
+    }
+    const results = batch.objects.map((object) => {
+      const normalized = this.decorateDocument(scope, normalizeDocument(
+        object,
+        scope.semantic_attributes,
+        this.scopes.contentLabelAliases(scope)
+      ));
+      if (isExactDrawerObject(object)) normalized.object_class = "folder";
+      if (!includePath) delete normalized.path;
+      return normalized;
+    });
+    const failures = batch.failures.map((failure) => ({
+      index: failure.index,
+      document_id: ids[failure.index],
+      code: failure.code
+    }));
+    return { results, failures };
+  }
+
+  private assertFolderNavigationResultType(scope: SemanticScope, object: AdapterRepositoryObject): void {
+    if (isExactDrawerObject(object)) {
+      if (!this.scopes.isAllowedObjectType(scope, "folder")) {
+        throw new McpToolError("ARCSUITE_FORBIDDEN", "object_type_not_allowed", false);
+      }
+      return;
+    }
+    this.assertAllowedObjectType(scope, object);
+  }
+
+  private async attachFolderNavigationPaths(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    objects: AdapterRepositoryObject[],
+    operations: string[]
+  ): Promise<void> {
+    for (const object of objects) {
+      if (object.pathObjects?.length) {
+        this.assertRepositoryObjectInScope(scope, object);
+        this.assertFolderNavigationResultType(scope, object);
+        this.assertRootScope(object, scope);
+        continue;
+      }
+      this.recordSoapOperation(operations, "getRepositoryObject");
+      const proof = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+        clientProfileId: profile.clientProfileId,
+        id: object.id,
+        resolveRef: false,
+        includePath: true,
+        attrIds: [DEFAULT_ATTRS.name],
+        options: []
+      }));
+      if (!isRepositoryObject(proof) || proof.id !== object.id) {
+        throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_path_identity", false);
+      }
+      if (proof.objectClass !== object.objectClass) {
+        throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_path_class", false);
+      }
+      this.assertRepositoryObjectInScope(scope, proof);
+      this.assertFolderNavigationResultType(scope, proof);
+      this.assertRootScope(proof, scope);
+      object.pathObjects = proof.pathObjects;
+      object.fullPath = proof.fullPath;
+    }
+    if (objects.length) this.recordSoapOperation(operations, "getRepositoryObjectPath");
   }
 
   private assertAllowedObjectTypes(scope: SemanticScope, objects: AdapterRepositoryObject[]): void {
@@ -2177,6 +2295,11 @@ function isRepositoryObject(value: unknown): value is AdapterRepositoryObject {
 function isHardReferenceObject(object: AdapterRepositoryObject): boolean {
   return object.objectClass === "hardReference"
     && semanticObjectClass(object.nativeObjectClass) === "hardReference";
+}
+
+function isExactDrawerObject(object: AdapterRepositoryObject): boolean {
+  return object.objectClass === "drawer"
+    && semanticObjectClass(object.nativeObjectClass) === "drawer";
 }
 
 function semanticObjectClass(value: unknown): string | undefined {
