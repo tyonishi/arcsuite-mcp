@@ -191,14 +191,50 @@ validation element and every element reported success without an exception
 condition; it is not a broader document-trust guarantee. A false result or an
 empty result set is reported as `invalid_or_unverifiable`; that state does not
 claim that a document was altered or tampered with. A per-document failure in
-an otherwise structurally valid response is `validation_failed`. Provider
-faults and malformed response accounting remain stable MCP errors.
+an otherwise structurally valid response is `validation_failed`; it likewise
+does not prove tampering.
+
+Live ArcSuite compatibility accepts one narrowly bounded mixed shape: a
+structurally valid, completely empty `CertificateValidateResult` placeholder
+paired with the per-ID failure at input index zero is treated as that per-ID
+failure and produces `validation_failed` with `certificate_count: 0`.
+Populated result data plus a failure, malformed result data plus a failure,
+unexpected non-whitespace text, a nonzero failure index, duplicates, and other
+contradictory accounting remain fail-closed provider-response errors.
+Formatting whitespace does not count as result data.
 
 When requested and allowed, `evidence` reports only `{cert_id,
 evidence_available}` for certificate IDs observed in the validation result.
 Evidence does not change validation status. Raw exception details and
 certificate-attribute structures are discarded in the Java adapter. The
-integrity path has no cache, so each call performs fresh reads.
+integrity path has no cache, so each call performs fresh reads. If evidence is
+requested while `integrity.allow_evidence` is false, the request is rejected
+before integrity-provider dispatch. A `validation_failed` result has no
+certificate IDs, returns `evidence: []`, and does not dispatch
+`getCertificateEvidence` even when evidence is enabled.
+
+Synthetic JSON-RPC example:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "arcsuite_validate_document_integrity",
+    "arguments": {
+      "document_id": "rep:example:document-001",
+      "include_evidence": false
+    }
+  }
+}
+```
+
+The validation-only path is qualified in an operator-controlled live ArcSuite
+environment. Suitable evidence-bearing provider data was not present there,
+so evidence-provider live qualification is
+`NOT_AVAILABLE_IN_TEST_DATA`; synthetic contract tests do not replace that
+live qualification.
 
 ## Search and result paging
 

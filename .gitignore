@@ -8,6 +8,7 @@ tmp/
 .env
 .env.*
 !.env.example
+!.env.compose.example
 
 # User-supplied ArcSuite material. Never commit vendor-controlled files.
 *.wsdl

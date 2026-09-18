@@ -1,14 +1,17 @@
 # Public Compose template for an operator-managed ArcSuite deployment.
 #
-# Copy this file to docker-compose.yml, create a local .env, and populate the
-# ignored scope and secret files before starting the services. The local
-# docker-compose.yml and all operator values remain outside version control.
+# Copy this file to docker-compose.yml, copy .env.compose.example to the local
+# ignored .env, and populate the ignored scope and secret files before starting
+# the services. The local docker-compose.yml and all operator values remain
+# outside version control.
 
 services:
   mcp-gateway:
     build:
       context: .
       dockerfile: Containerfile
+      labels:
+        org.opencontainers.image.revision: "${ARCSUITE_MCP_SOURCE_REVISION:-unknown}"
     image: arcsuite-mcp-gateway:${IMAGE_TAG:-local}
     restart: unless-stopped
     init: true
@@ -32,8 +35,8 @@ services:
       ARCSUITE_MCP_CLIENT_TOKENS_JSON_FILE: /run/secrets/arcsuite_client_tokens_json
       MCP_SCOPES_FILE: /app/config/scopes.yaml
       MCP_SHARED_TEMP_DIR: /shared
-      # Keep metadata-only audit output on the writable /tmp tmpfs.
-      MCP_AUDIT_LOG_PATH: /tmp/arcsuite-mcp-audit.jsonl
+      # Keep metadata-only audit output on a reviewed writable location.
+      MCP_AUDIT_LOG_PATH: "${MCP_AUDIT_LOG_PATH:-/tmp/arcsuite-mcp-audit.jsonl}"
       MCP_VALIDATE_ON_STARTUP: "${MCP_VALIDATE_ON_STARTUP:-true}"
       MCP_ALLOWED_HOSTNAMES: "${MCP_ALLOWED_HOSTNAMES:-localhost,127.0.0.1}"
       MCP_ALLOWED_ORIGIN_HOSTNAMES: "${MCP_ALLOWED_ORIGIN_HOSTNAMES:-localhost,127.0.0.1}"
@@ -73,6 +76,8 @@ services:
     build:
       context: ./adapter-java
       dockerfile: Containerfile
+      labels:
+        org.opencontainers.image.revision: "${ARCSUITE_MCP_SOURCE_REVISION:-unknown}"
     image: arcsuite-mcp-adapter:${IMAGE_TAG:-local}
     restart: unless-stopped
     init: true

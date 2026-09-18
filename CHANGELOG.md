@@ -51,6 +51,17 @@
   response accounting, conservative status normalization, and evidence
   availability summaries with raw exception and certificate attributes
   discarded at the Java adapter boundary.
+- Reconciled S4 with qualified live ArcSuite response shapes: an empty
+  `CertificateValidateResult` placeholder paired with the matching per-ID
+  failure is normalized to `validation_failed`, while populated, malformed,
+  contradictory, or nonzero-index mixed responses remain fail-closed. The
+  validation-only path is live-qualified in an operator-controlled
+  environment; evidence retrieval is `NOT_AVAILABLE_IN_TEST_DATA`, remains
+  separately opt-in and disabled by default, and is not claimed as
+  live-qualified.
+- Split direct/local development and Compose environment examples, added
+  source-revision image labels, and documented clean-source deployment
+  provenance without changing runtime defaults or secret-file handling.
 - Added v1.2 closure remediation for F1–F7: effective-object content identity,
   exact JSON integer handling, semantic enum reverse mapping, strict SOAP ID
   response parsing, one Java-owned read retry, output-budget OOXML extraction,
@@ -81,5 +92,7 @@
 - Remediated staged wildcard-regex unescaping and nested XML entity-decoding
   findings.
 
-Real ArcSuite and client qualification remain environment-dependent; see
+Real ArcSuite and client qualification remains environment-dependent. S4
+validation-only behavior has a qualified live result, while its optional
+evidence-provider path did not have suitable test data; see
 `docs/compatibility.md`.

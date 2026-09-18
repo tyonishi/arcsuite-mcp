@@ -27,7 +27,10 @@ endorsed by FUJIFILM Business Innovation. See [NOTICE.md](NOTICE.md).
   candidate authorization before paging, and semantic results without physical
   relationship IDs;
 - v1.2 S4 Document Integrity: per-scope opt-in validation and optional
-  already-calculated evidence availability, with conservative status mapping;
+  already-calculated evidence availability, with conservative status mapping.
+  The validation-only path is qualified in an operator-controlled live
+  ArcSuite environment; evidence retrieval remains separately opt-in and was
+  not available in the qualification test data;
 - Contract vNext P1/P2: opt-in authenticated opaque search/continuation/result
   refs plus seven authority-bound continue, exact-replay, metadata, revisions,
   and bounded-content operations. Refs are non-credentials; current bearer,
@@ -59,11 +62,11 @@ integration are not provided in P2.
 
 See [docs/tools.md](docs/tools.md) for integrity validation, typed predicates,
 full-text modes, relationship reads, paging, batch-read, cache, and deep-link
-behavior. S1–S4 implementation is present and covered by synthetic tests. The
-F1–F7 closure remediation and Closure Remediation Round 2 are implemented and
-covered by the local cross-boundary regression suite; an independent Astra
-High final cross-cutting re-audit and live ArcSuite qualification remain
-pending.
+behavior. S1–S4 implementation is present and covered by synthetic tests. S4
+validation-only behavior is also qualified in an operator-controlled live
+ArcSuite environment. The evidence-provider live path is
+`NOT_AVAILABLE_IN_TEST_DATA`, not failed or passed. Broader cross-cutting and
+client-specific live qualification remains environment-dependent.
 
 ## Architecture
 
@@ -118,10 +121,12 @@ curl -sS http://127.0.0.1:8080/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"arcsuite_search_documents","arguments":{"scope":"example_documents","filters":{"document_number":"DOC-000001"}}}}'
 ```
 
-For an operator deployment, copy docker-compose.example.yml (or the Podman
-template) to ignored local paths, replace every placeholder with values
-verified in the licensed environment, and run the Java adapter in a private
-network. See
+For direct local or mock development, start from `.env.example`. For an
+operator-managed Compose deployment, copy `docker-compose.example.yml` to the
+ignored `docker-compose.yml` and `.env.compose.example` to the ignored `.env`,
+then replace every placeholder with values verified in the licensed
+environment. The Podman template is a separate operator example. In every
+case, run the Java adapter in a private network. See
 [docs/getting-started.md](docs/getting-started.md) and
 [docs/deployment.md](docs/deployment.md).
 

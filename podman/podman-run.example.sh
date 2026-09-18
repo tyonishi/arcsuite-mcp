@@ -8,6 +8,9 @@ set -eu
 : "${ARCSUITE_SOAP_ENDPOINT:?Set ARCSUITE_SOAP_ENDPOINT to the licensed ArcSuite HTTPS endpoint}"
 : "${ARCSUITE_USERNAME:?Set ARCSUITE_USERNAME to the service account name}"
 
+IMAGE_TAG="${IMAGE_TAG:-0.1.0}"
+SOURCE_REVISION="${ARCSUITE_MCP_SOURCE_REVISION:-unknown}"
+
 for required_file in config/scopes.yaml; do
   if [ ! -f "$required_file" ]; then
     echo "Required operator configuration is missing: $required_file" >&2
@@ -22,8 +25,16 @@ for required_secret in arcsuite_password adapter_token mcp_tokens cursor_hmac; d
   fi
 done
 
-podman build -f adapter-java/Containerfile -t arcsuite-mcp-adapter:0.1.0 adapter-java
-podman build -f Containerfile -t arcsuite-mcp:0.1.0 .
+podman build \
+  --label "org.opencontainers.image.revision=$SOURCE_REVISION" \
+  -f adapter-java/Containerfile \
+  -t "arcsuite-mcp-adapter:$IMAGE_TAG" \
+  adapter-java
+podman build \
+  --label "org.opencontainers.image.revision=$SOURCE_REVISION" \
+  -f Containerfile \
+  -t "arcsuite-mcp:$IMAGE_TAG" \
+  .
 
 podman volume create arcsuite-mcp-shared >/dev/null 2>&1 || true
 podman volume create arcsuite-mcp-logs >/dev/null 2>&1 || true
@@ -41,7 +52,7 @@ podman run -d --name arcsuite-mcp-adapter --network arcsuite-mcp-net \
   -e ARCSUITE_ADAPTER_BIND_HOST=0.0.0.0 \
   -e ARCSUITE_ADAPTER_PORT=18080 \
   -e MCP_TEMP_DIR=/shared \
-  arcsuite-mcp-adapter:0.1.0
+  "arcsuite-mcp-adapter:$IMAGE_TAG"
 
 podman run -d --name arcsuite-mcp --network arcsuite-mcp-net \
   --restart=always \
@@ -61,7 +72,7 @@ podman run -d --name arcsuite-mcp --network arcsuite-mcp-net \
   -e MCP_ALLOWED_HOSTNAMES=arcsuite-mcp,localhost,127.0.0.1 \
   -e MCP_ALLOWED_ORIGIN_HOSTNAMES=arcsuite-mcp,localhost,127.0.0.1 \
   -e MCP_VALIDATE_ON_STARTUP=true \
-  arcsuite-mcp:0.1.0
+  "arcsuite-mcp:$IMAGE_TAG"
 
 # Do not publish -p 8080 unless host access is explicitly required and the
 # Host/Origin allowlists plus an external TLS/authentication boundary are set.

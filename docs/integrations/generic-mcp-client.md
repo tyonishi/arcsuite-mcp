@@ -32,3 +32,36 @@ Suggested agent behavior:
 4. read bounded text and continue with the signed cursor only when needed;
 5. never ask the server for raw SOAP, binary/base64, credentials, or physical
    ArcSuite identifiers.
+
+## Document-integrity guidance
+
+Use `arcsuite_validate_document_integrity` only when the selected scope and
+token profile advertise it. A `valid` result is a narrow ArcSuite validation
+outcome, not a general trust or authenticity guarantee.
+`invalid_or_unverifiable` and `validation_failed` do not prove tampering and
+should be presented as inconclusive or failed validation, not as an accusation.
+Evidence availability is a separate operator opt-in. Do not request it unless
+the scope permits it, and never supply certificate IDs or ask for raw
+certificate attributes, raw provider exceptions, or certificate material.
+
+Synthetic request example:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "arcsuite_validate_document_integrity",
+    "arguments": {
+      "document_id": "rep:example:document-001",
+      "include_evidence": false
+    }
+  }
+}
+```
+
+The validation-only path has been qualified in an operator-controlled live
+ArcSuite environment. The optional evidence-provider path is
+`NOT_AVAILABLE_IN_TEST_DATA` and must be qualified separately where suitable
+evidence-bearing test data exists.

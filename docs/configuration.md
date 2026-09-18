@@ -3,6 +3,12 @@
 Configuration is split between environment/secret files and the semantic
 scope registry. Tool callers cannot override these values.
 
+`.env.example` is the direct/local/mock development reference. For the public
+Compose template, copy `.env.compose.example` to the ignored `.env`; it is a
+separate operator companion and contains no secret values. Image tags and
+source-revision labels in deployment examples are provenance inputs, not MCP
+runtime configuration or authority.
+
 ## Important environment variables
 
 | Variable | Default | Purpose |
@@ -203,7 +209,12 @@ integrity:
 Set `allow_evidence: true` only when clients may request the already-calculated
 evidence-availability summary. Evidence is separate from validation and does
 not affect its status. The adapter discards raw exception details and
-certificate attributes before returning data to the gateway. See
+certificate attributes before returning data to the gateway. With
+`allow_evidence: false`, validation remains available, but an evidence request
+is rejected before integrity-provider dispatch. Enabling evidence should be an
+intentional operator decision. Operators should separately qualify the
+evidence path for the target environment and intended document corpus before
+enabling it. See
 [Document integrity](tools.md#document-integrity) for output semantics and
 authorization behavior.
 

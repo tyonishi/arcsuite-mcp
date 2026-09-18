@@ -8,6 +8,13 @@ this sanitized repository build. Use a Dify release/plugin that supports
 Streamable HTTP and revalidate the exact configuration in the target
 environment.
 
+The gateway's S4 validation-only path has separate operator-controlled live
+qualification, but this Dify integration has not. Treat
+`invalid_or_unverifiable` and `validation_failed` as non-affirmative outcomes,
+not proof of tampering. Evidence remains separately opt-in and its live path
+was `NOT_AVAILABLE_IN_TEST_DATA`. See `agent-instructions.md` for the
+conservative client behavior.
+
 Files:
 
 - `mcp-config.example.json` — synthetic gateway URL and header shape;

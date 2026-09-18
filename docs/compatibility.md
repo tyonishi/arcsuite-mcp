@@ -169,26 +169,44 @@ operator's configured service version and real repository behavior.
 S4 adds only `validateCertificate` and `getCertificateEvidence` to the
 read-only SOAP allowlist. Their narrow request and response shapes are locked
 by synthetic Java self-tests based on the operator-provided licensed contract.
-For one requested document, validation accounting must contain exactly one
-successful result entry or one per-ID failure at input index zero. Validation
-elements are reduced to certificate ID, boolean result, and exception presence;
-evidence is reduced to certificate IDs, with certificate attributes discarded
-in the adapter. No vendor WSDL or response excerpt is redistributed.
+`calculateCertificateEvidence`, timestamp attachment, and mutation-capable
+operations remain prohibited.
+For one requested document, strict accounting accepts zero or one validation
+result entry and zero or one per-ID failure. A mixed result-plus-failure shape
+is accepted only for the live-compatible case of a structurally valid but
+completely empty result placeholder paired with an index-zero failure; it is
+treated as the per-ID failure. A populated or malformed result plus a failure,
+duplicate entries, unexpected direct text, or a nonzero failure index remains
+fail-closed. Validation elements are
+reduced to certificate ID, boolean result, and exception presence; evidence is
+reduced to certificate IDs, with certificate attributes and raw provider
+details discarded in the adapter. No vendor WSDL or response excerpt is
+redistributed.
 
 The Reference Guide semantics are intentionally conservative: a false result
 can mean a missing signature or timestamp and does not prove tampering. The MCP
 tool therefore reports `invalid_or_unverifiable` for false, exceptional, or
 empty validation results. `getCertificateEvidence` reports availability only
-and cannot promote validation status. Synthetic contracts and MCP policy are
-tested locally; live validation, component availability, unsigned objects,
-evidence behavior, and XAdES/PAdES variants still require qualification in the
-operator's licensed ArcSuite environment.
+and cannot promote validation status. `invalid_or_unverifiable` and
+`validation_failed` do not prove that the document was altered. Evidence is a
+separate scope opt-in; requesting it while disabled fails before integrity
+provider dispatch, and a per-ID validation failure produces no evidence
+dispatch.
+
+The validation-only path has passed qualification in an operator-controlled
+live ArcSuite environment, including the empty-placeholder plus index-zero
+failure response (23 checks passed and none failed). Suitable evidence-bearing
+records were not available in the qualification corpus, so evidence-provider
+live status is
+`NOT_AVAILABLE_IN_TEST_DATA`, not pass or fail. Component availability,
+unsigned-object variants, XAdES/PAdES variants, and each operator's exact
+environment still require local qualification.
 
 ## v1.2 cross-cutting remediation status
 
 The F1–F7 closure remediation is implemented and covered by the complete local
 validation suite. Closure Remediation Round 2 is also implemented, including
 current content authority, strict WSDL response shapes, bounded materialization,
-and MCP revision-schema parity. This records implementation evidence only: an
-independent Astra High final cross-cutting re-audit remains pending, as does
-live ArcSuite qualification by an operator.
+and MCP revision-schema parity. This records implementation evidence plus the
+narrow S4 validation-only live qualification above; it does not claim broad
+operator-environment or client qualification.

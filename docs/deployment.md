@@ -41,15 +41,18 @@ docker-compose.yml; do not copy a licensed live Compose file into the
 repository:
 
     cp docker-compose.example.yml docker-compose.yml
+    cp .env.compose.example .env
     cp config/scopes.example.yaml config/scopes.yaml
     mkdir -p local-secrets
     chmod 700 local-secrets
 
-Create a local ignored .env and set at least ARCSUITE_SOAP_ENDPOINT and
-ARCSUITE_USERNAME from the licensed ArcSuite environment. Do not put the
-ArcSuite password or bearer-token plaintext in .env. Review the optional bounds
-and settings in the Compose file and provide any target-environment hostname,
-bind, TLS, or reverse-proxy values there.
+The Compose-specific `.env.compose.example` is intentionally separate from
+`.env.example`, which documents direct/local/mock development. In the local
+ignored `.env`, set at least `ARCSUITE_SOAP_ENDPOINT`, `ARCSUITE_USERNAME`,
+`IMAGE_TAG`, and `ARCSUITE_MCP_SOURCE_REVISION`. Do not put the ArcSuite
+password or bearer-token plaintext in `.env`. Review the optional bounds and
+settings in the Compose file and provide any target-environment hostname,
+bind, TLS, audit-path, or reverse-proxy values there.
 
 The Compose file uses normal .env interpolation and maps only the environment
 variables required by each service. It does not inject the full .env into both
@@ -58,6 +61,13 @@ settings, and secret-file paths, while the adapter receives the ArcSuite
 endpoint and username plus its own bounded adapter settings. The gateway never
 receives adapter-only endpoint or username values, and the adapter never
 receives gateway client-token or cursor-HMAC values.
+
+The public template intentionally omits
+`MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT`, so the runtime derives its bounded
+default from the global and per-snapshot limits. An operator who needs an
+explicit override must add its environment mapping to the ignored local
+Compose file and validate it against the global ID budget; do not copy a fixed
+derived value into the public template.
 
 Populate these four operator-owned files under local-secrets/:
 
@@ -91,8 +101,8 @@ The gateway and adapter use read-only root filesystems, /tmp tmpfs,
 no-new-privileges, and dropped Linux capabilities. The named arcsuite-content
 volume is mounted at /shared in both services for the bounded adapter/content
 exchange. The scope file is mounted read-only. The gateway's metadata-only
-audit output is directed to its writable /tmp tmpfs in this example; choose and
-mount a reviewed persistent destination if the target environment requires
+audit output defaults to its writable /tmp tmpfs. `MCP_AUDIT_LOG_PATH` may
+select another reviewed writable mount when the target environment requires
 audit retention.
 
 The default gateway-to-adapter URL is plain HTTP,
@@ -109,11 +119,34 @@ depends_on condition service_started. No unverified health endpoint is invented
 here; the gateway performs its initial health/schema validation and retries a
 failed startup validation every five seconds while /readyz remains 503. Once
 validation succeeds, the retry is stopped and /readyz becomes authoritative.
-Validate and start with the Compose-compatible command set supported by the
-target platform:
+Build and deployment provenance should start from a clean, reviewed source
+revision. The revision label is metadata, not a substitute for source review
+or an image signature. A representative operator flow is:
 
-    docker compose config
-    docker compose up -d --build
+```sh
+test -z "$(git status --short)"
+git rev-parse HEAD
+git rev-parse origin/main
+export ARCSUITE_MCP_SOURCE_REVISION="$(git rev-parse HEAD)"
+export IMAGE_TAG="$(git rev-parse --short=12 HEAD)"
+
+docker compose --env-file .env -f docker-compose.yml config
+docker compose --env-file .env -f docker-compose.yml build
+docker image inspect "arcsuite-mcp-gateway:${IMAGE_TAG}" \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+docker image inspect "arcsuite-mcp-adapter:${IMAGE_TAG}" \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+docker compose --env-file .env -f docker-compose.yml up -d
+docker compose --env-file .env -f docker-compose.yml images
+docker compose --env-file .env -f docker-compose.yml ps
+curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8080/readyz
+```
+
+Require the inspected labels to equal the reviewed clean source revision, and
+record the actual running image IDs from `docker compose images` before live
+qualification. A deployment from a dirty tree or an `unknown` revision label
+does not provide exact source provenance.
 
 This example is based on a two-container topology exercised in a licensed live
 ArcSuite environment. That evidence does not qualify this generic public
@@ -132,6 +165,12 @@ named Podman secrets, or the required `ARCSUITE_SOAP_ENDPOINT`/
 `ARCSUITE_USERNAME` variables are missing. The MCP token profile is supplied
 only through the `mcp_tokens` Podman secret at runtime; do not create or mount
 an ignored `config/tokens.json` file.
+
+Set `IMAGE_TAG` and `ARCSUITE_MCP_SOURCE_REVISION` from the reviewed clean Git
+revision before running the script. Both images receive the standard
+`org.opencontainers.image.revision` label. Inspect that label and the running
+container image IDs before health/readiness and live qualification; the label
+does not itself prove the tree was clean or the image was signed.
 
 The template expects these Podman secrets to exist before it is run:
 

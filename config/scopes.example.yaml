@@ -19,6 +19,9 @@ scopes:
 
     # Document integrity reads are disabled unless explicitly enabled per scope.
     # Evidence is a separate opt-in and returns only availability by certificate ID.
+    # With allow_evidence: false, validation remains available and evidence
+    # requests fail closed before integrity-provider dispatch. Operators should
+    # qualify that path for the target environment before enabling evidence.
     # integrity:
     #   enabled: true
     #   allow_evidence: false

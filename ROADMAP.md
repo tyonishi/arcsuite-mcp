@@ -54,10 +54,11 @@ Implemented scope:
 
 S1 Typed Search Foundation, S2 Content Labels, S3 Hard References, and S4
 Document Integrity are implemented and covered by synthetic contract tests.
-The F1–F7 closure remediation and Closure Remediation Round 2 are implemented
-and covered by the local cross-boundary regression suite. An independent Astra
-High final cross-cutting re-audit and live ArcSuite qualification remain
-pending. v1.2 does not include
+S4 validation-only behavior is additionally qualified in an
+operator-controlled live ArcSuite environment. The optional evidence-provider
+path remains `NOT_AVAILABLE_IN_TEST_DATA`; this is neither a pass nor a
+failure. Other cross-cutting and client-specific live qualification remains
+environment-dependent. v1.2 does not include
 `calculateCertificateEvidence`, timestamp attachment, evidence mutation,
 repository mutation, RMS, Collaboration, or Workflow operations.
 
