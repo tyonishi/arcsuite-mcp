@@ -41,7 +41,8 @@ final class ArcSuiteSoapClient {
             "rep:system:externalDocument", "externalDocument",
             "rep:system:dynamicExternalDocument", "dynamicExternalDocument",
             "rep:system:reference", "reference",
-            "rep:system:hardReference", "hardReference"
+            "rep:system:hardReference", "hardReference",
+            "rep:system:hardreference", "hardReference"
     );
     static final String ENCRYPTED_PASSWORD_URI = BASE_NS + "#EncryptedPassword";
     private static final Set<String> SEARCH_BINARY_OPERATORS = Set.of("EQUAL", "LIKE", "GREATER_EQUAL", "LESS_EQUAL");

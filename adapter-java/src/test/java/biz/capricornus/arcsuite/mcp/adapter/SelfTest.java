@@ -692,7 +692,7 @@ public final class SelfTest {
     static void hardReferenceResponseParsing() {
         String responseXml = "<listRepositoryObjectHardReferencesResponse xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\">"
                 + "<listRepositoryObjectHardReferencesReturn>"
-                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
+                + "<repositoryObject><id>rep:example:hardref-001</id><objectClass ns=\"rep\" name=\"system:hardreference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id><editionKey><attribute ns=\"rep\" name=\"edition\"/></editionKey></referenceId></repositoryObject>"
                 + "<repositoryObject><id>rep:example:hardref-002</id><objectClass ns=\"rep\" name=\"system:hardReference\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject>"
@@ -708,6 +708,9 @@ public final class SelfTest {
     static void hardReferenceIdentityFailures() {
         assertHardReferenceParseFailure("<return><repositoryObject><id>rep:example:hardref-001</id>"
                 + "<objectClass ns=\"rep\" name=\"system:reference\"/><attributes/>"
+                + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>", 2, "ARCSUITE_UPSTREAM_ERROR");
+        assertHardReferenceParseFailure("<return><repositoryObject><id>rep:example:hardref-001</id>"
+                + "<objectClass ns=\"rep\" name=\"system:HARDREFERENCE\"/><attributes/>"
                 + "<referenceId><id>rep:example:target</id></referenceId></repositoryObject></return>", 2, "ARCSUITE_UPSTREAM_ERROR");
         assertHardReferenceParseFailure("<return><repositoryObject><id>rep:example:hardref-001</id>"
                 + "<referenceId><id>rep:example:other</id></referenceId></repositoryObject></return>", 2, "ARCSUITE_UPSTREAM_ERROR");
