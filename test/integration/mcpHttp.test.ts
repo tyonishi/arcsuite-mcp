@@ -275,7 +275,16 @@ test("tools/list advertises effective request limits and rejects over-limit call
     assert.equal(response.status, 200);
     assert.equal(Boolean(response.json.result?.isError), false, JSON.stringify(response.json));
   }
-  assert.deepEqual(providerCalls, { searchIds: 1, listIds: 1, revisions: 1, hardReferences: 1, getMany: 4, content: 1 });
+  assert.deepEqual(providerCalls, {
+    searchIds: 1,
+    listIds: 1,
+    revisions: 1,
+    hardReferences: 1,
+    // Search and folder discovery classify their bounded candidate sets before
+    // the ordinary page hydration counted by the existing paths below.
+    getMany: 6,
+    content: 1
+  });
 
   const defaultRevision = await invoke(14, "arcsuite_list_document_revisions", { document_id: "rep:mock:EXAMPLE_CABINET:1001" });
   assert.equal(Boolean(defaultRevision.json.result?.isError), false, JSON.stringify(defaultRevision.json));
@@ -305,7 +314,7 @@ test("tools/list advertises effective request limits and rejects over-limit call
   ]);
   assert.ok(rejected.every((response) => response.json.error || response.json.result?.isError));
   assert.equal(runtimeCalls.length, callsBeforeOverLimit, "invalid tool input must not reach ToolRegistry.call");
-  assert.deepEqual(providerCalls, { searchIds: 1, listIds: 1, revisions: 2, hardReferences: 1, getMany: 4, content: 1 });
+  assert.deepEqual(providerCalls, { searchIds: 1, listIds: 1, revisions: 2, hardReferences: 1, getMany: 6, content: 1 });
 });
 
 test("ref-native read combinations are accepted or rejected before runtime dispatch exactly as advertised", async (t) => {

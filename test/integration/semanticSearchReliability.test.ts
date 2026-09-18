@@ -620,9 +620,11 @@ test("continuation pages reuse the original verification plan", async () => {
   let searches = 0;
   rt.adapter.searchIds = async () => { searches += 1; return [first, second]; };
   rt.adapter.getMany = async (request: any) => {
-    const id = request.ids[0];
     return {
-      objects: [document(id, id === first ? baseAttributes : { ...baseAttributes, "rep:user:page_count": { type: "long", value: 4 } })],
+      objects: request.ids.map((id: string) => document(
+        id,
+        id === first ? baseAttributes : { ...baseAttributes, "rep:user:page_count": { type: "long", value: 4 } }
+      )),
       failures: []
     };
   };

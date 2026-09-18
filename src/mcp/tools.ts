@@ -195,7 +195,7 @@ export class ToolRegistry {
             };
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
             this.recordSoapOperation(soapOperations, "searchRepositoryObjectIds");
-            const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
+            const candidateIds = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
               clientProfileId: profile.clientProfileId,
               attributeConditions: attrConditions,
               text: appliedQuery.text
@@ -212,10 +212,11 @@ export class ToolRegistry {
               limit: snapshotLimit + 1,
               options: []
             }));
-            if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+            if (!Array.isArray(candidateIds) || candidateIds.some((id) => typeof id !== "string")) {
               throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "search_ids_shape", false);
             }
-            for (const id of ids) this.assertObjectIdInScope(scope, id);
+            for (const id of candidateIds) this.assertObjectIdInScope(scope, id);
+            const ids = await this.filterDiscoveryIds(profile, scope, candidateIds, soapOperations);
             page = this.paging.create({
               clientProfileId: profile.clientProfileId,
               scopeId: parsed.scope,
@@ -229,7 +230,7 @@ export class ToolRegistry {
                 responseContract: parsed.responseContract,
                 ...(parsed.responseContract === "opaque_refs_v1" ? { searchAuthority } : {})
               },
-              upstreamLimited: ids.length > snapshotLimit
+              upstreamLimited: candidateIds.length > snapshotLimit
             });
           }
           const verificationPlan = page.context.searchVerificationPlan;
@@ -327,7 +328,7 @@ export class ToolRegistry {
           const recanonicalized = this.recanonicalizeReplay(record.authority, parsed.targetScope, targetScope);
           const snapshotLimit = this.config.pagingSnapshotMaxIds;
           this.recordSoapOperation(soapOperations, "searchRepositoryObjectIds");
-          const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
+          const candidateIds = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.searchIds({
             clientProfileId: profile.clientProfileId,
             attributeConditions: recanonicalized.verificationPlan.map((predicate) => predicate.condition),
             text: recanonicalized.appliedQuery.text
@@ -344,10 +345,11 @@ export class ToolRegistry {
             limit: snapshotLimit + 1,
             options: []
           }));
-          if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+          if (!Array.isArray(candidateIds) || candidateIds.some((id) => typeof id !== "string")) {
             throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "search_ids_shape", false);
           }
-          for (const id of ids) this.assertObjectIdInScope(targetScope, id);
+          for (const id of candidateIds) this.assertObjectIdInScope(targetScope, id);
+          const ids = await this.filterDiscoveryIds(profile, targetScope, candidateIds, soapOperations);
           const searchAuthority: CanonicalSearchAuthority = {
             scopeId: parsed.targetScope,
             appliedQuery: recanonicalized.appliedQuery,
@@ -367,7 +369,7 @@ export class ToolRegistry {
               responseContract: "opaque_refs_v1",
               searchAuthority
             },
-            upstreamLimited: ids.length > snapshotLimit
+            upstreamLimited: candidateIds.length > snapshotLimit
           });
           const pageData = await this.fetchObjectsByIds(
             profile,
@@ -513,7 +515,7 @@ export class ToolRegistry {
             const locationId = parsed.folderId ?? scope.arcsuite.root_object_id ?? scope.arcsuite.cabinet_id;
             if (parsed.folderId) await this.verifyObjectScope(profile, scope, parsed.folderId);
             const snapshotLimit = this.config.pagingSnapshotMaxIds;
-            const ids = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.listIds({
+            const candidateIds = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.listIds({
               clientProfileId: profile.clientProfileId,
               locationId,
               latestOnly: true,
@@ -522,7 +524,11 @@ export class ToolRegistry {
               options: []
             }));
             soapOperations.push("listRepositoryObjectIds");
-            for (const id of ids) this.assertObjectIdInScope(scope, id);
+            if (!Array.isArray(candidateIds) || candidateIds.some((id) => typeof id !== "string")) {
+              throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "list_ids_shape", false);
+            }
+            for (const id of candidateIds) this.assertObjectIdInScope(scope, id);
+            const ids = await this.filterDiscoveryIds(profile, scope, candidateIds, soapOperations);
             page = this.paging.create({
               clientProfileId: profile.clientProfileId,
               scopeId: parsed.scope,
@@ -530,7 +536,7 @@ export class ToolRegistry {
               ids,
               pageSize: parsed.limit,
               context: { folderId: locationId, includePath: parsed.includePath },
-              upstreamLimited: ids.length > snapshotLimit
+              upstreamLimited: candidateIds.length > snapshotLimit
             });
           }
           const pageData = await this.fetchObjectsByIds(profile, scope, page.ids, page.context.includePath, soapOperations);
@@ -1482,6 +1488,101 @@ export class ToolRegistry {
     if (!operations.includes(operation)) operations.push(operation);
   }
 
+  private async filterDiscoveryIds(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    ids: string[],
+    operations: string[]
+  ): Promise<string[]> {
+    if (!ids.length) return [];
+    if (ids.length > this.config.pagingSnapshotMaxIds + 1) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "discovery_ids_limit", false);
+    }
+    if (new Set(ids).size !== ids.length) throw new Error("DUPLICATE_PAGING_IDS");
+    // Classify the bounded provider candidate set before public paging so an
+    // invisible relationship cannot consume a page slot or cursor position.
+    const hidden = new Set<string>();
+    const classified: AdapterRepositoryObject[] = [];
+    const unclassified: string[] = [];
+    const root = scope.arcsuite.root_object_id;
+    const options = root ? ["getRepositoryObjects.searchMode", `getRepositoryObjects.searchMode.searchRegion=${root}`] : [];
+    for (let offset = 0; offset < ids.length; offset += this.config.batchMaxIds) {
+      const chunk = ids.slice(offset, offset + this.config.batchMaxIds);
+      this.recordSoapOperation(operations, "getRepositoryObjects");
+      const batch = validateRepositoryObjectBatch(chunk, await this.sessions.executeRead(
+        profile.clientProfileId,
+        () => this.adapter.getMany({
+          clientProfileId: profile.clientProfileId,
+          ids: chunk,
+          resolveRef: false,
+          attrIds: scope.default_attr_ids,
+          options
+        })
+      ));
+      classified.push(...batch.objects);
+      for (const failure of batch.failures) {
+        unclassified.push(chunk[failure.index]);
+      }
+    }
+    const unresolved: string[] = [];
+    for (const id of unclassified) {
+      this.recordSoapOperation(operations, "getRepositoryObject");
+      try {
+        const object = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+          clientProfileId: profile.clientProfileId,
+          id,
+          resolveRef: false,
+          includePath: false,
+          attrIds: scope.default_attr_ids,
+          options: []
+        }));
+        if (!isRepositoryObject(object) || object.id !== id) {
+          throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "discovery_classification_identity", false);
+        }
+        classified.push(object);
+      } catch (error) {
+        if (error instanceof McpToolError && error.category === "discovery_classification_identity") throw error;
+        unresolved.push(id);
+      }
+    }
+    if (unresolved.length && classified.some((object) => isHardReferenceObject(object))) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "discovery_classification_failure", false);
+    }
+    this.assertRepositoryObjectsInScope(scope, classified);
+    for (const object of classified) {
+      if (!isHardReferenceObject(object)) continue;
+      await this.proveDiscoveryHardReferenceScope(profile, scope, object, operations);
+      hidden.add(object.id);
+    }
+    return ids.filter((id) => !hidden.has(id));
+  }
+
+  private async proveDiscoveryHardReferenceScope(
+    profile: TokenProfile,
+    scope: SemanticScope,
+    candidate: AdapterRepositoryObject,
+    operations: string[]
+  ): Promise<void> {
+    this.recordSoapOperation(operations, "getRepositoryObject");
+    this.recordSoapOperation(operations, "getRepositoryObjectPath");
+    const proof = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+      clientProfileId: profile.clientProfileId,
+      id: candidate.id,
+      resolveRef: false,
+      includePath: true,
+      attrIds: [DEFAULT_ATTRS.name],
+      options: []
+    }));
+    if (!isRepositoryObject(proof) || proof.id !== candidate.id) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_path_identity", false);
+    }
+    if (!isHardReferenceObject(proof) || proof.objectClass !== candidate.objectClass) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "hard_reference_class", false);
+    }
+    this.assertRepositoryObjectInScope(scope, proof);
+    this.assertRootScope(proof, scope);
+  }
+
   private async fetchObjectsByIds(
     profile: TokenProfile,
     scope: SemanticScope,
@@ -1517,7 +1618,7 @@ export class ToolRegistry {
       addAttribute(predicate.condition.attrId);
     }
     this.recordSoapOperation(operations, "getRepositoryObjects");
-    const batch = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.getMany({
+    const batch = validateRepositoryObjectBatch(ids, await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.getMany({
       clientProfileId: profile.clientProfileId,
       ids,
       // Metadata and its path must describe the selected/requested ID.  Path
@@ -1525,33 +1626,7 @@ export class ToolRegistry {
       resolveRef: false,
       attrIds,
       options
-    }));
-    if (!batch || !Array.isArray(batch.objects) || !Array.isArray(batch.failures)) {
-      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_shape", false);
-    }
-    const requestedIndexById = new Map<string, number>();
-    for (const [index, id] of ids.entries()) requestedIndexById.set(id, index);
-    if (requestedIndexById.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
-    const coveredIndexes = new Set<number>();
-    const returnedIds = new Set<string>();
-    for (const object of batch.objects) {
-      if (!isRepositoryObject(object)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "repository_object_shape", false);
-      const index = requestedIndexById.get(object.id);
-      if (index === undefined || returnedIds.has(object.id)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
-      returnedIds.add(object.id);
-      coveredIndexes.add(index);
-    }
-    for (const failure of batch.failures) {
-      if (!failure || typeof failure !== "object" || !Number.isSafeInteger(failure.index) || failure.index < 0 || failure.index >= ids.length) {
-        throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_index", false);
-      }
-      if (typeof failure.code !== "string" || !failure.code.trim()) {
-        throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_code", false);
-      }
-      if (coveredIndexes.has(failure.index)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
-      coveredIndexes.add(failure.index);
-    }
-    if (coveredIndexes.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_coverage", false);
+    })));
     const requiresDeterministicVerification = allVerificationPredicates.some((predicate) => predicate.verification === "deterministic");
     if (requiresDeterministicVerification && batch.failures.length) {
       throw new SearchOutcomeError("hydration_failure", "Search hydration returned per-ID failures");
@@ -2007,6 +2082,36 @@ function validateHardReferenceCandidates(value: unknown, maxResults: number): st
     seen.add(id);
   }
   return [...ids] as string[];
+}
+
+function validateRepositoryObjectBatch(ids: string[], batch: AdapterGetManyResult): AdapterGetManyResult {
+  if (!batch || !Array.isArray(batch.objects) || !Array.isArray(batch.failures)) {
+    throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_shape", false);
+  }
+  const requestedIndexById = new Map<string, number>();
+  for (const [index, id] of ids.entries()) requestedIndexById.set(id, index);
+  if (requestedIndexById.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+  const coveredIndexes = new Set<number>();
+  const returnedIds = new Set<string>();
+  for (const object of batch.objects) {
+    if (!isRepositoryObject(object)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "repository_object_shape", false);
+    const index = requestedIndexById.get(object.id);
+    if (index === undefined || returnedIds.has(object.id)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+    returnedIds.add(object.id);
+    coveredIndexes.add(index);
+  }
+  for (const failure of batch.failures) {
+    if (!failure || typeof failure !== "object" || !Number.isSafeInteger(failure.index) || failure.index < 0 || failure.index >= ids.length) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_index", false);
+    }
+    if (typeof failure.code !== "string" || !failure.code.trim()) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_failure_code", false);
+    }
+    if (coveredIndexes.has(failure.index)) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_identity", false);
+    coveredIndexes.add(failure.index);
+  }
+  if (coveredIndexes.size !== ids.length) throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "batch_coverage", false);
+  return batch;
 }
 
 function validateHardReferenceBatch(ids: string[], batch: AdapterGetManyResult): AdapterRepositoryObject[] {

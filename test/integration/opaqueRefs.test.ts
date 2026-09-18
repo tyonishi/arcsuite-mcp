@@ -67,6 +67,26 @@ function document(id: string): AdapterRepositoryObject {
   };
 }
 
+function hardReference(id: string): AdapterRepositoryObject {
+  return {
+    id,
+    objectClass: "hardReference",
+    nativeObjectClass: { ns: "rep", name: "system:hardreference" },
+    attributes: {
+      "rep:system:name": { type: "string", value: "Synthetic incoming relationship" },
+      "rep:system:modifiedon": { type: "datetime", value: "2026-09-01T03:00:00Z" }
+    },
+    pathObjects: [
+      {
+        id: "rep:mock:EXAMPLE_CABINET:folder-a",
+        name: "Synthetic folder",
+        objectClass: "folder",
+        nativeObjectClass: { ns: "rep", name: "system:folder" }
+      }
+    ]
+  };
+}
+
 test("opaque feature is opt-in and legacy output stays exact when omitted or explicit", async () => {
   const { rt } = await runtime(false);
   const original = (rt.adapter as any).searchIds.bind(rt.adapter);
@@ -324,6 +344,77 @@ test("cursor continuation inherits opaque contract without changing the legacy c
     assert.equal(Object.hasOwn(legacyFirst, "search_ref"), false);
     assert.equal(Object.hasOwn(legacySecond, "search_ref"), false);
     assert.equal(Object.hasOwn(legacySecond.results[0], "result_ref"), false);
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("opaque search, continuation, and replay never mint authority for hidden Hard References", async () => {
+  const { rt, auditPath } = await runtime(true, { MCP_SEARCH_DEFAULT_LIMIT: "1", MCP_SEARCH_MAX_LIMIT: "2" });
+  const documentA = "rep:mock:EXAMPLE_CABINET:visible-a";
+  const documentB = "rep:mock:EXAMPLE_CABINET:visible-b";
+  const relationshipId = "rep:mock:EXAMPLE_CABINET:hardref-hidden";
+  const objects = new Map<string, AdapterRepositoryObject>([
+    [documentA, document(documentA)],
+    [documentB, document(documentB)],
+    [relationshipId, hardReference(relationshipId)]
+  ]);
+  const adapter: any = rt.adapter;
+  adapter.searchIds = async () => [documentA, relationshipId, documentB];
+  adapter.getMany = async (request: any) => ({
+    objects: request.ids.flatMap((id: string) => {
+      const object = objects.get(id);
+      if (!object) return [];
+      const copy = structuredClone(object);
+      delete copy.pathObjects;
+      return [copy];
+    }),
+    failures: []
+  });
+  adapter.get = async (request: any) => {
+    const object = objects.get(request.id);
+    if (!object) throw new Error("missing synthetic object");
+    const copy = structuredClone(object);
+    if (!request.includePath) delete copy.pathObjects;
+    return copy;
+  };
+  const currentProfile = {
+    ...profile(),
+    allowedTools: ["arcsuite_search_documents", "arcsuite_continue_search", "arcsuite_replay_search"]
+  };
+
+  try {
+    const first: any = (await rt.tools.call(currentProfile, "arcsuite_search_documents", {
+      scope: "example_documents",
+      query: "synthetic",
+      limit: 1,
+      response_contract: "opaque_refs_v1"
+    })).structuredContent;
+    assert.equal(first.count, 1);
+    assert.equal(first.results[0].name, "synthetic.pdf");
+    assert.equal(typeof first.results[0].result_ref, "string");
+    assert.equal(typeof first.continuation_ref, "string");
+
+    const second: any = (await rt.tools.call(currentProfile, "arcsuite_continue_search", {
+      continuation_ref: first.continuation_ref
+    })).structuredContent;
+    assert.equal(second.count, 1);
+    assert.equal(second.results[0].name, "synthetic.pdf");
+    assert.equal(second.continuation_ref, null);
+
+    const replay: any = (await rt.tools.call(currentProfile, "arcsuite_replay_search", {
+      search_ref: first.search_ref,
+      target_scope: "example_documents"
+    })).structuredContent;
+    assert.equal(replay.count, 1);
+    assert.equal(typeof replay.results[0].result_ref, "string");
+
+    const serialized = JSON.stringify([first, second, replay]);
+    assert.equal(serialized.includes(relationshipId), false);
+    assert.equal(serialized.includes("hardreference"), false);
+    assert.equal(serialized.includes("hardReference"), false);
+    const audit = await readFile(auditPath, "utf8");
+    assert.equal(audit.includes(relationshipId), false);
   } finally {
     rt.stopValidationRetry();
   }
