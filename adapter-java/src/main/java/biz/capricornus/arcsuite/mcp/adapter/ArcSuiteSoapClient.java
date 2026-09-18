@@ -293,6 +293,7 @@ final class ArcSuiteSoapClient {
     }
 
     private static List<Map<String,Object>> parseIntegrityElements(Element resultEntry) {
+        assertNoUnexpectedText(resultEntry);
         Element elementsContainer = requiredSingleChild(resultEntry, "certValidElements");
         List<Element> recordChildren = elementChildren(resultEntry);
         if (recordChildren.size() != 1 || recordChildren.get(0) != elementsContainer) throw integrityShapeFailure();

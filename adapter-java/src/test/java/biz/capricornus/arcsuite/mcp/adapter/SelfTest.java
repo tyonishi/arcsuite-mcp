@@ -483,7 +483,7 @@ public final class SelfTest {
         if (Json.stringify(perIdFailure).contains("synthetic private failure")) throw new AssertionError("Failure details were exposed");
 
         Map<String, Object> placeholderResultWithFailure = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(validationResponse(
-                "<t:results><t:certValidElements/></t:results>",
+                "<t:results>\n  <t:certValidElements/>\n</t:results>",
                 "<t:failure><t:index>0</t:index><t:exception><t:message>synthetic private failure</t:message></t:exception></t:failure>")));
         if (!List.of().equals(placeholderResultWithFailure.get("certificates"))
                 || !"per_id".equals(placeholderResultWithFailure.get("failure"))) {
@@ -492,6 +492,9 @@ public final class SelfTest {
         if (Json.stringify(placeholderResultWithFailure).contains("synthetic private failure")) {
             throw new AssertionError("Placeholder failure details were exposed");
         }
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results>unexpected<t:certValidElements/></t:results>",
+                "<t:failure><t:index>0</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
 
         Map<String, Object> emptyValidation = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(
                 validationResponse("", "")));
