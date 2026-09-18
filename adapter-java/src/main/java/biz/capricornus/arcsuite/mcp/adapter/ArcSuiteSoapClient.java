@@ -250,7 +250,6 @@ final class ArcSuiteSoapClient {
 
         boolean hasResult = resultEntries.size() == 1;
         boolean hasFailure = failureEntries.size() == 1;
-        if (hasResult && hasFailure) throw integrityShapeFailure();
 
         LinkedHashMap<String,Object> out = new LinkedHashMap<>();
         if (hasFailure) {
@@ -263,6 +262,9 @@ final class ArcSuiteSoapClient {
             }
             int index = parseIntegrityInteger(indexElement.getTextContent());
             if (index != 0) throw integrityShapeFailure();
+            if (hasResult && !parseIntegrityElements(resultEntries.get(0)).isEmpty()) {
+                throw integrityShapeFailure();
+            }
             out.put("certificates", List.of());
             out.put("failure", "per_id");
             return out;
