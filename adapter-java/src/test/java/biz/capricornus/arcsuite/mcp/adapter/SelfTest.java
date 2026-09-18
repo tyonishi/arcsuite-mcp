@@ -482,6 +482,20 @@ public final class SelfTest {
         }
         if (Json.stringify(perIdFailure).contains("synthetic private failure")) throw new AssertionError("Failure details were exposed");
 
+        Map<String, Object> placeholderResultWithFailure = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(validationResponse(
+                "<t:results>\n  <t:certValidElements/>\n</t:results>",
+                "<t:failure><t:index>0</t:index><t:exception><t:message>synthetic private failure</t:message></t:exception></t:failure>")));
+        if (!List.of().equals(placeholderResultWithFailure.get("certificates"))
+                || !"per_id".equals(placeholderResultWithFailure.get("failure"))) {
+            throw new AssertionError("Empty result placeholder plus failure must preserve the per-input failure: " + placeholderResultWithFailure);
+        }
+        if (Json.stringify(placeholderResultWithFailure).contains("synthetic private failure")) {
+            throw new AssertionError("Placeholder failure details were exposed");
+        }
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results>unexpected<t:certValidElements/></t:results>",
+                "<t:failure><t:index>0</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
+
         Map<String, Object> emptyValidation = ArcSuiteSoapClient.parseIntegrityValidation(XmlUtil.parse(
                 validationResponse("", "")));
         if (!List.of().equals(emptyValidation.get("certificates")) || emptyValidation.get("failure") != null) {
@@ -502,7 +516,8 @@ public final class SelfTest {
         assertIntegrityResponseFailure(validationResponse("",
                 "<t:failure><t:index>0</t:index><t:exception/></t:failure>"
                         + "<t:failure><t:index>0</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
-        assertIntegrityResponseFailure(validationResponse("<t:results><t:certValidElements/></t:results>",
+        assertIntegrityResponseFailure(validationResponse(
+                "<t:results><t:certValidElements><t:results xsi:type=\"t:XAdESValidateResult\"><t:certId>17</t:certId><t:result>true</t:result><t:signer>synthetic signer</t:signer></t:results></t:certValidElements></t:results>",
                 "<t:failure><t:index>0</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
         assertIntegrityResponseFailure(validationResponse("", "<t:failure><t:index>1</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
         assertIntegrityResponseFailure(validationResponse("", "<t:failure><t:index>bad</t:index><t:exception/></t:failure>"), "ARCSUITE_UPSTREAM_ERROR");
