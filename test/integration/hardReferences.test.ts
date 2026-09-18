@@ -146,6 +146,176 @@ test("Hard Reference native class aliases are exact and the live lowercase form 
   assert.equal(JSON.stringify(data).includes(referenceIds[0]), false);
 });
 
+test("ordinary search snapshots exclude proven Hard References before public paging", async () => {
+  const rt = await runtime(undefined, { MCP_SEARCH_DEFAULT_LIMIT: "1", MCP_SEARCH_MAX_LIMIT: "2" });
+  const adapter: any = rt.adapter;
+  adapter.searchIds = async () => [targetId, referenceIds[0], otherTargetId];
+
+  const first: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: "synthetic",
+    limit: 1
+  })).structuredContent;
+  assert.equal(first.count, 1);
+  assert.deepEqual(first.results.map((item: any) => item.document_id), [targetId]);
+  assert.equal(typeof first.next_cursor, "string");
+
+  const second: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    cursor: first.next_cursor
+  })).structuredContent;
+  assert.equal(second.count, 1);
+  assert.deepEqual(second.results.map((item: any) => item.document_id), [otherTargetId]);
+  assert.equal(second.next_cursor, null);
+  assert.equal(second.truncated, false);
+  assert.equal(JSON.stringify([first, second]).includes(referenceIds[0]), false);
+
+  const audits = (await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  for (const audit of audits) assert.equal(JSON.stringify(audit).includes(referenceIds[0]), false);
+  assert.deepEqual(audits.map((audit) => audit.result_count), [1, 1]);
+});
+
+test("a leading or relationship-only Hard Reference cannot consume a public search slot", async () => {
+  const rt = await runtime(undefined, { MCP_SEARCH_DEFAULT_LIMIT: "1", MCP_SEARCH_MAX_LIMIT: "1" });
+  const adapter: any = rt.adapter;
+  adapter.searchIds = async () => [referenceIds[0], targetId];
+
+  const mixed: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: "synthetic",
+    limit: 1
+  })).structuredContent;
+  assert.equal(mixed.count, 1);
+  assert.equal(mixed.results[0].document_id, targetId);
+  assert.equal(mixed.next_cursor, null);
+
+  adapter.searchIds = async () => [...referenceIds];
+  const hiddenOnly: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: "synthetic",
+    limit: 1
+  })).structuredContent;
+  assert.equal(hiddenOnly.count, 0);
+  assert.deepEqual(hiddenOnly.results, []);
+  assert.deepEqual(hiddenOnly.failures, []);
+  assert.equal(hiddenOnly.next_cursor, null);
+  assert.equal(JSON.stringify(hiddenOnly).includes("hardref"), false);
+});
+
+test("ordinary folder discovery excludes proven Hard References before paging", async () => {
+  const rt = await runtime(undefined, { MCP_SEARCH_DEFAULT_LIMIT: "1", MCP_SEARCH_MAX_LIMIT: "2" });
+  const adapter: any = rt.adapter;
+  adapter.listIds = async () => [referenceIds[0], targetId];
+
+  const data: any = (await rt.tools.call(profile(), "arcsuite_list_folder", {
+    scope: "example_documents",
+    limit: 1
+  })).structuredContent;
+  assert.equal(data.count, 1);
+  assert.equal(data.results[0].document_id, targetId);
+  assert.equal(data.next_cursor, null);
+  assert.equal(JSON.stringify(data).includes(referenceIds[0]), false);
+});
+
+test("bounded discovery filtering preserves truthful snapshot-limited semantics", async () => {
+  const rt = await runtime(undefined, {
+    MCP_SEARCH_DEFAULT_LIMIT: "1",
+    MCP_SEARCH_MAX_LIMIT: "2",
+    MCP_PAGING_SNAPSHOT_MAX_IDS: "2"
+  });
+  const adapter: any = rt.adapter;
+  adapter.searchIds = async () => [targetId, referenceIds[0], otherTargetId];
+
+  const first: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: "synthetic",
+    limit: 1
+  })).structuredContent;
+  assert.equal(first.results[0].document_id, targetId);
+  assert.equal(first.snapshot_limited, true);
+  assert.equal(typeof first.next_cursor, "string");
+
+  const second: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    cursor: first.next_cursor
+  })).structuredContent;
+  assert.equal(second.results[0].document_id, otherTargetId);
+  assert.equal(second.snapshot_limited, true);
+  assert.equal(second.next_cursor, null);
+  assert.equal(second.truncated, true);
+});
+
+test("discovery cannot hide a Hard Reference without current root proof", async () => {
+  const rt = await runtime(await rootScopedConfig());
+  const adapter: any = rt.adapter;
+  adapter.searchIds = async () => [hiddenCandidateIds[1], targetId];
+
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "synthetic" }),
+    (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "root_scope"
+  );
+});
+
+test("strict batch retrieval does not reinterpret a Hard Reference as an omitted discovery result", async () => {
+  const rt = await runtime();
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_get_documents", {
+      scope: "example_documents",
+      document_ids: [referenceIds[0]]
+    }),
+    (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "object_type_not_allowed"
+  );
+});
+
+test("ordinary discovery hides only exact Hard Reference authority", async () => {
+  const cases = [
+    {
+      objectClass: "reference",
+      nativeObjectClass: { ns: "rep", name: "system:reference" },
+      expected: "visible"
+    },
+    {
+      objectClass: "unknown",
+      nativeObjectClass: { ns: "rep", name: "system:HARDREFERENCE" },
+      expected: "object_type_not_allowed"
+    },
+    {
+      objectClass: "hardReference",
+      nativeObjectClass: { ns: "rep", name: "system:reference" },
+      expected: "repository_object_shape"
+    }
+  ];
+
+  for (const current of cases) {
+    const rt = await runtime();
+    const adapter: any = rt.adapter;
+    adapter.searchIds = async () => [referenceIds[0]];
+    const originalGetMany = adapter.getMany.bind(adapter);
+    adapter.getMany = async (request: any) => {
+      const result = await originalGetMany(request);
+      result.objects = result.objects.map((object: any) => object.id === referenceIds[0]
+        ? { ...object, objectClass: current.objectClass, nativeObjectClass: current.nativeObjectClass }
+        : object);
+      return result;
+    };
+
+    if (current.expected === "visible") {
+      const data: any = (await rt.tools.call(profile(), "arcsuite_search_documents", {
+        scope: "example_documents",
+        query: "synthetic"
+      })).structuredContent;
+      assert.equal(data.count, 1);
+      assert.equal(data.results[0].document_id, referenceIds[0]);
+      assert.equal(data.results[0].object_class, "reference");
+    } else {
+      await assert.rejects(
+        () => rt.tools.call(profile(), "arcsuite_search_documents", { scope: "example_documents", query: "synthetic" }),
+        (error: any) => error?.category === current.expected
+      );
+    }
+  }
+});
+
 test("Hard Reference candidates require the native hardReference class independently of document scope types", async () => {
   const rt = await runtime();
   const adapter: any = rt.adapter;
