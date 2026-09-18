@@ -39,6 +39,16 @@ async function rootScopedRuntime() {
   return runtime({}, scopeFile);
 }
 
+async function folderPolicyDisabledRuntime() {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-drawer-policy-"));
+  const source = await readFile(resolve("config/scopes.mock.yaml"), "utf8");
+  const config = source.replace(/^      - folder\r?\n/m, "");
+  assert.notEqual(config, source, "synthetic scope must remove the public folder policy");
+  const scopeFile = join(dir, "scopes.yaml");
+  await writeFile(scopeFile, config);
+  return runtime({}, scopeFile);
+}
+
 function profile() {
   return {
     clientProfileId: "dev-profile",
@@ -166,6 +176,48 @@ test("drawer include_path remains bound to the configured root", async () => {
     () => rt.tools.call(profile(), "arcsuite_list_folder", { scope: "example_documents", include_path: true }),
     (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN" && error?.category === "root_scope"
   );
+});
+
+test("an explicit drawer requires public folder policy before child-list dispatch", async () => {
+  const rt = await folderPolicyDisabledRuntime();
+  const repository = installRepository(rt);
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_list_folder", { scope: "example_documents", folder_id: drawerAId }),
+    (error: any) => error?.stableCode === "ARCSUITE_FORBIDDEN"
+      && error?.category === "object_type_not_allowed"
+      && error?.retryable === false
+  );
+  assert.equal(repository.listCalls(), 0);
+});
+
+test("a root-returned drawer requires public folder policy", async () => {
+  const rt = await folderPolicyDisabledRuntime();
+  installRepository(rt);
+  let rejected: any;
+  try {
+    await rt.tools.call(profile(), "arcsuite_list_folder", { scope: "example_documents" });
+  } catch (error) {
+    rejected = error;
+  }
+  assert.equal(rejected?.stableCode, "ARCSUITE_FORBIDDEN");
+  assert.equal(rejected?.category, "object_type_not_allowed");
+  assert.equal(rejected?.retryable, false);
+  assert.equal(JSON.stringify(rejected).includes(drawerAId), false);
+});
+
+test("drawer path proof audit records both repository-object operations", async () => {
+  const rt = await runtime();
+  installRepository(rt);
+  await rt.tools.call(profile(), "arcsuite_list_folder", {
+    scope: "example_documents",
+    include_path: true
+  });
+  const auditLines = (await readFile(rt.config.auditLogPath, "utf8")).trim().split("\n");
+  const audit = JSON.parse(auditLines.at(-1)!);
+  assert.ok(audit.soap_operations.includes("listRepositoryObjectIds"));
+  assert.ok(audit.soap_operations.includes("getRepositoryObjects"));
+  assert.ok(audit.soap_operations.includes("getRepositoryObject"));
+  assert.ok(audit.soap_operations.includes("getRepositoryObjectPath"));
 });
 
 test("an explicit ordinary folder remains a valid navigation target", async () => {

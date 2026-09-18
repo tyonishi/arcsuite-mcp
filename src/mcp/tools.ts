@@ -1253,12 +1253,10 @@ export class ToolRegistry {
     }
     this.assertRepositoryObjectInScope(scope, object);
     this.assertObjectIdInScope(scope, object.id, objectId);
-    if (!isExactDrawerObject(object)) {
-      if (object.objectClass !== "folder") {
-        throw new McpToolError("ARCSUITE_FORBIDDEN", "object_type_not_allowed", false);
-      }
-      this.assertAllowedObjectType(scope, object);
+    if (!isExactDrawerObject(object) && object.objectClass !== "folder") {
+      throw new McpToolError("ARCSUITE_FORBIDDEN", "object_type_not_allowed", false);
     }
+    this.assertFolderNavigationResultType(scope, object);
     this.assertRootScope(object, scope);
   }
 
@@ -1736,7 +1734,12 @@ export class ToolRegistry {
   }
 
   private assertFolderNavigationResultType(scope: SemanticScope, object: AdapterRepositoryObject): void {
-    if (isExactDrawerObject(object)) return;
+    if (isExactDrawerObject(object)) {
+      if (!this.scopes.isAllowedObjectType(scope, "folder")) {
+        throw new McpToolError("ARCSUITE_FORBIDDEN", "object_type_not_allowed", false);
+      }
+      return;
+    }
     this.assertAllowedObjectType(scope, object);
   }
 
@@ -1753,6 +1756,7 @@ export class ToolRegistry {
         this.assertRootScope(object, scope);
         continue;
       }
+      this.recordSoapOperation(operations, "getRepositoryObject");
       const proof = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
         clientProfileId: profile.clientProfileId,
         id: object.id,
