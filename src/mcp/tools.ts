@@ -175,8 +175,13 @@ export class ToolRegistry {
           const scope = this.allowedScope(profile, parsed.scope);
           if (parsed.textSearchMode !== "none" && !parsed.query) throw new TypeError("text_search_mode requires a text query");
           const allowedTextSearchModes = scope.search?.full_text_modes ?? ["none"];
-          if (!allowedTextSearchModes.includes(parsed.textSearchMode)) {
-            throw new TypeError(`text_search_mode ${parsed.textSearchMode} is not allowed for scope ${parsed.scope}`);
+          if (parsed.query) {
+            if (!allowedTextSearchModes.length) {
+              throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "full_text_not_available", false);
+            }
+            if (!allowedTextSearchModes.includes(parsed.textSearchMode)) {
+              throw new TypeError(`text_search_mode ${parsed.textSearchMode} is not allowed for scope ${parsed.scope}`);
+            }
           }
           let page;
           if (parsed.cursor) {
@@ -1032,7 +1037,7 @@ export class ToolRegistry {
       });
       const text = authority.appliedQuery.text;
       const textMode = text?.mode ?? "none";
-      if (!(targetScope.search?.full_text_modes ?? ["none"]).includes(textMode)) throw new Error("text_mode");
+      if (text && !(targetScope.search?.full_text_modes ?? ["none"]).includes(textMode)) throw new Error("text_mode");
       const appliedQuery = buildAppliedQuery(
         verificationPlan,
         text ? [...text.terms] : [],
@@ -2315,7 +2320,7 @@ function readDocumentByRefJsonSchema(
 function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: AppConfig): ToolDefinition[] {
   const descriptions = scopes.describe(profile.allowedScopes);
   const scopeValues = descriptions.map((item) => item.id);
-  const scopeSummary = descriptions.map((item) => `${item.id} [${item.filters.map((filter) => `${filter.name}:${filter.type}(${filter.operators.join(",")})`).join(", ") || "no semantic filters"}; text=${item.full_text_modes.join(",")}]`).join("; ");
+  const scopeSummary = descriptions.map((item) => `${item.id} [${item.filters.map((filter) => `${filter.name}:${filter.type}(${filter.operators.join(",")})`).join(", ") || "no semantic filters"}; text=${item.full_text_modes.length ? item.full_text_modes.join(",") : "disabled"}]`).join("; ");
   const scope = { type: "string", enum: scopeValues };
   const documentId = { type: "string", pattern: "^rep:", minLength: 5, maxLength: 2048 };
   const opaqueRef = { type: "string", minLength: 1, maxLength: 1024 };

@@ -241,11 +241,81 @@ test("omitted full-text configuration defaults to none and rejects other modes",
   const rt = await runtime(scopeFile);
   const capabilities: any = (await rt.tools.call(profile(), "arcsuite_describe_capabilities", {})).structuredContent;
   assert.deepEqual(capabilities.scopes[0].full_text_modes, ["none"]);
+  let searchDispatches = 0;
+  const originalSearch = (rt.adapter as any).searchIds.bind(rt.adapter);
+  (rt.adapter as any).searchIds = async (...args: unknown[]) => {
+    searchDispatches += 1;
+    return originalSearch(...args);
+  };
+  await rt.tools.call(profile(), "arcsuite_search_documents", {
+    scope: "example_documents",
+    query: "DOC"
+  });
+  assert.equal(searchDispatches, 1);
   await assert.rejects(() => rt.tools.call(profile(), "arcsuite_search_documents", {
     scope: "example_documents",
     query: "DOC",
     text_search_mode: "stemming"
   }), (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT");
+  assert.equal(searchDispatches, 1);
+});
+
+test("disabled full-text scopes retain filter search but reject text before provider dispatch", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-full-text-disabled-"));
+  const scopeFile = join(dir, "scopes.yaml");
+  const source = await readFile(resolve("config/scopes.mock.yaml"), "utf8");
+  await writeFile(scopeFile, source.replace(
+    "full_text_modes: [none, stemming, thesaurus]",
+    "full_text_modes: []"
+  ));
+  const rt = await runtime(scopeFile);
+  const p = profile();
+  const capability: any = (await rt.tools.call(p, "arcsuite_describe_capabilities", {})).structuredContent;
+  assert.deepEqual(capability.scopes[0].full_text_modes, []);
+  const searchDefinition = rt.tools.list(p).find((tool) => tool.name === "arcsuite_search_documents");
+  assert.match(searchDefinition?.description ?? "", /text=disabled/);
+
+  const requests: any[] = [];
+  const originalSearch = (rt.adapter as any).searchIds.bind(rt.adapter);
+  (rt.adapter as any).searchIds = async (request: any) => {
+    requests.push(structuredClone(request));
+    return originalSearch(request);
+  };
+
+  await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { name: { operator: "like", value: "*DOC*" } }
+  });
+  await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { name: { operator: "like", value: "*DOC*" } },
+    text_search_mode: "none"
+  });
+  assert.equal(requests.length, 2);
+  assert.equal(requests.every((request) => request.text === undefined), true);
+
+  for (const args of [
+    { scope: "example_documents", query: "DOC" },
+    { scope: "example_documents", query: "DOC", filters: { name: { operator: "like", value: "*DOC*" } } }
+  ]) {
+    await assert.rejects(
+      () => rt.tools.call(p, "arcsuite_search_documents", args),
+      (error: any) => error?.stableCode === "ARCSUITE_NOT_AVAILABLE"
+        && error?.category === "full_text_not_available"
+        && error?.retryable === false
+    );
+  }
+  assert.equal(requests.length, 2);
+
+  await assert.rejects(
+    () => rt.tools.call(p, "arcsuite_search_documents", {
+      scope: "example_documents",
+      filters: { name: { operator: "like", value: "*DOC*" } },
+      text_search_mode: "stemming"
+    }),
+    (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+  );
+  assert.equal(requests.length, 2);
 });
 
 test("synthetic search, metadata, batch, folder, revisions, content info and text read work", async () => {

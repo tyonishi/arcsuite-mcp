@@ -258,6 +258,48 @@ test("scope registry validates typed operator and enum configuration", () => {
   assert.deepEqual(registry.describe(["typed"])[0].filters[0].values, ["active"]);
 });
 
+test("scope registry distinguishes disabled, default, and enabled full-text capabilities", () => {
+  const scope = (id: string) => ({
+    description: "Synthetic full-text capability scope",
+    enabled: true,
+    arcsuite: { cabinet_alias: `FULL_TEXT_${id}`, cabinet_id: `rep:mock:FULL_TEXT_${id}`, root_object_id: null, resolve_references: true },
+    allowed_object_types: ["document"],
+    default_attr_ids: [{ ns: "rep", name: "system:name" }],
+    semantic_attributes: {}
+  });
+  const registry = new ScopeRegistry({
+    version: 1,
+    scopes: {
+      omitted: scope("OMITTED"),
+      disabled: { ...scope("DISABLED"), search: { full_text_modes: [] } },
+      enabled: { ...scope("ENABLED"), search: { full_text_modes: ["none", "stemming"] } }
+    }
+  } as any);
+  assert.deepEqual(registry.describe(["omitted"])[0].full_text_modes, ["none"]);
+  assert.deepEqual(registry.describe(["disabled"])[0].full_text_modes, []);
+  assert.deepEqual(registry.describe(["enabled"])[0].full_text_modes, ["none", "stemming"]);
+
+  for (const fullTextModes of [
+    [],
+    ["none"],
+    ["none", "stemming"],
+    ["none", "thesaurus"],
+    ["none", "stemming", "thesaurus"]
+  ]) {
+    assert.doesNotThrow(() => new ScopeRegistry({
+      version: 1,
+      scopes: { valid: { ...scope("VALID"), search: { full_text_modes: fullTextModes } } }
+    } as any));
+  }
+
+  for (const fullTextModes of [["stemming"], ["thesaurus"], ["none", "none"], ["unknown"]]) {
+    assert.throws(() => new ScopeRegistry({
+      version: 1,
+      scopes: { invalid: { ...scope("INVALID"), search: { full_text_modes: fullTextModes } } }
+    } as any));
+  }
+});
+
 test("scope registry validates additive content-label configuration and preserves primary", () => {
   const base = {
     description: "Synthetic content-label scope",

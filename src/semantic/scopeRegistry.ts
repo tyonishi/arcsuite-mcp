@@ -346,12 +346,12 @@ function validateSearchConfiguration(search: SemanticScope["search"], scopeId: s
   if (search === undefined) return;
   if (!search || typeof search !== "object" || Array.isArray(search)) throw new Error(`Scope ${scopeId} search must be an object`);
   if (search.full_text_modes === undefined) return;
-  if (!Array.isArray(search.full_text_modes) || !search.full_text_modes.length) throw new Error(`Scope ${scopeId} full_text_modes must be a non-empty array`);
+  if (!Array.isArray(search.full_text_modes)) throw new Error(`Scope ${scopeId} full_text_modes must be an array`);
   if (new Set(search.full_text_modes).size !== search.full_text_modes.length) throw new Error(`Scope ${scopeId} full_text_modes contains duplicates`);
   for (const mode of search.full_text_modes) {
     if (!FULL_TEXT_SEARCH_MODES.includes(mode)) throw new Error(`Unsupported full-text mode ${String(mode)} for scope ${scopeId}`);
   }
-  if (!search.full_text_modes.includes("none")) throw new Error(`Scope ${scopeId} full_text_modes must include none`);
+  if (search.full_text_modes.length && !search.full_text_modes.includes("none")) throw new Error(`Scope ${scopeId} full_text_modes must include none`);
 }
 
 function validateRelationshipConfiguration(relationships: SemanticScope["relationships"], scopeId: string): void {

@@ -283,10 +283,19 @@ search:
   full_text_modes: [none]
 ```
 
-Only explicitly configured modes can be selected by a client. `stemming` and
-`thesaurus` require operator/live-environment qualification and are never
-auto-enabled from the WSDL. A non-`none` mode is rejected when no text query is
-provided.
+`none` is an actual full-text search mode. To disable full-text queries for a
+scope while retaining semantic attribute/filter search, configure an explicit
+empty list:
+
+```yaml
+search:
+  full_text_modes: []
+```
+
+Only explicitly configured modes can be selected by a client. Every non-empty
+list must include `none`. `stemming` and `thesaurus` require operator/live-
+environment qualification and are never auto-enabled from the WSDL. A non-
+`none` mode is rejected when no text query is provided.
 
 ### Optional document deep link
 

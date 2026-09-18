@@ -102,6 +102,19 @@ async function twoScopeRuntime() {
   return runtime(true, path);
 }
 
+async function twoScopeFullTextRuntime(targetModes: string[]) {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-p2-full-text-scopes-"));
+  const registry = parseYaml(await readFile(resolve("config/scopes.mock.yaml"), "utf8")) as any;
+  registry.scopes.other_documents = structuredClone(registry.scopes.example_documents);
+  registry.scopes.other_documents.description = "Synthetic full-text target documents";
+  registry.scopes.other_documents.arcsuite.cabinet_alias = "OTHER_CABINET";
+  registry.scopes.other_documents.arcsuite.cabinet_id = "rep:mock:OTHER_CABINET";
+  registry.scopes.other_documents.search.full_text_modes = targetModes;
+  const path = join(dir, "scopes.yaml");
+  await writeFile(path, stringifyYaml(registry), "utf8");
+  return runtime(true, path);
+}
+
 function profile(overrides: Record<string, unknown> = {}) {
   return {
     tokenSha256: createHash("sha256").update("test-token").digest("hex"),
@@ -911,6 +924,78 @@ test("replay rejects unauthorized or incompatible targets before search dispatch
     assert.equal(searchDispatches, 0);
   } finally {
     rt.stopValidationRetry();
+  }
+});
+
+test("replay applies full-text capability only to text-bearing search authority", async () => {
+  const disabled = await twoScopeFullTextRuntime([]);
+  const both = profile({ allowedScopes: ["example_documents", "other_documents"] });
+  try {
+    const filterSource: any = (await disabled.tools.call(both, "arcsuite_search_documents", {
+      scope: "example_documents",
+      filters: { page_count: { operator: "gte", value: 10 } },
+      response_contract: "opaque_refs_v1"
+    })).structuredContent;
+    let targetDispatches = 0;
+    (disabled.adapter as any).searchIds = async () => {
+      targetDispatches += 1;
+      return [];
+    };
+    const filterReplay: any = (await disabled.tools.call(both, "arcsuite_replay_search", {
+      search_ref: filterSource.search_ref,
+      target_scope: "other_documents"
+    })).structuredContent;
+    assert.equal(filterReplay.count, 0);
+    assert.equal(targetDispatches, 1);
+
+    const sourceRuntime = await twoScopeFullTextRuntime([]);
+    try {
+      const textSource: any = (await sourceRuntime.tools.call(both, "arcsuite_search_documents", {
+        scope: "example_documents",
+        query: "DOC",
+        response_contract: "opaque_refs_v1"
+      })).structuredContent;
+      let disabledDispatches = 0;
+      (sourceRuntime.adapter as any).searchIds = async () => {
+        disabledDispatches += 1;
+        return [];
+      };
+      await assert.rejects(
+        () => sourceRuntime.tools.call(both, "arcsuite_replay_search", {
+          search_ref: textSource.search_ref,
+          target_scope: "other_documents"
+        }),
+        (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+          && error?.recovery === "replay_query_incompatible"
+      );
+      assert.equal(disabledDispatches, 0);
+    } finally {
+      sourceRuntime.stopValidationRetry();
+    }
+  } finally {
+    disabled.stopValidationRetry();
+  }
+
+  const enabled = await twoScopeFullTextRuntime(["none"]);
+  try {
+    const textSource: any = (await enabled.tools.call(both, "arcsuite_search_documents", {
+      scope: "example_documents",
+      query: "DOC",
+      response_contract: "opaque_refs_v1"
+    })).structuredContent;
+    let enabledDispatches = 0;
+    (enabled.adapter as any).searchIds = async () => {
+      enabledDispatches += 1;
+      return [];
+    };
+    const textReplay: any = (await enabled.tools.call(both, "arcsuite_replay_search", {
+      search_ref: textSource.search_ref,
+      target_scope: "other_documents"
+    })).structuredContent;
+    assert.equal(textReplay.count, 0);
+    assert.equal(enabledDispatches, 1);
+  } finally {
+    enabled.stopValidationRetry();
   }
 });
 
