@@ -1495,10 +1495,15 @@ export class ToolRegistry {
     operations: string[]
   ): Promise<string[]> {
     if (!ids.length) return [];
+    if (ids.length > this.config.pagingSnapshotMaxIds + 1) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "discovery_ids_limit", false);
+    }
     if (new Set(ids).size !== ids.length) throw new Error("DUPLICATE_PAGING_IDS");
     // Classify the bounded provider candidate set before public paging so an
     // invisible relationship cannot consume a page slot or cursor position.
     const hidden = new Set<string>();
+    const classified: AdapterRepositoryObject[] = [];
+    const unclassified: string[] = [];
     const root = scope.arcsuite.root_object_id;
     const options = root ? ["getRepositoryObjects.searchMode", `getRepositoryObjects.searchMode.searchRegion=${root}`] : [];
     for (let offset = 0; offset < ids.length; offset += this.config.batchMaxIds) {
@@ -1514,12 +1519,40 @@ export class ToolRegistry {
           options
         })
       ));
-      this.assertRepositoryObjectsInScope(scope, batch.objects);
-      for (const object of batch.objects) {
-        if (!isHardReferenceObject(object)) continue;
-        await this.proveDiscoveryHardReferenceScope(profile, scope, object, operations);
-        hidden.add(object.id);
+      classified.push(...batch.objects);
+      for (const failure of batch.failures) {
+        unclassified.push(chunk[failure.index]);
       }
+    }
+    const unresolved: string[] = [];
+    for (const id of unclassified) {
+      this.recordSoapOperation(operations, "getRepositoryObject");
+      try {
+        const object = await this.sessions.executeRead(profile.clientProfileId, () => this.adapter.get({
+          clientProfileId: profile.clientProfileId,
+          id,
+          resolveRef: false,
+          includePath: false,
+          attrIds: scope.default_attr_ids,
+          options: []
+        }));
+        if (!isRepositoryObject(object) || object.id !== id) {
+          throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "discovery_classification_identity", false);
+        }
+        classified.push(object);
+      } catch (error) {
+        if (error instanceof McpToolError && error.category === "discovery_classification_identity") throw error;
+        unresolved.push(id);
+      }
+    }
+    if (unresolved.length && classified.some((object) => isHardReferenceObject(object))) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "discovery_classification_failure", false);
+    }
+    this.assertRepositoryObjectsInScope(scope, classified);
+    for (const object of classified) {
+      if (!isHardReferenceObject(object)) continue;
+      await this.proveDiscoveryHardReferenceScope(profile, scope, object, operations);
+      hidden.add(object.id);
     }
     return ids.filter((id) => !hidden.has(id));
   }

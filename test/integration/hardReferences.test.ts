@@ -245,6 +245,76 @@ test("bounded discovery filtering preserves truthful snapshot-limited semantics"
   assert.equal(second.truncated, true);
 });
 
+test("discovery rejects over-limit provider candidate sets before classification", async () => {
+  for (const tool of ["arcsuite_search_documents", "arcsuite_list_folder"] as const) {
+    const rt = await runtime(undefined, {
+      MCP_SEARCH_DEFAULT_LIMIT: "1",
+      MCP_SEARCH_MAX_LIMIT: "2",
+      MCP_PAGING_SNAPSHOT_MAX_IDS: "2"
+    });
+    const adapter: any = rt.adapter;
+    const candidates = [targetId, otherTargetId, referenceIds[0], referenceIds[1]];
+    if (tool === "arcsuite_search_documents") adapter.searchIds = async () => candidates;
+    else adapter.listIds = async () => candidates;
+    let hydrationCalls = 0;
+    adapter.getMany = async () => {
+      hydrationCalls += 1;
+      throw new Error("classification must not start");
+    };
+
+    await assert.rejects(
+      () => rt.tools.call(profile(), tool, {
+        scope: "example_documents",
+        ...(tool === "arcsuite_search_documents" ? { query: "synthetic" } : {})
+      }),
+      (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR"
+        && error?.category === "discovery_ids_limit"
+    );
+    assert.equal(hydrationCalls, 0);
+  }
+});
+
+test("discovery classification failures reject atomically without exposing candidate identities", async () => {
+  for (const tool of ["arcsuite_search_documents", "arcsuite_list_folder"] as const) {
+    const rt = await runtime();
+    const adapter: any = rt.adapter;
+    const candidates = [referenceIds[0], targetId];
+    if (tool === "arcsuite_search_documents") adapter.searchIds = async () => candidates;
+    else adapter.listIds = async () => candidates;
+    const originalGetMany = adapter.getMany.bind(adapter);
+    adapter.getMany = async (request: any) => {
+      const result = await originalGetMany(request);
+      const failedIndex = request.ids.indexOf(targetId);
+      result.objects = result.objects.filter((object: any) => object.id !== targetId);
+      result.failures.push({ index: failedIndex, code: "ARCSUITE_FORBIDDEN" });
+      return result;
+    };
+    const originalGet = adapter.get.bind(adapter);
+    adapter.get = async (request: any) => {
+      if (request.id === targetId) throw new Error("synthetic classification failure");
+      return originalGet(request);
+    };
+
+    let rejected: any;
+    try {
+      await rt.tools.call(profile(), tool, {
+        scope: "example_documents",
+        ...(tool === "arcsuite_search_documents" ? { query: "synthetic" } : {})
+      });
+    } catch (error) {
+      rejected = error;
+    }
+    assert.equal(rejected?.stableCode, "ARCSUITE_UPSTREAM_ERROR");
+    assert.equal(rejected?.category, "discovery_classification_failure");
+    assert.equal(JSON.stringify(rejected).includes(targetId), false);
+    assert.equal(JSON.stringify(rejected).includes(referenceIds[0]), false);
+
+    const audit = await readFile(rt.config.auditLogPath, "utf8");
+    assert.equal(audit.includes(targetId), false);
+    assert.equal(audit.includes(referenceIds[0]), false);
+  }
+});
+
 test("discovery cannot hide a Hard Reference without current root proof", async () => {
   const rt = await runtime(await rootScopedConfig());
   const adapter: any = rt.adapter;
