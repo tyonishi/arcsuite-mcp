@@ -75,6 +75,7 @@ test("startup validation retries until a slow adapter becomes ready", async () =
       const attributes = (request.attributes ?? []).map(({ attrId }) => ({
         ...attrId,
         dataType: dataTypeFor(attrId.name),
+        multiValued: false,
         searchable: true,
         sortable: true,
         ...(attrId.name === "system:status" ? {

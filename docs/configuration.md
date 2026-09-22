@@ -258,6 +258,38 @@ semantic_attributes:
       retired: {ns: "rep", name: "RETIRED"}
 ```
 
+#### Multi-valued string attributes
+
+Multi-valued semantics are an explicit opt-in and are currently limited to
+`type: string`. The physical schema must report `STRING_TYPE`,
+`multiValued: true`, and `searchable: true`; otherwise startup validation
+fails closed. Existing declarations that omit `multi_valued` remain scalar,
+but a scalar declaration is rejected when the physical schema is multi-valued.
+
+```yaml
+semantic_attributes:
+  part_number:
+    attr_id:
+      ns: "rep"
+      name: "user:YOUR_MULTI_VALUE_PART_NUMBER"
+    type: string
+    multi_valued: true
+    operators: [eq, like]
+    allow_wildcards: true
+    max_length: 30
+```
+
+The MCP search input remains one scalar string, not an array. Equality means
+that at least one authoritative physical member exactly equals the requested
+string; values are not trimmed, normalized, case-folded, or deduplicated. The
+result semantic value is an ordered `string[]`. `like` remains provider-
+authoritative, including wildcard behavior; the gateway validates the
+multi-valued shape but does not reimplement matching. ArcSuite `ONEVAL` remains
+internal/server-owned transport behavior. `ALLVAL` and caller-selected search
+modes are not exposed. Multi-valued integer, number, boolean, date, datetime,
+enum, i18n, ID, and other types are unsupported and fail configuration
+validation closed.
+
 For `I18N_STRING_TYPE` enums, `values` entries use `ns`/`name` and must be
 present in the validated schema's `enumLabels`. For a string-valued enumerated
 attribute (`STRING_TYPE` with `enumerated: true`), use a literal mapping such

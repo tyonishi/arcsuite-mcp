@@ -7,6 +7,20 @@ import type { AttributeValue } from "../../src/arcsuite/types.ts";
 
 const registry = ScopeRegistry.load(resolve("config/scopes.mock.yaml"));
 const scope = registry.get("example_documents");
+const multiScope = {
+  ...scope,
+  semantic_attributes: {
+    ...scope.semantic_attributes,
+    part_number: {
+      attr_id: { ns: "rep", name: "user:example_multi_part_number" },
+      type: "string",
+      multi_valued: true,
+      operators: ["eq", "like"],
+      allow_wildcards: true,
+      max_length: 30
+    }
+  }
+} as any;
 const schemas: Record<string, any> = {
   document_number: { ns: "rep", name: "user:example_document_number", dataType: "STRING_TYPE", searchable: true },
   name: { ns: "rep", name: "system:name", dataType: "STRING_TYPE", searchable: true },
@@ -44,6 +58,39 @@ test("string equality mismatch fails closed", () => {
   assert.throws(
     () => verifySemanticPredicate(predicate, attr(predicate, { type: "string", value: "DOC-OTHER" })),
     (error) => error instanceof SemanticVerificationError && error.reason === "predicate_mismatch"
+  );
+});
+
+test("multi-valued string equality verifies exact member containment", () => {
+  const predicate = canonicalizeFilter(multiScope, "part_number", { operator: "eq", value: "B" }, {
+    ns: "rep", name: "user:example_multi_part_number", dataType: "STRING_TYPE", multiValued: true, searchable: true
+  });
+  assert.equal(predicate.multiValued, true);
+  assert.equal((predicate.condition.value as { type: "string"; value: string }).value, "B");
+  assert.doesNotThrow(() => verifySemanticPredicate(predicate, attr(predicate, { type: "string[]", values: ["A", "B"] })));
+  assert.throws(
+    () => verifySemanticPredicate(predicate, attr(predicate, { type: "string[]", values: ["A", "C"] })),
+    (error) => error instanceof SemanticVerificationError && error.reason === "predicate_mismatch"
+  );
+});
+
+test("multi-valued string equality rejects scalar and malformed member shapes", () => {
+  const predicate = canonicalizeFilter(multiScope, "part_number", "B", {
+    ns: "rep", name: "user:example_multi_part_number", dataType: "STRING_TYPE", multiValued: true, searchable: true
+  });
+  assert.throws(
+    () => verifySemanticPredicate(predicate, attr(predicate, { type: "string", value: "B" })),
+    (error) => error instanceof SemanticVerificationError && error.reason === "malformed_attribute"
+  );
+  assert.throws(
+    () => verifySemanticPredicate(predicate, attr(predicate, { type: "string[]", values: ["A", 2] } as any)),
+    (error) => error instanceof SemanticVerificationError && error.reason === "malformed_attribute"
+  );
+  const sparse: string[] = [];
+  sparse[1] = "B";
+  assert.throws(
+    () => verifySemanticPredicate(predicate, attr(predicate, { type: "string[]", values: sparse })),
+    (error) => error instanceof SemanticVerificationError && error.reason === "malformed_attribute"
   );
 });
 
@@ -107,6 +154,19 @@ test("enum equality uses physical identity and LIKE remains provider authority",
   assert.equal(like.semanticValue, "*.pdf");
   assert.equal(like.verification, "provider");
   assert.doesNotThrow(() => verifySemanticPredicate(like, {}));
+});
+
+test("multi-valued LIKE remains provider-authoritative but requires the configured shape", () => {
+  const like = canonicalizeFilter(multiScope, "part_number", { operator: "like", value: "PART-*" }, {
+    ns: "rep", name: "user:example_multi_part_number", dataType: "STRING_TYPE", multiValued: true, searchable: true
+  });
+  assert.equal(like.verification, "provider");
+  assert.equal(like.multiValued, true);
+  assert.doesNotThrow(() => verifySemanticPredicate(like, attr(like, { type: "string[]", values: ["NOT-A-MATCH"] })));
+  assert.throws(
+    () => verifySemanticPredicate(like, attr(like, { type: "string", value: "PART-001" })),
+    (error) => error instanceof SemanticVerificationError && error.reason === "malformed_attribute"
+  );
 });
 
 test("enum canonical values remain aliases for string-valued physical mappings", () => {

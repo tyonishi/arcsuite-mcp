@@ -75,6 +75,22 @@ the authenticated profile:
 The response deliberately omits cabinet IDs, roots, service DNs, and physical
 Attribute IDs.
 
+When a scope explicitly enables a multi-valued string semantic field,
+`arcsuite_describe_capabilities` adds only `multi_valued: true` to that
+semantic filter. Scalar filters omit the property for backward-compatible
+discovery. For example:
+
+```json
+{
+  "name": "part_number",
+  "type": "string",
+  "operators": ["eq", "like"],
+  "allow_wildcards": true,
+  "max_length": 30,
+  "multi_valued": true
+}
+```
+
 ## Semantic search reliability
 
 Structured semantic filters are canonicalized once inside the gateway. The same
@@ -262,6 +278,14 @@ Enum discovery returns only configured semantic aliases. For an
 string-valued enumerated attribute, the mapping uses `{ "value": "..." }` and
 is serialized as `StringValue`. A declared type that does not match the
 validated schema fails startup or the request closed.
+
+Multi-valued string filters still take a scalar string value. `eq` is exact
+member containment against the authoritative physical `string[]`; the public
+result preserves provider order as a `string[]`. `like` stays provider-
+authoritative and is never reimplemented in the gateway. ArcSuite `ONEVAL` is
+internal/server-owned behavior, and `ALLVAL`, multi-value mode selectors, and
+array-valued filter inputs are not public MCP options. Unsupported multi-valued
+semantic types fail closed during scope validation.
 
 If `next_cursor` is non-null, continue the same result snapshot with only the
 scope and cursor:

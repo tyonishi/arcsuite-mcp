@@ -28,7 +28,7 @@ function asInt(value: AttributeValue | undefined): number | undefined {
   return undefined;
 }
 
-function asPublicValue(value: AttributeValue | undefined, config: SemanticAttributeConfig): string | number | boolean | null {
+function asPublicValue(value: AttributeValue | undefined, config: SemanticAttributeConfig): string | string[] | number | boolean | null {
   if (!value) return null;
   if (config.type === "enum") {
     const key = value.type === "i18n"
@@ -39,6 +39,15 @@ function asPublicValue(value: AttributeValue | undefined, config: SemanticAttrib
     const match = key === undefined ? undefined : Object.entries(config.values ?? {}).find(([, physical]) => semanticEnumPhysicalKey(physical) === key);
     if (match) return match[0];
     throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "semantic_enum_value_unmapped", false);
+  }
+  if (config.type === "string" && config.multi_valued === true) {
+    if (value.type !== "string[]" || !Array.isArray(value.values)) {
+      throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "semantic_attribute_shape", false);
+    }
+    for (const member of value.values) {
+      if (typeof member !== "string") throw new McpToolError("ARCSUITE_UPSTREAM_ERROR", "semantic_attribute_shape", false);
+    }
+    return [...value.values];
   }
   if (value.type === "string" || value.type === "date" || value.type === "datetime" || value.type === "id") return value.value;
   if (value.type === "int" || value.type === "long" || value.type === "double" || value.type === "boolean") return value.value;

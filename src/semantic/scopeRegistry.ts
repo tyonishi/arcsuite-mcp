@@ -21,6 +21,7 @@ export type SemanticAttributeConfig = {
   attr_id: AttributeId;
   type: SemanticType;
   operators: SemanticOperator[];
+  multi_valued?: boolean;
   allow_wildcards?: boolean;
   max_length?: number;
   values?: Record<string, SemanticEnumValueConfig>;
@@ -69,6 +70,7 @@ export type PublicScopeDescription = {
     allow_wildcards: boolean;
     max_length?: number;
     values?: string[];
+    multi_valued?: true;
   }>;
   full_text_modes: FullTextSearchMode[];
   ui_deep_link: boolean;
@@ -138,6 +140,12 @@ export class ScopeRegistry {
         if (!Object.hasOwn(SEMANTIC_OPERATOR_MATRIX, cfg.type)) throw new Error(`Unsupported semantic type ${String(cfg.type)} for ${name}.${semanticName}`);
         if (!Array.isArray(cfg.operators) || !cfg.operators.length) throw new Error(`Semantic attribute ${name}.${semanticName} requires operators`);
         if (new Set(cfg.operators).size !== cfg.operators.length) throw new Error(`Semantic attribute ${name}.${semanticName} has duplicate operators`);
+        if (cfg.multi_valued !== undefined && typeof cfg.multi_valued !== "boolean") {
+          throw new Error(`Semantic attribute ${name}.${semanticName} multi_valued must be a boolean`);
+        }
+        if (cfg.multi_valued === true && cfg.type !== "string") {
+          throw new Error(`Semantic attribute ${name}.${semanticName} multi_valued can only be enabled for string types`);
+        }
         if (cfg.max_length !== undefined && (!Number.isSafeInteger(cfg.max_length) || cfg.max_length < 1 || cfg.max_length > 4096)) {
           throw new Error(`Semantic attribute ${name}.${semanticName} has invalid max_length`);
         }
@@ -221,7 +229,8 @@ export class ScopeRegistry {
           operators: [...cfg.operators],
           allow_wildcards: Boolean(cfg.allow_wildcards),
           max_length: cfg.max_length,
-          values: cfg.type === "enum" ? Object.keys(cfg.values ?? {}) : undefined
+          ...(cfg.type === "enum" ? { values: Object.keys(cfg.values ?? {}) } : {}),
+          ...(cfg.multi_valued === true ? { multi_valued: true as const } : {})
         })),
         full_text_modes: fullTextModes(scope),
         ui_deep_link: Boolean(scope.ui?.document_url_template),
@@ -430,6 +439,8 @@ function safeLiteralString(value: unknown, maxLength: number): value is string {
 }
 
 function validateSemanticSchema(cfg: SemanticAttributeConfig, schema: AttributeSchemaInfo): string | undefined {
+  if (schema.multiValued === true && cfg.multi_valued !== true) return "scalar_schema_is_multi_valued";
+  if (cfg.multi_valued === true && schema.multiValued !== true) return "multi_valued_schema_flag_missing";
   const dataType = schema.dataType;
   switch (cfg.type) {
     case "string":
