@@ -456,6 +456,77 @@ test("scope registry rejects string enum literals outside adapter constraints", 
   }
 });
 
+test("scope registry validates opt-in multi-valued string schema cardinality", async () => {
+  const base = {
+    description: "Synthetic multi-valued scope",
+    enabled: true,
+    arcsuite: { cabinet_alias: "MULTI_VALUE", cabinet_id: "rep:mock:MULTI_VALUE", root_object_id: null, resolve_references: true },
+    allowed_object_types: ["document"],
+    default_attr_ids: [{ ns: "rep", name: "system:name" }]
+  };
+  const multiAttribute = {
+    attr_id: { ns: "rep", name: "user:example_multi_part_number" },
+    type: "string",
+    multi_valued: true,
+    operators: ["eq", "like"],
+    allow_wildcards: true,
+    max_length: 30
+  };
+  const scalarAttribute = {
+    attr_id: { ns: "rep", name: "user:example_multi_part_number" },
+    type: "string",
+    operators: ["eq", "like"],
+    allow_wildcards: true,
+    max_length: 30
+  };
+  const makeRegistry = (semanticAttribute: unknown) => new ScopeRegistry({
+    version: 1,
+    scopes: { multi_value: { ...base, semantic_attributes: { part_number: semanticAttribute } } }
+  } as any);
+  const validate = (registry: ScopeRegistry, schema: Record<string, unknown>) => registry.validateAgainstAdapter({
+    validateSchema: async (request: { attributes: Array<{ attrId: { ns: string; name: string } }> }) => ({
+      ok: true,
+      version: {},
+      cabinet: {},
+      errors: [],
+      attributes: request.attributes.map(({ attrId }) => ({
+        ...attrId,
+        dataType: "STRING_TYPE",
+        searchable: true,
+        multiValued: false,
+        ...(attrId.name === "user:example_multi_part_number" ? schema : {})
+      }))
+    })
+  } as any, "synthetic-profile");
+
+  await assert.doesNotReject(validate(makeRegistry(multiAttribute), { multiValued: true, searchable: true }));
+  await assert.rejects(
+    validate(makeRegistry(multiAttribute), { multiValued: false, searchable: true }),
+    /part_number:multi_valued_schema_flag_missing/
+  );
+  await assert.rejects(
+    validate(makeRegistry(scalarAttribute), { multiValued: true, searchable: true }),
+    /part_number:scalar_schema_is_multi_valued/
+  );
+  await assert.rejects(
+    validate(makeRegistry(multiAttribute), { multiValued: true, searchable: false }),
+    /not_searchable:rep:user:example_multi_part_number/
+  );
+  await assert.doesNotReject(validate(makeRegistry(scalarAttribute), { multiValued: false, searchable: true }));
+  assert.throws(
+    () => new ScopeRegistry({ version: 1, scopes: { multi_value: { ...base, semantic_attributes: {
+      part_number: { ...multiAttribute, type: "integer" }
+    } } } } as any),
+    /only be enabled for string types/
+  );
+  assert.throws(
+    () => new ScopeRegistry({ version: 1, scopes: { multi_value: { ...base, semantic_attributes: {
+      part_number: { ...multiAttribute, multi_valued: "true" }
+    } } } } as any),
+    /multi_valued must be a boolean/
+  );
+});
+
 test("scope object-type allowlist rejects unexpected adapter classes", () => {
   const registry = ScopeRegistry.load(resolve("config/scopes.mock.yaml"));
   const scope = registry.get("example_documents");

@@ -6,6 +6,7 @@ export type NativeObjectClass = { ns: string; name: string };
 
 export type AttributeValue =
   | { type: "string"; value: string }
+  | { type: "string[]"; values: string[] }
   | { type: "int"; value: number }
   | { type: "long"; value: number }
   | { type: "double"; value: number }
@@ -225,6 +226,6 @@ export type NormalizedDocument = {
   status?: string;
   content_labels: string[];
   content_available: boolean;
-  semantic_attributes?: Record<string, string | number | boolean | null>;
+  semantic_attributes?: Record<string, string | string[] | number | boolean | null>;
   open_url?: string;
 };

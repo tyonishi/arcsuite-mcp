@@ -35,6 +35,7 @@ public final class SelfTest {
         materializedFileNameSanitization();
         successfulContentMaterialization();
         typedAttributeValueShapes();
+        multiValuedStringAttributeShapes();
         attributeSchemaMetadataParsing();
         responseIdParsing();
         revisionContractParsing();
@@ -1096,6 +1097,57 @@ public final class SelfTest {
                 + "<t:mode>AND</t:mode><t:option><t:searchRegion><t:id>rep:example:cabinet</t:id><t:depth>0</t:depth></t:searchRegion>"
                 + "<t:textSearchMode>THESAURUS</t:textSearchMode></t:option><t:limit>5</t:limit>";
         if (!expectedSearch.equals(search)) throw new AssertionError("Unexpected search request body: " + search);
+    }
+
+    static void multiValuedStringAttributeShapes() {
+        String objectXml = "<repositoryObject xmlns=\"" + ArcSuiteSoapClient.TYPES_NS + "\"><id>rep:example:document-001</id>"
+                + "<objectClass ns=\"rep\" name=\"system:document\"/><attributes>"
+                + "<attribute ns=\"rep\" name=\"user:example_multi_part_number\"><attributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"t:StringValues\" xmlns:t=\"" + ArcSuiteSoapClient.TYPES_NS + "\">"
+                + "<strings>PART-001</strings><strings>PART-001</strings><strings>PART-002</strings></attributeValue></attribute>"
+                + "</attributes></repositoryObject>";
+        Map<String, Object> parsed = ArcSuiteSoapClient.parseRepositoryObject(XmlUtil.parse(objectXml).getDocumentElement());
+        Object value = ((Map<?, ?>) parsed.get("attributes")).get("rep:user:example_multi_part_number");
+        if (!(value instanceof Map<?, ?> valueMap) || !"string[]".equals(valueMap.get("type"))
+                || !List.of("PART-001", "PART-001", "PART-002").equals(valueMap.get("values"))) {
+            throw new AssertionError("StringValues were not decoded in provider order: " + value);
+        }
+
+        String emptyXml = objectXml.replace("<strings>PART-001</strings><strings>PART-001</strings><strings>PART-002</strings>", "");
+        Map<String, Object> emptyParsed = ArcSuiteSoapClient.parseRepositoryObject(XmlUtil.parse(emptyXml).getDocumentElement());
+        Object empty = ((Map<?, ?>) emptyParsed.get("attributes")).get("rep:user:example_multi_part_number");
+        if (!(empty instanceof Map<?, ?> emptyMap) || !"string[]".equals(emptyMap.get("type"))
+                || !List.of().equals(emptyMap.get("values"))) {
+            throw new AssertionError("Empty StringValues were not represented intentionally: " + empty);
+        }
+
+        String scalarXml = objectXml.replace("xsi:type=\"t:StringValues\"", "xsi:type=\"t:StringValue\"")
+                .replace("<strings>PART-001</strings><strings>PART-001</strings><strings>PART-002</strings>", "<string>PART-001</string>");
+        Map<String, Object> scalarParsed = ArcSuiteSoapClient.parseRepositoryObject(XmlUtil.parse(scalarXml).getDocumentElement());
+        Object scalar = ((Map<?, ?>) scalarParsed.get("attributes")).get("rep:user:example_multi_part_number");
+        if (!(scalar instanceof Map<?, ?> scalarMap) || !"string".equals(scalarMap.get("type"))
+                || !"PART-001".equals(scalarMap.get("value"))) {
+            throw new AssertionError("Scalar StringValue behavior changed: " + scalar);
+        }
+
+        String malformedXml = objectXml.replace("<strings>PART-001</strings><strings>PART-001</strings><strings>PART-002</strings>", "<unexpected>PART-001</unexpected>");
+        Map<String, Object> malformedParsed = ArcSuiteSoapClient.parseRepositoryObject(XmlUtil.parse(malformedXml).getDocumentElement());
+        Object malformed = ((Map<?, ?>) malformedParsed.get("attributes")).get("rep:user:example_multi_part_number");
+        if (!(malformed instanceof Map<?, ?> malformedMap) || !"unknown".equals(malformedMap.get("type"))
+                || !"StringValues".equals(malformedMap.get("rawType"))) {
+            throw new AssertionError("Malformed StringValues did not fail safely: " + malformed);
+        }
+
+        String condition = ArcSuiteSoapClient.attributeConditions("attrCondition", List.of(Map.of(
+                "attrId", Map.of("ns", "rep", "name", "user:example_multi_part_number"),
+                "operator", "EQUAL",
+                "value", Map.of("type", "string", "value", "PART-002")
+        )));
+        if (!condition.contains("mode=\"ONEVAL\"")
+                || !condition.contains("xsi:type=\"t:StringValue\"")
+                || !condition.contains("<t:string>PART-002</t:string>")
+                || condition.contains("ALLVAL")) {
+            throw new AssertionError("Multi-valued semantic search did not retain scalar ONEVAL wire behavior: " + condition);
+        }
     }
 
     static void attributeSchemaMetadataParsing() {

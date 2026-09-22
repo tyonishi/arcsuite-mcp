@@ -138,6 +138,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
         attributes: {
           "rep:system:name": { type: "string", value: "DOC-000001_example.pdf" },
           "rep:user:example_document_number": { type: "string", value: "DOC-000001" },
+          "rep:user:example_multi_part_number": { type: "string[]", values: ["PART-001", "PART-002"] },
           "rep:system:modifiedon": { type: "datetime", value: "2026-09-01T03:00:00Z" },
           "rep:user:page_count": { type: "long", value: 10 },
           "rep:user:approved": { type: "boolean", value: true },
@@ -164,6 +165,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
         attributes: {
           "rep:system:name": { type: "string", value: "DOC-000002_example.txt" },
           "rep:user:example_document_number": { type: "string", value: "DOC-000002" },
+          "rep:user:example_multi_part_number": { type: "string[]", values: ["PART-003"] },
           "rep:system:modifiedon": { type: "datetime", value: "2026-08-15T03:00:00Z" },
           "rep:user:page_count": { type: "long", value: 4 },
           "rep:user:approved": { type: "boolean", value: false },
@@ -343,16 +345,16 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
       const key = `${condition.attrId.ns}:${condition.attrId.name}`;
       docs = docs.filter((doc) => {
         const v: any = doc.attributes[key];
-        const text = v?.value ?? v?.name ?? "";
+        const values = v?.type === "string[]" && Array.isArray(v.values) ? v.values : [v?.value ?? v?.name ?? ""];
         const target = "value" in condition.value ? condition.value.value : `${condition.value.ns}:${condition.value.name}`;
-        if (condition.operator === "EQUAL") return text === target || `${v?.ns ?? ""}:${v?.name ?? ""}` === target;
+        if (condition.operator === "EQUAL") return values.some((value: unknown) => value === target) || `${v?.ns ?? ""}:${v?.name ?? ""}` === target;
         if (condition.operator === "LIKE") {
           if (typeof target !== "string") return false;
           const regex = new RegExp(wildcardToRegex(target), "i");
-          return regex.test(String(text));
+          return values.some((value: unknown) => regex.test(String(value)));
         }
-        if (condition.operator === "GREATER_EQUAL") return compareValues(text, target) >= 0;
-        if (condition.operator === "LESS_EQUAL") return compareValues(text, target) <= 0;
+        if (condition.operator === "GREATER_EQUAL") return compareValues(values[0], target) >= 0;
+        if (condition.operator === "LESS_EQUAL") return compareValues(values[0], target) <= 0;
         return false;
       });
     }
@@ -373,6 +375,7 @@ export class MockArcSuiteAdapterClient implements ArcSuiteAdapterClient {
 
 function mockSchema(attrId: { ns: string; name: string }) {
   const base = { ...attrId, searchable: true, sortable: true, modifiable: false, multiValued: false, required: false, minInclusive: true, maxInclusive: true };
+  if (attrId.name.includes("example_multi_part_number")) return { ...base, sortable: false, multiValued: true, dataType: "STRING_TYPE", minLength: 1, maxLength: 30, minCount: 0, maxCount: 30 };
   if (attrId.name.includes("modified")) return { ...base, dataType: "DATE_TIME_TYPE" };
   if (attrId.name.includes("published_on")) return { ...base, dataType: "DATE_TYPE" };
   if (attrId.name.includes("page_count")) return { ...base, dataType: "LONG_TYPE", minIntegralValue: "0", maxIntegralValue: "9223372036854775807" };

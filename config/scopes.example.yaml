@@ -82,6 +82,21 @@ scopes:
         operators: [eq, like]
         allow_wildcards: true
         max_length: 255
+      # Multi-valued semantics are opt-in and string-only. The physical
+      # AttributeSchema must report STRING_TYPE, multiValued=true, and
+      # searchable=true at startup. MCP filters still take one scalar string;
+      # equality means exact containment in the authoritative member array.
+      # ArcSuite ONEVAL remains internal/server-owned. ALLVAL and mode
+      # selectors are not exposed. Results contain an ordered string[] value.
+      # part_number:
+      #   attr_id:
+      #     ns: "rep"
+      #     name: "user:YOUR_MULTI_VALUE_PART_NUMBER"
+      #   type: string
+      #   multi_valued: true
+      #   operators: [eq, like]
+      #   allow_wildcards: true
+      #   max_length: 30
       modified_after:
         attr_id:
           ns: "rep"

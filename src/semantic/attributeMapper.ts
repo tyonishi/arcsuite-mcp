@@ -11,6 +11,7 @@ export type SemanticFilterInput = string | number | boolean | SemanticFilterPred
 export type CanonicalSemanticPredicate = {
   semanticName: string;
   semanticType: SemanticAttributeConfig["type"];
+  multiValued: boolean;
   operator: SemanticOperator;
   semanticValue: string | number | boolean;
   condition: AdapterSearchCondition;
@@ -75,6 +76,7 @@ export function canonicalizeFilter(
   return Object.freeze({
     semanticName,
     semanticType: cfg.type,
+    multiValued: cfg.multi_valued === true,
     operator: predicate.operator,
     semanticValue: canonical.semanticValue,
     condition: freezeCondition(canonical.condition),
@@ -95,14 +97,22 @@ export function verifySemanticPredicate(
   predicate: CanonicalSemanticPredicate,
   attributes: Record<string, AttributeValue>
 ): void {
-  if (predicate.verification === "provider") return;
   const key = attrKey(predicate.condition.attrId);
   const actual = attributes[key];
+  if (predicate.verification === "provider") {
+    if (predicate.multiValued) {
+      if (!actual) throw new SemanticVerificationError("attribute_missing", `${predicate.semanticName} authoritative attribute is missing`);
+      if (!hasMultiValuedStringShape(actual)) {
+        throw new SemanticVerificationError("malformed_attribute", `${predicate.semanticName} authoritative attribute is malformed`);
+      }
+    }
+    return;
+  }
   if (!actual) throw new SemanticVerificationError("attribute_missing", `${predicate.semanticName} authoritative attribute is missing`);
-  if (!hasAuthoritativeShape(predicate.condition.value, actual)) {
+  if (!hasAuthoritativeShape(predicate.condition.value, actual, predicate.multiValued)) {
     throw new SemanticVerificationError("malformed_attribute", `${predicate.semanticName} authoritative attribute is malformed`);
   }
-  if (!matchesCondition(predicate.condition, actual)) {
+  if (!matchesCondition(predicate.condition, actual, predicate.multiValued)) {
     throw new SemanticVerificationError("predicate_mismatch", `${predicate.semanticName} authoritative value does not satisfy the search predicate`);
   }
 }
@@ -116,12 +126,14 @@ function freezeCondition(condition: AdapterSearchCondition): AdapterSearchCondit
 }
 
 function scalarConditionValue(condition: AdapterSearchCondition): string | number | boolean {
-  if (!("value" in condition.value)) throw new Error("Semantic condition has no public scalar value");
+  if (condition.value.type === "i18n") throw new Error("Semantic condition has no public scalar value");
   return condition.value.value;
 }
 
-function matchesCondition(condition: AdapterSearchCondition, actual: AttributeValue): boolean {
+function matchesCondition(condition: AdapterSearchCondition, actual: AttributeValue, multiValued: boolean): boolean {
   if (condition.value.type === "string") {
+    const expected = condition.value.value;
+    if (multiValued) return actual.type === "string[]" && actual.values.some((value) => value === expected);
     if (actual.type !== "string") return false;
     return compareText(actual.value, condition.value.value, condition.operator);
   }
@@ -157,9 +169,11 @@ function matchesCondition(condition: AdapterSearchCondition, actual: AttributeVa
   return false;
 }
 
-function hasAuthoritativeShape(expected: AdapterSearchCondition["value"], actual: AttributeValue): boolean {
+function hasAuthoritativeShape(expected: AdapterSearchCondition["value"], actual: AttributeValue, multiValued: boolean): boolean {
   if (!actual || typeof actual !== "object") return false;
-  if (expected.type === "string") return actual.type === "string" && typeof actual.value === "string";
+  if (expected.type === "string") {
+    return multiValued ? hasMultiValuedStringShape(actual) : actual.type === "string" && typeof actual.value === "string";
+  }
   if (expected.type === "int" || expected.type === "long") {
     return actual.type === expected.type && isAuthoritativeInteger(actual.value, expected.type);
   }
@@ -171,6 +185,14 @@ function hasAuthoritativeShape(expected: AdapterSearchCondition["value"], actual
     && actual.type === "i18n"
     && typeof actual.ns === "string"
     && typeof actual.name === "string";
+}
+
+function hasMultiValuedStringShape(actual: AttributeValue): actual is { type: "string[]"; values: string[] } {
+  if (actual.type !== "string[]" || !Array.isArray(actual.values)) return false;
+  for (const value of actual.values) {
+    if (typeof value !== "string") return false;
+  }
+  return true;
 }
 
 function isAuthoritativeInteger(value: unknown, type: "int" | "long"): value is number {
@@ -232,6 +254,8 @@ function stringCondition(
   schema?: AttributeSchemaInfo
 ): AdapterSearchCondition {
   if (schema && schema.dataType !== "STRING_TYPE") throw new TypeError(`${name} schema type is not STRING_TYPE`);
+  if (cfg.multi_valued === true && schema?.multiValued !== true) throw new TypeError(`${name} schema is not multi-valued`);
+  if (cfg.multi_valued !== true && schema?.multiValued === true) throw new TypeError(`${name} schema is multi-valued`);
   if (schema?.enumerated === true) throw new TypeError(`${name} schema is enumerated; use enum semantic type`);
   const value = stringValue(predicate.value, name);
   validateStringConstraints(name, value, cfg, schema, predicate.operator === "eq");

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -20,6 +21,28 @@ async function runtime(scopeFile = resolve("config/scopes.mock.yaml"), overrides
     MCP_VALIDATE_ON_STARTUP: "true",
     ...overrides
   });
+}
+
+async function multiValuedScopeFile(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-multi-value-scope-"));
+  const source = await readFile(resolve("config/scopes.mock.yaml"), "utf8");
+  const marker = "      lifecycle:";
+  if (!source.includes(marker)) throw new Error("synthetic scope marker is missing");
+  const partNumber = [
+    "      part_number:",
+    "        attr_id:",
+    "          ns: \"rep\"",
+    "          name: \"user:example_multi_part_number\"",
+    "        type: string",
+    "        multi_valued: true",
+    "        operators: [eq, like]",
+    "        allow_wildcards: true",
+    "        max_length: 30",
+    ""
+  ].join("\n");
+  const path = join(dir, "scopes.yaml");
+  await writeFile(path, source.replace(marker, `${partNumber}${marker}`), "utf8");
+  return path;
 }
 
 function profile() {
@@ -76,6 +99,105 @@ test("capability discovery exposes only semantic scope metadata", async () => {
   assert.deepEqual(data.scopes[0].filters.find((filter: any) => filter.name === "lifecycle").values, ["active", "retired"]);
   assert.equal(JSON.stringify(data).includes("EXAMPLE_CABINET"), false);
   assert.equal(JSON.stringify(data).includes("example_document_number"), false);
+});
+
+test("opt-in multi-valued string search keeps scalar input, member equality, normalization, and opaque authority", async () => {
+  const scopeFile = await multiValuedScopeFile();
+  const rt = await runtime(scopeFile, {
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({
+      active_kid: "synthetic",
+      keys: [{ kid: "synthetic", secret_base64url: Buffer.alloc(32, 0x5a).toString("base64url") }]
+    })
+  });
+  const p = {
+    ...profile(),
+    tokenSha256: createHash("sha256").update("test-token").digest("hex")
+  } as any;
+  const capabilities: any = (await rt.tools.call(p, "arcsuite_describe_capabilities", {})).structuredContent;
+  const partNumber = capabilities.scopes[0].filters.find((filter: any) => filter.name === "part_number");
+  assert.deepEqual(partNumber, {
+    name: "part_number",
+    type: "string",
+    operators: ["eq", "like"],
+    allow_wildcards: true,
+    max_length: 30,
+    multi_valued: true
+  });
+  assert.equal(JSON.stringify(capabilities).includes("example_multi_part_number"), false);
+
+  const first: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { part_number: "PART-001" }
+  })).structuredContent;
+  assert.equal(first.count, 1);
+  assert.deepEqual(first.results[0].semantic_attributes.part_number, ["PART-001", "PART-002"]);
+
+  const exact: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { part_number: { operator: "eq", value: "PART-002" } }
+  })).structuredContent;
+  assert.equal(exact.count, 1);
+  assert.deepEqual(exact.results[0].semantic_attributes.part_number, ["PART-001", "PART-002"]);
+  assert.deepEqual(exact.applied_query.filters.predicates, [{ name: "part_number", type: "string", operator: "eq", value: "PART-002" }]);
+
+  const missing: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { part_number: "PART-MISSING" }
+  })).structuredContent;
+  assert.equal(missing.count, 0);
+
+  const compound: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: {
+      part_number: { operator: "eq", value: "PART-002" },
+      document_number: "DOC-000001"
+    }
+  })).structuredContent;
+  assert.equal(compound.count, 1);
+  assert.equal(compound.results[0].document_id, "rep:mock:EXAMPLE_CABINET:1001");
+
+  const like: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { part_number: { operator: "like", value: "PART-*" } }
+  })).structuredContent;
+  assert.equal(like.count, 2);
+
+  const opaque: any = (await rt.tools.call(p, "arcsuite_search_documents", {
+    scope: "example_documents",
+    filters: { part_number: "PART-002" },
+    response_contract: "opaque_refs_v1"
+  })).structuredContent;
+  assert.equal(typeof opaque.search_ref, "string");
+  assert.equal(typeof opaque.results[0].result_ref, "string");
+  assert.deepEqual(opaque.applied_query.filters.predicates, [{ name: "part_number", type: "string", operator: "eq", value: "PART-002" }]);
+
+  await assert.rejects(
+    () => rt.tools.call(p, "arcsuite_search_documents", { scope: "example_documents", filters: { part_number: ["PART-001"] } }),
+    (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+  );
+});
+
+test("multi-valued LIKE fails closed when authoritative hydration has a scalar shape", async () => {
+  const scopeFile = await multiValuedScopeFile();
+  const rt = await runtime(scopeFile);
+  const originalGetMany = (rt.adapter as any).getMany.bind(rt.adapter);
+  (rt.adapter as any).getMany = async (request: any) => {
+    const batch = await originalGetMany(request);
+    for (const object of batch.objects) {
+      object.attributes["rep:user:example_multi_part_number"] = { type: "string", value: "PART-001" };
+    }
+    return batch;
+  };
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      filters: { part_number: { operator: "like", value: "PART-*" } }
+    }),
+    (error: any) => error?.stableCode === "ARCSUITE_UPSTREAM_ERROR"
+  );
+  const audit = await readFile(rt.config.auditLogPath, "utf8");
+  assert.match(audit, /"search_outcome":"metadata_unverifiable"/);
 });
 
 test("typed semantic predicates and configured full-text modes work in the mock", async () => {

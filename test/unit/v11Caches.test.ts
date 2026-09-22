@@ -130,6 +130,7 @@ test("search snapshots retain an immutable private verification plan without cha
   const plan: any = [{
     semanticName: "page_count",
     semanticType: "integer",
+    multiValued: false,
     operator: "gte",
     verification: "deterministic",
     condition: {

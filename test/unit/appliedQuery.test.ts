@@ -12,6 +12,7 @@ function predicate(
   return {
     semanticName,
     semanticType,
+    multiValued: false,
     operator,
     semanticValue,
     verification: "deterministic",

@@ -976,7 +976,7 @@ export class ToolRegistry {
     const seen = new Set<string>();
     for (const attr of [
       ...scope.default_attr_ids,
-      ...record.verificationPlan!.filter((predicate) => predicate.verification === "deterministic").map((predicate) => predicate.condition.attrId)
+      ...record.verificationPlan!.filter((predicate) => predicate.verification === "deterministic" || predicate.multiValued).map((predicate) => predicate.condition.attrId)
     ]) {
       const key = attrKey(attr);
       if (!seen.has(key)) {
@@ -1648,7 +1648,7 @@ export class ToolRegistry {
       ? [...verificationPlansById.values()].flatMap((plan) => [...plan])
       : [...(verificationPlan ?? [])];
     for (const predicate of allVerificationPredicates) {
-      if (predicate.verification !== "deterministic") continue;
+      if (predicate.verification !== "deterministic" && !predicate.multiValued) continue;
       addAttribute(predicate.condition.attrId);
     }
     this.recordSoapOperation(operations, "getRepositoryObjects");
