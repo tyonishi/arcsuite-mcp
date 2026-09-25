@@ -3,6 +3,11 @@ version: 1
 scopes:
   example_documents:
     description: "Example document repository"
+    guidance:
+      aliases: ["example repository", "sample document set"]
+      use_when: ["The request concerns the synthetic example collection."]
+      not_for: ["Do not use this scope for component inventory."]
+      examples: ["Find a sample document"]
     enabled: true
 
     arcsuite:
@@ -74,6 +79,12 @@ scopes:
         operators: [eq, like]
         allow_wildcards: true
         max_length: 128
+        description: "Synthetic identifier assigned to an example document."
+        guidance:
+          aliases: ["document number", "document ID"]
+          use_when: ["The request identifies one example document."]
+          not_for: ["This is not a component or part identifier."]
+          examples: ["Find document number DOC-000001"]
       name:
         attr_id:
           ns: "rep"

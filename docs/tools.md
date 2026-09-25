@@ -52,6 +52,12 @@ the authenticated profile:
     {
       "id": "example_documents",
       "description": "Example document repository",
+      "guidance": {
+        "aliases": ["example repository", "sample document set"],
+        "use_when": ["The request concerns the synthetic example collection."],
+        "not_for": ["Do not use this scope for component inventory."],
+        "examples": ["Find a sample document"]
+      },
       "object_types": ["document", "folder", "reference"],
       "filters": [
         {
@@ -59,7 +65,14 @@ the authenticated profile:
           "type": "string",
           "operators": ["eq", "like"],
           "allow_wildcards": true,
-          "max_length": 128
+          "max_length": 128,
+          "description": "Synthetic identifier assigned to an example document.",
+          "guidance": {
+            "aliases": ["document number", "document ID"],
+            "use_when": ["The request identifies one example document."],
+            "not_for": ["This is not a component or part identifier."],
+            "examples": ["Find document number DOC-000001"]
+          }
         }
       ],
       "full_text_modes": ["none"],
@@ -74,6 +87,15 @@ the authenticated profile:
 
 The response deliberately omits cabinet IDs, roots, service DNs, and physical
 Attribute IDs.
+
+Configured scope guidance and semantic-attribute descriptions/guidance appear
+in `arcsuite_describe_capabilities` only for profile-allowed scopes. Guidance
+fields are `aliases`, `use_when`, `not_for`, and `examples`; they explain the
+canonical semantic vocabulary but are advisory and cannot grant access or
+change search behavior. An alias such as `部品番号` may help a client choose
+`part_number`, but `filters: {"部品番号": "PART-001"}` is invalid. Search
+continues to accept configured canonical semantic names only. These optional
+fields are omitted when not configured.
 
 When a scope explicitly enables a multi-valued string semantic field,
 `arcsuite_describe_capabilities` adds only `multi_valued: true` to that

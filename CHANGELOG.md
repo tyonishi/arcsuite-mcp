@@ -2,6 +2,9 @@
 
 ## 0.1.0 - unreleased
 
+- Added ADR 0008 and bounded, trusted semantic scope/attribute guidance in
+  `arcsuite_describe_capabilities`; aliases remain advisory and do not change
+  search or authorization behavior.
 - Initial public-ready tree for ArcSuite MCP Server.
 - Added generic semantic R1 Core Read and R2 Content Read tools.
 - Added the current TypeScript MCP SDK Streamable HTTP handler with a

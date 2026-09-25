@@ -17,10 +17,19 @@ export type SemanticEnumValueConfig =
   | { ns: string; name: string; value?: never }
   | { value: string; ns?: never; name?: never };
 
+export type SemanticGuidanceConfig = {
+  aliases?: string[];
+  use_when?: string[];
+  not_for?: string[];
+  examples?: string[];
+};
+
 export type SemanticAttributeConfig = {
   attr_id: AttributeId;
   type: SemanticType;
   operators: SemanticOperator[];
+  description?: string;
+  guidance?: SemanticGuidanceConfig;
   multi_valued?: boolean;
   allow_wildcards?: boolean;
   max_length?: number;
@@ -29,6 +38,7 @@ export type SemanticAttributeConfig = {
 
 export type SemanticScope = {
   description: string;
+  guidance?: SemanticGuidanceConfig;
   enabled: boolean;
   arcsuite: {
     service_dn?: string;
@@ -62,12 +72,15 @@ export type ScopeRegistryData = { version: number; scopes: Record<string, Semant
 export type PublicScopeDescription = {
   id: string;
   description: string;
+  guidance?: SemanticGuidanceConfig;
   object_types: string[];
   filters: Array<{
     name: string;
     type: SemanticAttributeConfig["type"];
     operators: SemanticAttributeConfig["operators"];
     allow_wildcards: boolean;
+    description?: string;
+    guidance?: SemanticGuidanceConfig;
     max_length?: number;
     values?: string[];
     multi_valued?: true;
@@ -91,6 +104,14 @@ export const SEMANTIC_OPERATOR_MATRIX: Record<SemanticType, readonly SemanticOpe
 
 export const FULL_TEXT_SEARCH_MODES: readonly FullTextSearchMode[] = ["none", "stemming", "thesaurus"];
 
+const MAX_SEMANTIC_DESCRIPTION_LENGTH = 512;
+const MAX_GUIDANCE_ENTRY_LENGTH = 256;
+const MAX_GUIDANCE_ENTRIES_PER_FIELD = 8;
+const MAX_SEMANTIC_ATTRIBUTE_METADATA_LENGTH = 2048;
+const MAX_SCOPE_GUIDANCE_LENGTH = 4096;
+const MAX_SCOPE_GUIDANCE_METADATA_LENGTH = 32768;
+const GUIDANCE_FIELDS = ["aliases", "use_when", "not_for", "examples"] as const;
+
 export class ScopeRegistry {
   readonly data: ScopeRegistryData;
   private readonly validatedSchemas = new Map<string, AttributeSchemaInfo>();
@@ -105,6 +126,11 @@ export class ScopeRegistry {
       if (!scope || typeof scope !== "object") throw new Error(`Scope ${name} must be an object`);
       if (!/^[a-z][a-z0-9_]{0,63}$/.test(name)) throw new Error(`Invalid scope name: ${name}`);
       if (!scope.description || typeof scope.description !== "string") throw new Error(`Scope ${name} requires description`);
+      const scopeGuidanceLength = validateSemanticGuidance(scope.guidance, `Scope ${name}`);
+      if (scopeGuidanceLength > MAX_SCOPE_GUIDANCE_LENGTH) {
+        throw new Error(`Scope ${name} guidance must not exceed ${MAX_SCOPE_GUIDANCE_LENGTH} characters`);
+      }
+      let scopeGuidanceMetadataLength = scopeGuidanceLength;
       if (typeof scope.enabled !== "boolean") throw new Error(`Scope ${name} requires enabled boolean`);
       if (!scope.arcsuite || typeof scope.arcsuite !== "object") throw new Error(`Scope ${name} requires arcsuite configuration`);
       if (typeof scope.arcsuite.cabinet_id !== "string" || !/^rep:\S+$/.test(scope.arcsuite.cabinet_id)) throw new Error(`Scope ${name} requires a valid rep cabinet_id`);
@@ -135,6 +161,19 @@ export class ScopeRegistry {
       for (const [semanticName, cfg] of Object.entries(scope.semantic_attributes ?? {})) {
         if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error(`Semantic attribute ${name}.${semanticName} must be an object`);
         if (!/^[a-z][a-z0-9_]{0,63}$/.test(semanticName)) throw new Error(`Invalid semantic attribute name: ${name}.${semanticName}`);
+        let semanticAttributeMetadataLength = 0;
+        if (cfg.description !== undefined) {
+          validateBoundedProse(cfg.description, MAX_SEMANTIC_DESCRIPTION_LENGTH, `Semantic attribute ${name}.${semanticName} description`);
+          semanticAttributeMetadataLength += cfg.description.length;
+        }
+        semanticAttributeMetadataLength += validateSemanticGuidance(cfg.guidance, `Semantic attribute ${name}.${semanticName}`);
+        if (semanticAttributeMetadataLength > MAX_SEMANTIC_ATTRIBUTE_METADATA_LENGTH) {
+          throw new Error(`Semantic attribute ${name}.${semanticName} description and guidance must not exceed ${MAX_SEMANTIC_ATTRIBUTE_METADATA_LENGTH} characters`);
+        }
+        scopeGuidanceMetadataLength += semanticAttributeMetadataLength;
+        if (scopeGuidanceMetadataLength > MAX_SCOPE_GUIDANCE_METADATA_LENGTH) {
+          throw new Error(`Scope ${name} guidance metadata must not exceed ${MAX_SCOPE_GUIDANCE_METADATA_LENGTH} characters`);
+        }
         assertAttrId(cfg.attr_id, `${name}.semantic_attributes.${semanticName}`);
         assertUnambiguousAttributeId(cfg.attr_id, physicalAttributeKeys, `${name}.semantic_attributes.${semanticName}`);
         if (!Object.hasOwn(SEMANTIC_OPERATOR_MATRIX, cfg.type)) throw new Error(`Unsupported semantic type ${String(cfg.type)} for ${name}.${semanticName}`);
@@ -222,12 +261,15 @@ export class ScopeRegistry {
       out.push({
         id,
         description: scope.description,
+        ...(scope.guidance !== undefined ? { guidance: copySemanticGuidance(scope.guidance) } : {}),
         object_types: [...scope.allowed_object_types],
         filters: Object.entries(scope.semantic_attributes).map(([name, cfg]) => ({
           name,
           type: cfg.type,
           operators: [...cfg.operators],
           allow_wildcards: Boolean(cfg.allow_wildcards),
+          ...(cfg.description !== undefined ? { description: cfg.description } : {}),
+          ...(cfg.guidance !== undefined ? { guidance: copySemanticGuidance(cfg.guidance) } : {}),
           max_length: cfg.max_length,
           ...(cfg.type === "enum" ? { values: Object.keys(cfg.values ?? {}) } : {}),
           ...(cfg.multi_valued === true ? { multi_valued: true as const } : {})
@@ -349,6 +391,46 @@ function assertUnambiguousAttributeId(attr: AttributeId, seen: Map<string, Attri
 
 function safeConfigString(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.length >= 1 && value.length <= maxLength && !/[\u0000-\u001f\u007f\s]/.test(value);
+}
+
+function validateBoundedProse(value: unknown, maxLength: number, label: string): asserts value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > maxLength || value.trim().length === 0 || value !== value.trim() || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${label} must be non-empty, trimmed prose of at most ${maxLength} characters without control characters`);
+  }
+}
+
+function validateSemanticGuidance(guidance: SemanticGuidanceConfig | undefined, label: string): number {
+  if (guidance === undefined) return 0;
+  if (!guidance || typeof guidance !== "object" || Array.isArray(guidance)) {
+    throw new Error(`${label} guidance must be an object`);
+  }
+  let textLength = 0;
+  for (const key of Object.keys(guidance)) {
+    if (!(GUIDANCE_FIELDS as readonly string[]).includes(key)) throw new Error(`${label} guidance has unknown key ${key}`);
+  }
+  for (const field of GUIDANCE_FIELDS) {
+    const values = guidance[field];
+    if (values === undefined) continue;
+    if (!Array.isArray(values)) throw new Error(`${label} guidance.${field} must be an array`);
+    if (values.length > MAX_GUIDANCE_ENTRIES_PER_FIELD) {
+      throw new Error(`${label} guidance.${field} must contain at most ${MAX_GUIDANCE_ENTRIES_PER_FIELD} entries`);
+    }
+    if (new Set(values).size !== values.length) throw new Error(`${label} guidance.${field} contains duplicate entries`);
+    for (const value of values) {
+      validateBoundedProse(value, MAX_GUIDANCE_ENTRY_LENGTH, `${label} guidance.${field} entry`);
+      textLength += value.length;
+    }
+  }
+  return textLength;
+}
+
+function copySemanticGuidance(guidance: SemanticGuidanceConfig): SemanticGuidanceConfig {
+  return {
+    ...(guidance.aliases !== undefined ? { aliases: [...guidance.aliases] } : {}),
+    ...(guidance.use_when !== undefined ? { use_when: [...guidance.use_when] } : {}),
+    ...(guidance.not_for !== undefined ? { not_for: [...guidance.not_for] } : {}),
+    ...(guidance.examples !== undefined ? { examples: [...guidance.examples] } : {})
+  };
 }
 
 function validateSearchConfiguration(search: SemanticScope["search"], scopeId: string): void {

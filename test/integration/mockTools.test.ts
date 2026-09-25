@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { buildRuntime } from "../../src/server.ts";
 import { ArcSuiteAdapterError } from "../../src/arcsuite/errors.ts";
 
@@ -42,6 +43,51 @@ async function multiValuedScopeFile(): Promise<string> {
   ].join("\n");
   const path = join(dir, "scopes.yaml");
   await writeFile(path, source.replace(marker, `${partNumber}${marker}`), "utf8");
+  return path;
+}
+
+async function semanticGuidanceScopeFile(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "arcsuite-mcp-guidance-scope-"));
+  const source = await readFile(resolve("config/scopes.mock.yaml"), "utf8");
+  const data: any = parseYaml(source);
+  const scope = data.scopes.example_documents;
+  scope.guidance = {
+    aliases: ["example repository", "sample document set"],
+    use_when: ["The request concerns the synthetic example collection."],
+    not_for: ["Do not use this scope for component inventory."],
+    examples: ["Find a sample document"]
+  };
+  scope.semantic_attributes.document_number.description = "Synthetic identifier assigned to an example document.";
+  scope.semantic_attributes.document_number.guidance = {
+    aliases: ["document number", "document ID"],
+    use_when: ["The request identifies one example document."],
+    not_for: ["This is not a component or part identifier."],
+    examples: ["Find document number DOC-000001"]
+  };
+  scope.semantic_attributes.part_number = {
+    attr_id: { ns: "rep", name: "user:example_multi_part_number" },
+    type: "string",
+    multi_valued: true,
+    operators: ["eq", "like"],
+    allow_wildcards: true,
+    max_length: 30,
+    guidance: {
+      aliases: ["部品番号"],
+      use_when: ["The request identifies a component."],
+      not_for: ["Do not use this for a document's own identifier."],
+      examples: ["Find component PART-001"]
+    }
+  };
+
+  const otherScope = structuredClone(scope);
+  otherScope.description = "Synthetic restricted repository";
+  otherScope.arcsuite.cabinet_alias = "OTHER_EXAMPLE_CABINET";
+  otherScope.arcsuite.cabinet_id = "rep:mock:OTHER_EXAMPLE_CABINET";
+  otherScope.guidance = { aliases: ["restricted collection"] };
+  data.scopes.other_documents = otherScope;
+
+  const path = join(dir, "scopes.yaml");
+  await writeFile(path, stringifyYaml(data), "utf8");
   return path;
 }
 
@@ -97,8 +143,69 @@ test("capability discovery exposes only semantic scope metadata", async () => {
   assert.deepEqual(data.scopes[0].full_text_modes, ["none", "stemming", "thesaurus"]);
   assert.deepEqual(data.scopes[0].relationships, ["hard_reference_incoming"]);
   assert.deepEqual(data.scopes[0].filters.find((filter: any) => filter.name === "lifecycle").values, ["active", "retired"]);
+  assert.equal(Object.hasOwn(data.scopes[0], "guidance"), false);
+  assert.equal(Object.hasOwn(data.scopes[0].filters.find((filter: any) => filter.name === "document_number"), "description"), false);
   assert.equal(JSON.stringify(data).includes("EXAMPLE_CABINET"), false);
   assert.equal(JSON.stringify(data).includes("example_document_number"), false);
+});
+
+test("capability discovery exposes trusted guidance while preserving profile and search authority", async () => {
+  const rt = await runtime(await semanticGuidanceScopeFile());
+  const result = await rt.tools.call(profile(), "arcsuite_describe_capabilities", {});
+  const data: any = result.structuredContent;
+  const scope = data.scopes[0];
+  const documentNumber = scope.filters.find((filter: any) => filter.name === "document_number");
+  const partNumber = scope.filters.find((filter: any) => filter.name === "part_number");
+
+  assert.equal(data.version, "1.2");
+  assert.deepEqual(data.allowed_tools, expectedTools);
+  assert.deepEqual(data.scopes.map((item: any) => item.id), ["example_documents"]);
+  assert.deepEqual(scope.guidance, {
+    aliases: ["example repository", "sample document set"],
+    use_when: ["The request concerns the synthetic example collection."],
+    not_for: ["Do not use this scope for component inventory."],
+    examples: ["Find a sample document"]
+  });
+  assert.equal(documentNumber.description, "Synthetic identifier assigned to an example document.");
+  assert.deepEqual(documentNumber.guidance.aliases, ["document number", "document ID"]);
+  assert.deepEqual(documentNumber.guidance.use_when, ["The request identifies one example document."]);
+  assert.deepEqual(documentNumber.guidance.not_for, ["This is not a component or part identifier."]);
+  assert.deepEqual(documentNumber.guidance.examples, ["Find document number DOC-000001"]);
+  assert.equal(partNumber.name, "part_number");
+  assert.deepEqual(partNumber.operators, ["eq", "like"]);
+  assert.deepEqual(partNumber.guidance.aliases, ["部品番号"]);
+
+  const forbiddenKeys = new Set(["attr_id", "cabinet_id", "root_object_id"]);
+  const checkKeys = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) checkKeys(item);
+    } else if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        assert.equal(forbiddenKeys.has(key), false, `capability output must omit ${key}`);
+        checkKeys(item);
+      }
+    }
+  };
+  checkKeys(data);
+  const serialized = JSON.stringify(data);
+  for (const physicalValue of ["EXAMPLE_CABINET", "example_document_number", "example_multi_part_number", "OTHER_EXAMPLE_CABINET"]) {
+    assert.equal(serialized.includes(physicalValue), false, `capability output must omit ${physicalValue}`);
+  }
+
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      filters: { "部品番号": "PART-001" }
+    }),
+    (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+  );
+  await assert.rejects(
+    () => rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents",
+      filters: { part_number: { operator: "gte", value: "PART-001" } }
+    }),
+    (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT"
+  );
 });
 
 test("opt-in multi-valued string search keeps scalar input, member equality, normalization, and opaque authority", async () => {

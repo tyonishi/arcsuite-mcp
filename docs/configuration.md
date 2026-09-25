@@ -171,6 +171,69 @@ whether a deep link is enabled. It also exposes configured semantic content-labe
 aliases, enabled semantic relationships, and enabled integrity capabilities;
 physical content-label mappings are omitted.
 
+Capability discovery also exposes optional, bounded semantic guidance from
+trusted operator configuration. Guidance is descriptive only and cannot change
+the token profile, allowed scopes, semantic vocabulary, operators, cardinality,
+or physical ArcSuite mappings.
+
+### Trusted semantic guidance
+
+Scope guidance describes the semantic scope, not its physical cabinet. The
+existing scope `description` remains the scope's business description. A
+semantic attribute may have its own `description` and `guidance`. The following
+metadata-only excerpt is added alongside the existing required physical mapping
+and semantic filter fields:
+
+```yaml
+scopes:
+  example_documents:
+    description: "Example document repository"
+    guidance:
+      aliases: ["example repository", "sample document set"]
+      use_when: ["The request concerns the synthetic example collection."]
+      not_for: ["Do not use this scope for component inventory."]
+      examples: ["Find a sample document"]
+    semantic_attributes:
+      part_number:
+        description: "Synthetic identifier assigned to an example component."
+        guidance:
+          aliases: ["part number", "部品番号"]
+          use_when: ["The request identifies a component."]
+          not_for: ["Do not use this for a document's own identifier."]
+          examples: ["Find component PART-001"]
+```
+
+`description` explains the canonical semantic concept. `aliases` are natural-
+language vocabulary hints; `use_when` gives selection situations; `not_for`
+distinguishes similar concepts; and `examples` gives illustrative user intents.
+Only trusted operator/server configuration may supply these values. They are
+not derived from document contents, retrieved text, user prompts, model output,
+WSDL, or remote sources.
+
+Semantic-attribute descriptions are non-empty and limited to 512 JavaScript
+string-length units. The existing required scope `description` keeps its prior
+non-empty string validation and is excluded from the new prose and aggregate
+bounds. Each configured guidance array may contain at most 8 entries, each a
+non-empty string of at most 256 JavaScript string-length units. Entries must
+have no leading/trailing whitespace or control characters, and exact duplicate
+entries are rejected. Unknown guidance keys, non-array fields, and malformed
+entries fail startup validation. Omitted metadata stays omitted from capability
+responses.
+
+Aggregate limits also apply during startup validation: each semantic
+attribute's description plus all its guidance text is limited to 2,048
+characters; all scope-level guidance text is limited to 4,096 characters; and
+all new guidance metadata under one scope is limited to 32,768 characters.
+These totals cover all four guidance arrays and semantic-attribute descriptions
+but never the legacy scope `description`.
+
+Guidance is advisory metadata only. An alias can help a client choose the
+canonical filter name `part_number`, but `filters: {"部品番号": "PART-001"}` is
+still invalid. Aliases do not participate in search parsing, scope
+authorization, operator selection, or physical Attribute mapping. Capability
+discovery remains filtered by the authenticated profile's `allowedScopes`, and
+physical cabinet/root/Attribute IDs remain private.
+
 ### Incoming Hard References
 
 Hard Reference discovery is opt-in for each scope. Existing version 1 scope
