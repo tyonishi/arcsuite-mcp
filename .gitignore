@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 build/
+/adapter-java/.gradle/
 __pycache__/
 *.pyc
 tmp/
