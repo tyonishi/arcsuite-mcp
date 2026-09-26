@@ -303,3 +303,26 @@ test("production opaque refs accept secret material only from a file", () => {
   const config = loadConfig({ ...env, MCP_OPAQUE_REF_KEYS_JSON_FILE: keyFile });
   assert.equal(config.opaqueRefs?.activeKid, "active-1");
 });
+
+test("token profiles may require opaque_refs_v2 and reject invalid or unknown fields", () => {
+  const tokenSha256 = createHash("sha256").update("synthetic-profile-token").digest("hex");
+  const tokens = (fields: Record<string, unknown> = {}) => JSON.stringify({ tokens: [{
+    tokenSha256,
+    clientProfileId: "strict-search-client",
+    allowedScopes: ["example_documents"],
+    allowedTools: ["arcsuite_search_documents"],
+    rateLimit: { requestsPerMinute: 60, burst: 10 },
+    ...fields
+  }] });
+  const configFor = (fields: Record<string, unknown> = {}) => loadConfig({
+    ...baseEnv,
+    MCP_DEV_BEARER_TOKEN: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: tokens(fields)
+  });
+
+  assert.equal(configFor().tokenProfiles[0].requiredSearchResponseContract, undefined);
+  assert.equal(configFor({ requiredSearchResponseContract: "opaque_refs_v2" }).tokenProfiles[0].requiredSearchResponseContract, "opaque_refs_v2");
+  assert.throws(() => configFor({ requiredSearchResponseContract: "opaque_refs_v1" }), /requiredSearchResponseContract/);
+  assert.throws(() => configFor({ requiredSearchResponseContract: 2 }), /requiredSearchResponseContract/);
+  assert.throws(() => configFor({ unexpectedProfileField: true }), /Unknown token profile field/);
+});

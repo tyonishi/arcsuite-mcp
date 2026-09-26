@@ -207,6 +207,34 @@ test("ref-native search paging is non-destructive, bounded, and independent of l
   );
 });
 
+test("opaque_refs_v2 paging authority preserves canonical search binding without returning raw cursors", () => {
+  const store = new PagingSnapshotStore(secret, 600, 10, 2, 2, 20);
+  const appliedQuery: any = { operator: "and", filters: { operator: "and", predicates: [] }, text: { terms: ["v2"], operator: "and", mode: "none" } };
+  const searchAuthority: any = { scopeId: "scope_a", appliedQuery, includePath: false, pageSize: 1 };
+  const first = store.create({
+    clientProfileId: "client-v2",
+    scopeId: "scope_a",
+    kind: "search",
+    ids: ["rep:a:v2-1", "rep:a:v2-2"],
+    pageSize: 1,
+    context: {
+      includePath: false,
+      searchVerificationPlan: [],
+      searchAppliedQuery: appliedQuery,
+      responseContract: "opaque_refs_v2",
+      searchAuthority
+    }
+  });
+  const authority = store.continuationAuthority(first.nextCursor!, { clientProfileId: "client-v2", scopeId: "scope_a" });
+  const resolved = store.resolveContinuationAuthority(authority, { clientProfileId: "client-v2", scopeId: "scope_a" });
+
+  assert.deepEqual(resolved.page.ids, ["rep:a:v2-2"]);
+  assert.equal(resolved.page.context.responseContract, "opaque_refs_v2");
+  assert.deepEqual(resolved.page.context.searchAuthority, searchAuthority);
+  assert.equal(Object.hasOwn(resolved.page, "next_cursor"), false);
+  assert.equal(Object.hasOwn(resolved.page, "nextCursor"), true, "raw cursor remains an internal paging value only");
+});
+
 test("normal and retained paging authorities share global client and ID capacity", () => {
   const global = new PagingSnapshotStore(secret, 600, 10, 2, 2, 100);
   const globalFirst = searchPage(global, "client-a", "global-a");

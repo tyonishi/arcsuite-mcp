@@ -143,6 +143,10 @@ test("expiry, policy mismatch, missing records, and process restart fail closed"
   assert.throws(() => service.resolve(ref, "search", context({
     tokenSha256: createHash("sha256").update("other-token").digest("hex")
   })), refUnavailable);
+  const strictProfile = context({ requiredSearchResponseContract: "opaque_refs_v2" as any });
+  assert.throws(() => service.resolve(ref, "search", strictProfile), refUnavailable);
+  const strictRef = service.issueSearch(strictProfile, searchAuthority);
+  assert.throws(() => service.resolve(strictRef, "search", context()), refUnavailable);
   assert.throws(() => new OpaqueHandleService(config(), undefined, clock).resolve(ref, "search", context()), refUnavailable);
   now += 601_000;
   assert.throws(() => service.resolve(ref, "search", context()), refUnavailable);

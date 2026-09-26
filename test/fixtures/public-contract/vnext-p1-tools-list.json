@@ -27,10 +27,10 @@
   "intentional_public_contract_delta": {
     "changed_tool_input_schemas": ["arcsuite_search_documents"],
     "added_initial_search_property": "response_contract",
-    "allowed_values": ["legacy", "opaque_refs_v1"],
-    "default_semantics": "legacy",
+    "allowed_values": ["legacy", "opaque_refs_v1", "opaque_refs_v2"],
+    "default_semantics": "legacy unless requiredSearchResponseContract is opaque_refs_v2",
     "new_tools": [],
     "removed_tools": []
   },
-  "canonical_tools_sha256": "f022741e4114310a15ca2e961e7d02c165b0edecb81d236db71902f55699e3ec"
+  "canonical_tools_sha256": "630ebadda2d7d934f462893c28cf5780aabbd181f8171770487c226124632775"
 }

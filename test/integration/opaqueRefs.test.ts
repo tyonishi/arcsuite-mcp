@@ -437,3 +437,196 @@ test("audit output does not contain refs, locators, decoded records, queries, ke
     rt.stopValidationRetry();
   }
 });
+
+function assertOpaqueRefsV2Response(response: any, physicalIds: readonly string[]) {
+  const data = response.structuredContent;
+  assert.deepEqual(Object.keys(data).sort(), [
+    "applied_query", "continuation_ref", "count", "failures", "limit",
+    "results", "scope", "search_ref", "snapshot_limited", "truncated"
+  ]);
+  assert.equal(Object.hasOwn(data, "next_cursor"), false);
+  assert.equal(typeof data.search_ref, "string");
+  assert.ok(data.continuation_ref === null || typeof data.continuation_ref === "string");
+  for (const result of data.results) {
+    assert.equal(Object.hasOwn(result, "document_id"), false);
+    assert.equal(Object.hasOwn(result, "open_url"), false);
+    assert.equal(typeof result.result_ref, "string");
+  }
+  for (const failure of data.failures) {
+    assert.deepEqual(Object.keys(failure).sort(), ["code", "index"]);
+    assert.equal(Object.hasOwn(failure, "result_ref"), false);
+  }
+  const serialized = JSON.stringify([data, response.content]);
+  for (const id of physicalIds) assert.equal(serialized.includes(id), false);
+  return data;
+}
+
+function strictRefProfile() {
+  return {
+    ...profile(),
+    allowedTools: ["arcsuite_search_documents", "arcsuite_continue_search", "arcsuite_replay_search"],
+    requiredSearchResponseContract: "opaque_refs_v2"
+  } as any;
+}
+
+test("opaque_refs_v2 initial search is strict ref-native in structured and text results", async () => {
+  const { rt, auditPath } = await runtime(true);
+  const currentProfile = strictRefProfile();
+  const ids = [
+    "rep:mock:EXAMPLE_CABINET:v2-initial-1",
+    "rep:mock:EXAMPLE_CABINET:v2-initial-2",
+    "rep:mock:EXAMPLE_CABINET:v2-initial-failed"
+  ];
+  (rt.scopes as any).documentUrl = (_scope: unknown, id: string) => "https://arcsuite.example.invalid/open?id=" + encodeURIComponent(id);
+  (rt.adapter as any).searchIds = async () => ids;
+  (rt.adapter as any).getMany = async () => ({
+    objects: ids.slice(0, 2).map(document),
+    failures: [{ index: 2, code: "ARCSUITE_NOT_AVAILABLE" }]
+  });
+  try {
+    const response: any = await rt.tools.call(currentProfile, "arcsuite_search_documents", {
+      scope: "example_documents", query: "provider-term", limit: 3
+    });
+    const data = assertOpaqueRefsV2Response(response, ids);
+    assert.equal(data.count, 2);
+    assert.equal(data.continuation_ref, null);
+    assert.equal(data.results[0].name, "synthetic.pdf");
+    assert.equal(data.results[0].semantic_attributes.document_number, "DOC-000001");
+    assert.equal(data.failures.length, 1);
+    assert.equal(data.failures[0].index, 2);
+    assert.equal(data.failures[0].code, "ARCSUITE_NOT_AVAILABLE");
+    const audit = await readFile(auditPath, "utf8");
+    for (const id of ids) assert.equal(audit.includes(id), false);
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("required opaque_refs_v2 defaults safely and rejects contract and cursor downgrades before dispatch", async () => {
+  const configuredProfile = strictRefProfile();
+  const { rt } = await runtime(true, {
+    MCP_DEV_BEARER_TOKEN: undefined,
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: JSON.stringify({ tokens: [configuredProfile] })
+  });
+  const requiredProfile = rt.config.tokenProfiles[0];
+  const id1 = "rep:mock:EXAMPLE_CABINET:v2-policy-1";
+  const id2 = "rep:mock:EXAMPLE_CABINET:v2-policy-2";
+  let dispatches = 0;
+  (rt.adapter as any).searchIds = async () => { dispatches += 1; return [id1, id2]; };
+  (rt.adapter as any).getMany = async (request: any) => ({ objects: request.ids.map(document), failures: [] });
+  try {
+    const searchDefinition = rt.tools.list(requiredProfile).find((tool: any) => tool.name === "arcsuite_search_documents") as any;
+    assert.deepEqual(searchDefinition.inputSchema.properties.response_contract.enum, ["legacy", "opaque_refs_v1", "opaque_refs_v2"]);
+    assert.equal(searchDefinition.inputSchema.properties.response_contract.default, "opaque_refs_v2");
+    assert.equal(Object.hasOwn(searchDefinition.inputSchema.properties, "cursor"), false);
+    assert.equal(searchDefinition.description.includes("next_cursor"), false);
+    assert.equal(searchDefinition.description.includes("continuation_ref"), true);
+
+    for (const responseContract of ["legacy", "opaque_refs_v1"]) {
+      await assert.rejects(
+        () => rt.tools.call(requiredProfile, "arcsuite_search_documents", {
+          scope: "example_documents", query: "synthetic", response_contract: responseContract
+        }),
+        (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT" && error?.category === "search_response_contract_required"
+      );
+    }
+    assert.equal(dispatches, 0);
+
+    const omitted: any = await rt.tools.call(requiredProfile, "arcsuite_search_documents", {
+      scope: "example_documents", query: "synthetic", limit: 1
+    });
+    assertOpaqueRefsV2Response(omitted, [id1, id2]);
+    const explicit: any = await rt.tools.call(requiredProfile, "arcsuite_search_documents", {
+      scope: "example_documents", query: "synthetic", limit: 1, response_contract: "opaque_refs_v2"
+    });
+    assertOpaqueRefsV2Response(explicit, [id1, id2]);
+
+    const legacy: any = await rt.tools.call(profile(), "arcsuite_search_documents", {
+      scope: "example_documents", query: "synthetic", limit: 1
+    });
+    assert.equal(typeof legacy.structuredContent.next_cursor, "string");
+    const beforeDowngrade = dispatches;
+    await assert.rejects(
+      () => rt.tools.call(requiredProfile, "arcsuite_search_documents", {
+        scope: "example_documents", cursor: legacy.structuredContent.next_cursor
+      }),
+      (error: any) => error?.stableCode === "ARCSUITE_INVALID_ARGUMENT" && error?.category === "search_response_contract_required"
+    );
+    assert.equal(dispatches, beforeDowngrade);
+  } finally {
+    rt.stopValidationRetry();
+  }
+});
+
+test("opaque_refs_v2 pagination retries and replay stay ref-native and bounded", async () => {
+  const { rt, auditPath } = await runtime(true, { MCP_SEARCH_DEFAULT_LIMIT: "1", MCP_SEARCH_MAX_LIMIT: "2" });
+  const currentProfile = strictRefProfile();
+  const failedId = "rep:mock:EXAMPLE_CABINET:v2-page-failed";
+  const ids = [
+    "rep:mock:EXAMPLE_CABINET:v2-page-1",
+    failedId,
+    "rep:mock:EXAMPLE_CABINET:v2-page-3"
+  ];
+  let searchDispatches = 0;
+  (rt.scopes as any).documentUrl = (_scope: unknown, id: string) => "https://arcsuite.example.invalid/open?id=" + encodeURIComponent(id);
+  (rt.adapter as any).searchIds = async () => { searchDispatches += 1; return ids; };
+  (rt.adapter as any).getMany = async (request: any) => {
+    const objects: AdapterRepositoryObject[] = [];
+    const failures: Array<{ index: number; code: string }> = [];
+    request.ids.forEach((id: string, index: number) => {
+      if (id === failedId) failures.push({ index, code: "ARCSUITE_NOT_AVAILABLE" });
+      else objects.push(document(id));
+    });
+    return { objects, failures };
+  };
+  try {
+    const first: any = await rt.tools.call(currentProfile, "arcsuite_search_documents", {
+      scope: "example_documents", query: "provider-term", limit: 1, response_contract: "opaque_refs_v2"
+    });
+    const firstData = assertOpaqueRefsV2Response(first, ids);
+    assert.equal(firstData.count, 1);
+    assert.equal(typeof firstData.continuation_ref, "string");
+    const continuation = rt.handles!.resolve(firstData.continuation_ref, "continuation", {
+      profile: currentProfile, scopeId: "example_documents", scope: rt.scopes.get("example_documents")
+    });
+    assert.equal(continuation.kind, "continuation");
+    if (continuation.kind !== "continuation") throw new Error("unexpected handle kind");
+    assert.equal(continuation.responseContract, "opaque_refs_v2");
+    assert.equal(continuation.cursor, undefined);
+    assert.ok(continuation.pageAuthority);
+    assert.ok(continuation.expiresAt <= continuation.pageAuthority!.expiresAt);
+
+    const retryOne: any = await rt.tools.call(currentProfile, "arcsuite_continue_search", { continuation_ref: firstData.continuation_ref });
+    const retryTwo: any = await rt.tools.call(currentProfile, "arcsuite_continue_search", { continuation_ref: firstData.continuation_ref });
+    const retryOneData = assertOpaqueRefsV2Response(retryOne, ids);
+    const retryTwoData = assertOpaqueRefsV2Response(retryTwo, ids);
+    assert.equal(retryOneData.count, 0);
+    assert.deepEqual(retryOneData.failures, [{ index: 0, code: "ARCSUITE_NOT_AVAILABLE" }]);
+    assert.deepEqual(retryTwoData.failures, retryOneData.failures);
+    assert.deepEqual(retryTwoData.applied_query, retryOneData.applied_query);
+    assert.equal(typeof retryOneData.continuation_ref, "string");
+
+    const third: any = await rt.tools.call(currentProfile, "arcsuite_continue_search", { continuation_ref: retryOneData.continuation_ref });
+    const thirdData = assertOpaqueRefsV2Response(third, ids);
+    assert.equal(thirdData.count, 1);
+    assert.equal(typeof thirdData.results[0].result_ref, "string");
+    assert.equal(thirdData.continuation_ref, null);
+
+    const replay: any = await rt.tools.call(currentProfile, "arcsuite_replay_search", {
+      search_ref: firstData.search_ref, target_scope: "example_documents"
+    });
+    const replayData = assertOpaqueRefsV2Response(replay, ids);
+    assert.equal(replayData.count, 1);
+    assert.equal(typeof replayData.results[0].result_ref, "string");
+    assert.equal(searchDispatches, 2);
+
+    const audit = await readFile(auditPath, "utf8");
+    for (const id of ids) assert.equal(audit.includes(id), false);
+    for (const ref of [firstData.search_ref, firstData.continuation_ref, retryOneData.search_ref, retryOneData.continuation_ref]) {
+      if (typeof ref === "string") assert.equal(audit.includes(ref), false);
+    }
+    assert.equal(audit.includes("provider-term"), false);
+  } finally {
+    rt.stopValidationRetry();
+  }
+});

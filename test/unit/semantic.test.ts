@@ -408,6 +408,7 @@ test("search schema exposes response negotiation only on initial searches", () =
   const schema = toolInputSchemas.arcsuite_search_documents;
   assert.equal(schema.safeParse({ scope: "example_documents", query: "synthetic", response_contract: "legacy" }).success, true);
   assert.equal(schema.safeParse({ scope: "example_documents", query: "synthetic", response_contract: "opaque_refs_v1" }).success, true);
+  assert.equal(schema.safeParse({ scope: "example_documents", query: "synthetic", response_contract: "opaque_refs_v2" }).success, true);
   assert.equal(schema.safeParse({ scope: "example_documents", query: "synthetic", response_contract: "unknown" }).success, false);
   assert.equal(schema.safeParse({ scope: "example_documents", cursor: "opaque", response_contract: "opaque_refs_v1" }).success, false);
 });
