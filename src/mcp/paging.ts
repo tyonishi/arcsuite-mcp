@@ -1,7 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { CanonicalSemanticPredicate } from "../semantic/attributeMapper.ts";
 import type { AppliedQuery } from "./appliedQuery.ts";
-import type { CanonicalSearchAuthority, ContinuationPageAuthority } from "./opaqueHandles.ts";
+import type { CanonicalSearchAuthority, ContinuationPageAuthority, RefSearchResponseContract } from "./opaqueHandles.ts";
 
 export type PagingKind = "search" | "folder" | "hard_reference";
 
@@ -11,7 +11,7 @@ export type PagingSnapshotContext = {
   includePath: boolean;
   searchVerificationPlan?: readonly CanonicalSemanticPredicate[];
   searchAppliedQuery?: AppliedQuery;
-  responseContract?: "legacy" | "opaque_refs_v1";
+  responseContract?: "legacy" | RefSearchResponseContract;
   searchAuthority?: CanonicalSearchAuthority;
 };
 
@@ -154,7 +154,7 @@ export class PagingSnapshotStore {
       || !snapshot.context.searchVerificationPlan
       || !snapshot.context.searchAppliedQuery
       || !snapshot.context.searchAuthority
-      || snapshot.context.responseContract !== "opaque_refs_v1") throw new Error("INVALID_PAGING_CURSOR");
+      || (snapshot.context.responseContract !== "opaque_refs_v1" && snapshot.context.responseContract !== "opaque_refs_v2")) throw new Error("INVALID_PAGING_CURSOR");
     const authorityId = randomUUID();
     const retained: PagingSnapshot = {
       ...snapshot,
@@ -197,7 +197,8 @@ export class PagingSnapshotStore {
       || authority.offset >= snapshot.ids.length
       || !snapshot.context.searchVerificationPlan
       || !snapshot.context.searchAppliedQuery
-      || !snapshot.context.searchAuthority) throw new Error("PAGING_REF_AUTHORITY_UNAVAILABLE");
+      || !snapshot.context.searchAuthority
+      || (snapshot.context.responseContract !== "opaque_refs_v1" && snapshot.context.responseContract !== "opaque_refs_v2")) throw new Error("PAGING_REF_AUTHORITY_UNAVAILABLE");
     snapshot.lastAccessAt = Date.now();
     const end = Math.min(snapshot.ids.length, authority.offset + snapshot.pageSize);
     return {

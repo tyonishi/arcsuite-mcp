@@ -17,6 +17,7 @@ export const OPAQUE_HANDLE_LIMITS = Object.freeze({
 });
 
 export type OpaqueHandleKind = "search" | "continuation" | "result";
+export type RefSearchResponseContract = "opaque_refs_v1" | "opaque_refs_v2";
 
 export type HandleKeyConfig = Readonly<{
   kid: string;
@@ -63,11 +64,13 @@ type CommonHandleRecord = Readonly<{
 export type SearchHandleRecord = CommonHandleRecord & Readonly<{
   kind: "search";
   authority: CanonicalSearchAuthority;
+  responseContract?: RefSearchResponseContract;
 }>;
 
 export type ContinuationHandleRecord = CommonHandleRecord & Readonly<{
   kind: "continuation";
   searchAuthority: CanonicalSearchAuthority;
+  responseContract?: RefSearchResponseContract;
   cursor?: string;
   pageAuthority?: ContinuationPageAuthority;
 }>;
@@ -83,10 +86,10 @@ export type ResultHandleRecord = CommonHandleRecord & Readonly<{
 export type OpaqueHandleRecord = SearchHandleRecord | ContinuationHandleRecord | ResultHandleRecord;
 
 export type OpaqueHandleIssue = Readonly<
-  | { kind: "search"; authority: CanonicalSearchAuthority; maxExpiresAt?: number }
+  | { kind: "search"; authority: CanonicalSearchAuthority; responseContract?: RefSearchResponseContract; maxExpiresAt?: number }
   | {
       kind: "continuation";
-      input: Readonly<{ searchAuthority: CanonicalSearchAuthority; cursor?: string; pageAuthority?: ContinuationPageAuthority }>;
+      input: Readonly<{ searchAuthority: CanonicalSearchAuthority; responseContract?: RefSearchResponseContract; cursor?: string; pageAuthority?: ContinuationPageAuthority }>;
       maxExpiresAt?: number;
     }
   | {
@@ -360,7 +363,12 @@ export class OpaqueHandleService {
     let build: (common: CommonHandleRecord) => OpaqueHandleRecord;
     if (request.kind === "search") {
       if (request.authority.scopeId !== context.scopeId) throw new Error("Search authority scope mismatch");
-      build = (common) => ({ ...common, kind: "search", authority: deepFreezeClone(request.authority) });
+      build = (common) => ({
+        ...common,
+        kind: "search",
+        authority: deepFreezeClone(request.authority),
+        ...(request.responseContract ? { responseContract: request.responseContract } : {})
+      });
     } else if (request.kind === "continuation") {
       const input = request.input;
       if (input.searchAuthority.scopeId !== context.scopeId
@@ -374,6 +382,7 @@ export class OpaqueHandleService {
         ...common,
         kind: "continuation",
         searchAuthority: deepFreezeClone(input.searchAuthority),
+        ...(input.responseContract ? { responseContract: input.responseContract } : {}),
         ...(input.cursor ? { cursor: input.cursor } : {}),
         ...(input.pageAuthority ? { pageAuthority: deepFreezeClone(input.pageAuthority) } : {})
       });
@@ -459,6 +468,7 @@ export class OpaqueHandleService {
       token_sha256: tokenSha256.toLowerCase(),
       allowed_scopes: [...context.profile.allowedScopes].sort(),
       allowed_tools: [...context.profile.allowedTools].sort(),
+      required_search_response_contract: context.profile.requiredSearchResponseContract ?? null,
       selected_scope_id: context.scopeId,
       selected_scope_policy: canonicalScopePolicy(context.scope)
     });

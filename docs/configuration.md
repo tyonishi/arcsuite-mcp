@@ -18,7 +18,7 @@ scope registry. Tool callers cannot override these values.
 | `MCP_DEV_BEARER_TOKEN` | none | Development-only single profile |
 | `MCP_CURSOR_HMAC_SECRET_FILE` | none | Non-empty HMAC key file for read and paging cursors; required in production |
 | `MCP_CURSOR_HMAC_SECRET` | none | Controlled non-production fallback for cursor HMAC; ignored in production |
-| `MCP_OPAQUE_REFS_ENABLED` | `false` | Explicitly enable P1 opaque ref issuance; legacy search remains unchanged while disabled |
+| `MCP_OPAQUE_REFS_ENABLED` | `false` | Explicitly enable P1/P2 opaque ref issuance; legacy search remains unchanged while disabled |
 | `MCP_OPAQUE_REF_KEYS_JSON_FILE` | none | Secret keyring file required when opaque refs are enabled in production |
 | `MCP_OPAQUE_REF_KEYS_JSON` | none | Controlled non-production keyring fallback; ignored in production |
 | `MCP_OPAQUE_REF_TTL_SECONDS` | `600` | Opaque ref lifetime; hard maximum `86400` |
@@ -101,6 +101,15 @@ secret and starts with the same configuration as before. Enabling the feature
 requires both `MCP_OPAQUE_REFS_ENABLED=true` and a valid keyring. Production
 accepts key material only from `MCP_OPAQUE_REF_KEYS_JSON_FILE`; the inline JSON
 form exists for controlled non-production tests.
+
+A token profile may set `requiredSearchResponseContract` to `opaque_refs_v2`. With
+this policy, an initial search that omits `response_contract` uses v2; explicit
+v2 is accepted, while `legacy` and `opaque_refs_v1` are rejected before provider
+search dispatch. Profiles without the field keep their existing contract
+selection. This policy does not grant tools: configure the required search and
+ref-native continuation/replay tools in `allowedTools` as needed. The refs
+feature and keyring must be enabled for v2; otherwise the search fails before
+provider dispatch.
 
 Handle records are owned internally by the authenticated client profile. A
 profile that reaches its per-profile capacity can evict only its own

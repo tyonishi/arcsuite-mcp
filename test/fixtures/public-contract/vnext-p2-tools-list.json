@@ -1,5 +1,5 @@
 {
-  "previous_p1_sha256": "f022741e4114310a15ca2e961e7d02c165b0edecb81d236db71902f55699e3ec",
+  "previous_p1_sha256": "630ebadda2d7d934f462893c28cf5780aabbd181f8171770487c226124632775",
   "schema_compatibility_delta": {
     "previous_sha256": "3cbe801e51854d3330789fd53ac28c9e4e72d223c6bfcfc71bd640a195727b21",
     "changed_tool_input_schemas": [
@@ -45,5 +45,5 @@
     ],
     "removed_tools": []
   },
-  "canonical_tools_sha256": "e449155c3d883e31b9597ed7e5b754119caec6d5ee3e6bf640aaf156458a045c"
+  "canonical_tools_sha256": "f49fc28ac4907f85ef81515fe47e78f58fb2687c6b3ceef1aaefc0fb415890f1"
 }

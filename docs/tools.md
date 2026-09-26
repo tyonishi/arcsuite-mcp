@@ -327,38 +327,41 @@ plan for semantic searches. `snapshot_limited=true` means the bounded snapshot
 itself hit its configured maximum; no additional pages beyond that snapshot are
 promised. The plan is never placed in the cursor or returned to the caller.
 
-### Opt-in opaque refs
+### Search response contracts
 
-`arcsuite_search_documents` keeps the exact legacy response by default. An
-initial search may explicitly request the additive P1 contract:
+`arcsuite_search_documents` supports three response contracts:
 
-```json
-{
-  "scope": "example_documents",
-  "query": "annual report",
-  "response_contract": "opaque_refs_v1"
-}
-```
+- `legacy` preserves the existing legacy response. It remains the
+  default for token profiles without a required response contract.
+- `opaque_refs_v1` is the additive compatibility contract. It adds
+  `result_ref`, `search_ref`, and `continuation_ref` while retaining bootstrap fields
+  such as `document_id` and `next_cursor`.
+- `opaque_refs_v2` is a strict ref-native initial-search response.
+  Its top-level fields are `scope`, `count`, `limit`, `truncated`,
+  `snapshot_limited`, `applied_query`, `failures`, `results`,
+  `search_ref`, and `continuation_ref`. Each verified result has a
+  `result_ref`. Public results omit `document_id` and `open_url`,
+  failures contain only `index` and `code`, and the response never
+  contains `next_cursor`.
 
-`response_contract` accepts `legacy` or `opaque_refs_v1`. Omitted means
-`legacy`. It is initial-search-only and cannot be sent with `cursor`. A legacy
-cursor continuation inherits the contract selected by its initial search; the
-caller cannot switch contracts during pagination.
+A caller may select `opaque_refs_v1` or `opaque_refs_v2` only on an
+initial search; neither may be combined with `cursor`. A search ref is emitted
+for a successful zero-result search. Failed or unverified objects never receive
+a result ref.
 
-When explicitly selected and enabled by the operator, `opaque_refs_v1` adds
-`search_ref` and `continuation_ref` at the top level and `result_ref` to each
-verified result. `search_ref` is emitted even for a successful zero-result
-search. `continuation_ref` is non-null only when `next_cursor` is non-null.
-Failures and rejected or unverified provider objects never receive a result
-ref. Existing fields, including `document_id`, `next_cursor`, and
-`applied_query`, are unchanged.
+A token profile may set `requiredSearchResponseContract` to `opaque_refs_v2`. For
+that profile, omitting `response_contract` selects v2, explicit v2 is allowed,
+and selecting `legacy` or `opaque_refs_v1` is rejected before provider
+dispatch. Profiles without this policy preserve their existing behavior.
+
+Opaque refs require explicit operator enablement. If refs are disabled, either
+opaque response contract fails before provider dispatch and is never silently
+downgraded to legacy.
 
 Refs are short-lived authenticated authority references, not credentials.
 Possession does not grant access. Every P2 ref-native operation rechecks the
 current bearer, the individual tool permission, the source scope, the keyed
 policy binding, and fresh provider identity/root/type/scope authority.
-If the feature is disabled, an `opaque_refs_v1` request fails before provider
-dispatch and is never silently downgraded to legacy.
 
 `arcsuite_continue_search` accepts only `continuation_ref`. The same valid ref
 selects the same logical page on retry, while each call freshly hydrates and

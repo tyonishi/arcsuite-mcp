@@ -31,7 +31,17 @@ export type TokenProfile = {
   allowedScopes: string[];
   allowedTools: string[];
   rateLimit: { requestsPerMinute: number; burst: number };
+  requiredSearchResponseContract?: "opaque_refs_v2";
 };
+
+const TOKEN_PROFILE_FIELDS = new Set([
+  "tokenSha256",
+  "clientProfileId",
+  "allowedScopes",
+  "allowedTools",
+  "rateLimit",
+  "requiredSearchResponseContract"
+]);
 
 export type AppConfig = {
   bindHost: string;
@@ -113,6 +123,13 @@ function loadTokenProfiles(env: NodeJS.ProcessEnv): TokenProfile[] {
   for (const [index, rawProfile] of parsed.tokens.entries()) {
     if (!rawProfile || typeof rawProfile !== "object" || Array.isArray(rawProfile)) throw new Error(`Invalid token profile at index ${index}`);
     const profile = rawProfile as Record<string, unknown>;
+    for (const key of Object.keys(profile)) {
+      if (!TOKEN_PROFILE_FIELDS.has(key)) throw new Error("Unknown token profile field at index " + index);
+    }
+    const requiredSearchResponseContract = profile.requiredSearchResponseContract;
+    if (requiredSearchResponseContract !== undefined && requiredSearchResponseContract !== "opaque_refs_v2") {
+      throw new Error("Invalid requiredSearchResponseContract");
+    }
     const tokenSha256 = profile.tokenSha256;
     const clientProfileId = profile.clientProfileId;
     if (typeof tokenSha256 !== "string" || !/^[0-9a-f]{64}$/i.test(tokenSha256)) throw new Error(`Invalid tokenSha256 at index ${index}`);
@@ -128,7 +145,14 @@ function loadTokenProfiles(env: NodeJS.ProcessEnv): TokenProfile[] {
     const rateLimit = profile.rateLimit as Record<string, unknown>;
     const requestsPerMinute = boundedInteger(rateLimit.requestsPerMinute, `rateLimit.requestsPerMinute for ${clientProfileId}`, 1, CONFIG_LIMITS.maxRequestsPerMinute);
     const burst = boundedInteger(rateLimit.burst, `rateLimit.burst for ${clientProfileId}`, 1, CONFIG_LIMITS.maxBurst);
-    profiles.push({ tokenSha256, clientProfileId, allowedScopes, allowedTools, rateLimit: { requestsPerMinute, burst } });
+    profiles.push({
+      tokenSha256,
+      clientProfileId,
+      allowedScopes,
+      allowedTools,
+      rateLimit: { requestsPerMinute, burst },
+      ...(requiredSearchResponseContract === "opaque_refs_v2" ? { requiredSearchResponseContract } : {})
+    });
   }
   return profiles;
 }

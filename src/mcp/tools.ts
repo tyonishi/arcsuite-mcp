@@ -34,6 +34,7 @@ import {
   type HandlePolicyContext,
   type OpaqueHandleIssue,
   type ResultHandleRecord,
+  type RefSearchResponseContract,
   type SearchHandleRecord
 } from "./opaqueHandles.ts";
 
@@ -148,6 +149,7 @@ export class ToolRegistry {
     let resultCount: number | undefined;
     let resultCode = "OK";
     let searchOutcome: SearchOutcome | undefined;
+    let suppressDocumentIdentityAudit = false;
 
     try {
       const args = assertObject(rawArgs ?? {}, "arguments");
@@ -168,7 +170,15 @@ export class ToolRegistry {
         }
         case "arcsuite_search_documents": {
           const parsed = parseSearchArgs(args, this.config);
-          if (parsed.responseContract === "opaque_refs_v1" && !this.handles) {
+          const requiredResponseContract = profile.requiredSearchResponseContract;
+          if (requiredResponseContract) {
+            if (parsed.cursor || (args.response_contract !== undefined && parsed.responseContract !== requiredResponseContract)) {
+              throw new McpToolError("ARCSUITE_INVALID_ARGUMENT", "search_response_contract_required", false);
+            }
+            parsed.responseContract = requiredResponseContract;
+          }
+          suppressDocumentIdentityAudit = parsed.responseContract === "opaque_refs_v2";
+          if (parsed.responseContract !== "legacy" && !this.handles) {
             throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
           }
           scopeId = parsed.scope;
@@ -233,7 +243,7 @@ export class ToolRegistry {
                 searchVerificationPlan: verificationPlan,
                 searchAppliedQuery: appliedQuery,
                 responseContract: parsed.responseContract,
-                ...(parsed.responseContract === "opaque_refs_v1" ? { searchAuthority } : {})
+                ...(parsed.responseContract === "opaque_refs_v1" || parsed.responseContract === "opaque_refs_v2" ? { searchAuthority } : {})
               },
               upstreamLimited: candidateIds.length > snapshotLimit
             });
@@ -282,6 +292,19 @@ export class ToolRegistry {
               search_ref: refSet.searchRef,
               continuation_ref: refSet.continuationRef
             };
+          } else if (responseContract === "opaque_refs_v2") {
+            if (!this.handles || !page.context.searchAuthority) {
+              throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
+            }
+            const continuationAuthority = page.nextCursor
+              ? this.paging.continuationAuthority(page.nextCursor, { clientProfileId: profile.clientProfileId, scopeId: parsed.scope })
+              : undefined;
+            data = this.refNativeSearchResponse(profile, parsed.scope, scope, page.context.searchAuthority, pageData, {
+              snapshotLimited: page.snapshotLimited,
+              nextAuthority: continuationAuthority,
+              verificationPlan,
+              expiresAt: continuationAuthority?.expiresAt
+            }, "opaque_refs_v2");
           } else {
             data = legacyData;
           }
@@ -290,6 +313,9 @@ export class ToolRegistry {
         case "arcsuite_continue_search": {
           const parsed = parseContinueSearchArgs(args);
           const record = this.resolveBoundHandle(profile, parsed.continuationRef, "continuation") as ContinuationHandleRecord;
+          const responseContract = record.responseContract ?? "opaque_refs_v1";
+          if (profile.requiredSearchResponseContract && responseContract !== profile.requiredSearchResponseContract) throw refUnavailable();
+          suppressDocumentIdentityAudit = responseContract === "opaque_refs_v2";
           const pageAuthority = record.pageAuthority;
           if (!pageAuthority) throw refUnavailable();
           scopeId = record.searchAuthority.scopeId;
@@ -306,6 +332,7 @@ export class ToolRegistry {
           const verificationPlan = resolvedPage.page.context.searchVerificationPlan;
           const retainedSearchAuthority = resolvedPage.page.context.searchAuthority;
           if (!verificationPlan || !retainedSearchAuthority
+            || resolvedPage.page.context.responseContract !== responseContract
             || JSON.stringify(retainedSearchAuthority) !== JSON.stringify(record.searchAuthority)) throw refUnavailable();
           const pageData = await this.fetchObjectsByIds(
             profile,
@@ -321,12 +348,15 @@ export class ToolRegistry {
             nextAuthority: resolvedPage.nextAuthority,
             verificationPlan,
             expiresAt: Math.min(record.expiresAt, pageAuthority.expiresAt)
-          });
+          }, responseContract);
           break;
         }
         case "arcsuite_replay_search": {
           const parsed = parseReplaySearchArgs(args);
           const record = this.resolveBoundHandle(profile, parsed.searchRef, "search") as SearchHandleRecord;
+          const responseContract = record.responseContract ?? "opaque_refs_v1";
+          if (profile.requiredSearchResponseContract && responseContract !== profile.requiredSearchResponseContract) throw refUnavailable();
+          suppressDocumentIdentityAudit = responseContract === "opaque_refs_v2";
           this.allowedScope(profile, record.authority.scopeId);
           scopeId = parsed.targetScope;
           const targetScope = this.allowedScope(profile, parsed.targetScope);
@@ -371,7 +401,7 @@ export class ToolRegistry {
               includePath: record.authority.includePath,
               searchVerificationPlan: recanonicalized.verificationPlan,
               searchAppliedQuery: recanonicalized.appliedQuery,
-              responseContract: "opaque_refs_v1",
+              responseContract,
               searchAuthority
             },
             upstreamLimited: candidateIds.length > snapshotLimit
@@ -393,7 +423,7 @@ export class ToolRegistry {
             nextAuthority,
             verificationPlan: recanonicalized.verificationPlan,
             expiresAt: nextAuthority?.expiresAt
-          });
+          }, responseContract);
           break;
         }
         case "arcsuite_get_document": {
@@ -943,7 +973,7 @@ export class ToolRegistry {
         tool_name: name,
         scope: scopeId,
         soap_operations: soapOperations,
-        object_ids: objectIds,
+        object_ids: suppressDocumentIdentityAudit ? [] : objectIds,
         result_code: resultCode,
         result_count: resultCount,
         ...(name === "arcsuite_search_documents" && searchOutcome ? { search_outcome: searchOutcome } : {}),
@@ -1062,7 +1092,8 @@ export class ToolRegistry {
       nextAuthority?: ContinuationPageAuthority;
       verificationPlan: readonly CanonicalSemanticPredicate[];
       expiresAt?: number;
-    }
+    },
+    responseContract: RefSearchResponseContract = "opaque_refs_v1"
   ): Record<string, unknown> {
     if (!this.handles) throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
     const policyContext: HandlePolicyContext = { profile, scopeId, scope };
@@ -1075,10 +1106,11 @@ export class ToolRegistry {
       pageData.results,
       continuation.verificationPlan,
       nextPageAuthority ? { pageAuthority: nextPageAuthority, maxExpiresAt } : undefined,
-      maxExpiresAt
+      maxExpiresAt,
+      responseContract
     );
     const results = pageData.results.map((result, index) => ({
-      ...withoutDocumentIdentity(result),
+      ...(responseContract === "opaque_refs_v2" ? withoutPhysicalDocumentIdentity(result) : withoutDocumentIdentity(result)),
       result_ref: refSet.resultRefs[index]
     }));
     return {
@@ -1101,7 +1133,8 @@ export class ToolRegistry {
     results: readonly NormalizedDocument[],
     verificationPlan: readonly CanonicalSemanticPredicate[],
     continuation?: Readonly<{ cursor?: string; pageAuthority: ContinuationPageAuthority; maxExpiresAt?: number }>,
-    maxExpiresAt?: number
+    maxExpiresAt?: number,
+    responseContract: RefSearchResponseContract = "opaque_refs_v1"
   ): { resultRefs: string[]; searchRef: string; continuationRef: string | null } {
     if (!this.handles) throw new McpToolError("ARCSUITE_NOT_AVAILABLE", "opaque_refs_unavailable", false);
     const requests: OpaqueHandleIssue[] = results.map((result) => ({
@@ -1113,12 +1146,13 @@ export class ToolRegistry {
       },
       maxExpiresAt
     }));
-    requests.push({ kind: "search", authority: searchAuthority, maxExpiresAt });
+    requests.push({ kind: "search", authority: searchAuthority, responseContract, maxExpiresAt });
     if (continuation) {
       requests.push({
         kind: "continuation",
         input: {
           searchAuthority,
+          responseContract,
           ...(continuation.cursor ? { cursor: continuation.cursor } : {}),
           pageAuthority: continuation.pageAuthority
         },
@@ -1936,7 +1970,7 @@ function parseSearchArgs(args: Record<string, unknown>, config: AppConfig) {
   if (!query && !Object.keys(filters).length) throw new TypeError("At least query or one semantic filter is required");
   if (!query && textSearchMode !== "none") throw new TypeError("text_search_mode requires a text query");
   const limit = args.limit === undefined ? config.searchDefaultLimit : intValue(args.limit, "limit", 1, config.searchMaxLimit);
-  const responseContract = enumValue(args.response_contract, ["legacy", "opaque_refs_v1"] as const, "legacy");
+  const responseContract = enumValue(args.response_contract, ["legacy", "opaque_refs_v1", "opaque_refs_v2"] as const, "legacy");
   return { scope, cursor: undefined, query, queryMode, filters, textSearchMode, limit, includePath: boolValue(args.include_path, false), responseContract };
 }
 
@@ -2376,6 +2410,11 @@ function withoutDocumentIdentity<T extends object>(value: T): Omit<T, "document_
   return rest;
 }
 
+function withoutPhysicalDocumentIdentity<T extends object>(value: T): Omit<T, "document_id" | "open_url"> {
+  const { document_id: _documentId, open_url: _openUrl, ...rest } = value as T & { document_id?: unknown; open_url?: unknown };
+  return rest;
+}
+
 function refUnavailable(): McpToolError {
   return new McpToolError("ARCSUITE_REF_UNAVAILABLE", "ref_unavailable", false, "ARCSUITE_REF_UNAVAILABLE", "search_again");
 }
@@ -2456,6 +2495,10 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
   };
   const filterScalar = { oneOf: [{ type: "string", minLength: 1, maxLength: 255 }, { type: "number" }, { type: "boolean" }] };
   const filterValue = { oneOf: [filterScalar, { type: "object", additionalProperties: false, required: ["operator", "value"], properties: { operator: { type: "string", enum: ["eq", "like", "gte", "lte"] }, value: filterScalar } }] };
+  const requiresOpaqueRefsV2 = profile.requiredSearchResponseContract === "opaque_refs_v2";
+  const searchDescription = requiresOpaqueRefsV2
+    ? "Search an allowed semantic ArcSuite scope. Available scope/filter names: " + (scopeSummary || "none") + ". This profile requires opaque_refs_v2; use arcsuite_continue_search with continuation_ref for more pages."
+    : "Search an allowed semantic ArcSuite scope. Available scope/filter names: " + (scopeSummary || "none") + ". Use next_cursor by itself with scope to continue a stable bounded snapshot.";
   return [
     {
       name: "arcsuite_describe_capabilities",
@@ -2464,8 +2507,8 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
     },
     {
       name: "arcsuite_search_documents",
-      description: `Search an allowed semantic ArcSuite scope. Available scope/filter names: ${scopeSummary || "none"}. Use next_cursor by itself with scope to continue a stable bounded snapshot.`,
-      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: filterValue }, limit, include_path: { type: "boolean", default: false }, cursor: { type: "string", maxLength: 4096 }, text_search_mode: { type: "string", enum: ["none", "stemming", "thesaurus"], default: "none" }, response_contract: { type: "string", enum: ["legacy", "opaque_refs_v1"], default: "legacy" } }, allOf: [{ if: { required: ["cursor"] }, then: { not: { required: ["response_contract"] } } }] }
+      description: searchDescription,
+      inputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: { scope, query: { type: "string", minLength: 1, maxLength: 200 }, query_mode: { type: "string", enum: ["and", "or"], default: "and" }, filters: { type: "object", additionalProperties: filterValue }, limit, include_path: { type: "boolean", default: false }, ...(requiresOpaqueRefsV2 ? {} : { cursor: { type: "string", maxLength: 4096 } }), text_search_mode: { type: "string", enum: ["none", "stemming", "thesaurus"], default: "none" }, response_contract: { type: "string", enum: ["legacy", "opaque_refs_v1", "opaque_refs_v2"], default: profile.requiredSearchResponseContract ?? "legacy" } }, allOf: [{ if: { required: ["cursor"] }, then: { not: { required: ["response_contract"] } } }] }
     },
     {
       name: "arcsuite_get_document",

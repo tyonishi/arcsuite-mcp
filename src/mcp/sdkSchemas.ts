@@ -74,9 +74,9 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
     include_path: z.boolean().optional(),
     cursor: pagingCursor,
     text_search_mode: z.enum(["none", "stemming", "thesaurus"]).optional(),
-    response_contract: z.enum(["legacy", "opaque_refs_v1"])
+    response_contract: z.enum(["legacy", "opaque_refs_v1", "opaque_refs_v2"])
       .optional()
-      .describe("Initial searches only. Omit for the exact legacy response; cannot be combined with cursor.")
+      .describe("Initial searches only. Omission selects legacy unless the authenticated profile requires opaque_refs_v2; cannot be combined with cursor.")
   }).strict().refine((value) => value.cursor === undefined || value.response_contract === undefined, {
     message: "response_contract cannot be combined with cursor"
   });

@@ -129,7 +129,7 @@ test("MCP initialize, profile-aware discovery and semantic search work over Stre
   assert.deepEqual(Object.keys(search.inputSchema.properties).sort(), [
     "cursor", "filters", "include_path", "limit", "query", "query_mode", "response_contract", "scope", "text_search_mode"
   ]);
-  assert.deepEqual(search.inputSchema.properties.response_contract.enum, ["legacy", "opaque_refs_v1"]);
+  assert.deepEqual(search.inputSchema.properties.response_contract.enum, ["legacy", "opaque_refs_v1", "opaque_refs_v2"]);
   const hardReferences = tools.find((tool: { name: string }) => tool.name === "arcsuite_list_hard_references");
   assert.equal(hardReferences.inputSchema.type, "object");
   assert.equal(hardReferences.inputSchema.additionalProperties, false);
