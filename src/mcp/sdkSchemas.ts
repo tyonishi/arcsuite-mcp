@@ -20,6 +20,8 @@ export type ToolSchemaLimits = Readonly<{
 const contentLabel = z.string().min(1).max(256).optional();
 const pagingCursor = z.string().min(1).max(4096).optional();
 const opaqueRef = z.string().min(1).max(1024);
+const SEARCH_RESPONSE_CONTRACTS = ["legacy", "opaque_refs_v1", "opaque_refs_v2"] as const;
+const SEARCH_RESPONSE_CONTRACT_DESCRIPTION = "Initial searches only. Omission selects legacy unless the authenticated profile requires opaque_refs_v2; cannot be combined with cursor.";
 const semanticFilterOperator = z.enum(["eq", "like", "gte", "lte"]);
 const semanticFilterScalar = z.union([z.string().min(1).max(255), z.number().finite(), z.boolean()]);
 const semanticFilterValue = z.union([
@@ -74,9 +76,9 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
     include_path: z.boolean().optional(),
     cursor: pagingCursor,
     text_search_mode: z.enum(["none", "stemming", "thesaurus"]).optional(),
-    response_contract: z.enum(["legacy", "opaque_refs_v1", "opaque_refs_v2"])
+    response_contract: z.enum(SEARCH_RESPONSE_CONTRACTS)
       .optional()
-      .describe("Initial searches only. Omission selects legacy unless the authenticated profile requires opaque_refs_v2; cannot be combined with cursor.")
+      .describe(SEARCH_RESPONSE_CONTRACT_DESCRIPTION)
   }).strict().refine((value) => value.cursor === undefined || value.response_contract === undefined, {
     message: "response_contract cannot be combined with cursor"
   });
@@ -198,8 +200,23 @@ function schemasForLimits(limits: ToolSchemaLimits): ReturnType<typeof createToo
 
 export type ToolInputName = keyof typeof toolInputSchemas;
 
-export function toolInputSchemaForProfile(name: ToolInputName, allowedScopes: string[], limits: ToolSchemaLimits = TOOL_SCHEMA_HARD_LIMITS) {
-  const schema = schemasForLimits(limits)[name];
+export function toolInputSchemaForProfile(
+  name: ToolInputName,
+  allowedScopes: string[],
+  limits: ToolSchemaLimits = TOOL_SCHEMA_HARD_LIMITS,
+  requiredSearchResponseContract?: "opaque_refs_v2"
+) {
+  let schema = schemasForLimits(limits)[name];
+  if (name === "arcsuite_search_documents" && requiredSearchResponseContract === "opaque_refs_v2") {
+    const searchShape = { ...(schema as any).shape };
+    delete searchShape.cursor;
+    schema = z.object({
+      ...searchShape,
+      response_contract: z.enum(SEARCH_RESPONSE_CONTRACTS)
+        .default(requiredSearchResponseContract)
+        .describe(SEARCH_RESPONSE_CONTRACT_DESCRIPTION)
+    }).strict();
+  }
   if (name === "arcsuite_replay_search") {
     if (!allowedScopes.length) return (schema as any).safeExtend({ target_scope: z.never() });
     return (schema as any).safeExtend({ target_scope: z.enum(allowedScopes as [string, ...string[]]) });

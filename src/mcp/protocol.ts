@@ -31,7 +31,12 @@ export function createMcpHttpServer(options: McpHttpServerOptions) {
     const server = new McpServer({ name: "arcsuite-mcp", version: "0.2.0" });
     for (const definition of options.tools.list(profile)) {
       const name = definition.name as ToolInputName;
-      const schema = toolInputSchemaForProfile(name, profile.allowedScopes, schemaLimits);
+      const schema = toolInputSchemaForProfile(
+        name,
+        profile.allowedScopes,
+        schemaLimits,
+        profile.requiredSearchResponseContract
+      );
       if (!schema) continue;
       server.registerTool(definition.name, {
         description: definition.description,

@@ -317,6 +317,144 @@ test("tools/list advertises effective request limits and rejects over-limit call
   assert.deepEqual(providerCalls, { searchIds: 1, listIds: 1, revisions: 2, hardReferences: 1, getMany: 6, content: 1 });
 });
 
+test("HTTP tools/list reflects required opaque_refs_v2 policy and preserves normal profiles", async (t) => {
+  const strictToken = "test-token";
+  const normalToken = "http-token";
+  const makeProfile = (token: string, clientProfileId: string, required = false) => ({
+    tokenSha256: createHash("sha256").update(token).digest("hex"),
+    clientProfileId,
+    allowedScopes: ["example_documents"],
+    allowedTools: ["arcsuite_describe_capabilities", "arcsuite_search_documents"],
+    rateLimit: { requestsPerMinute: 120, burst: 30 },
+    ...(required ? { requiredSearchResponseContract: "opaque_refs_v2" } : {})
+  });
+  const strictProfileConfig = makeProfile(strictToken, "http-strict-v2", true);
+  const normalProfileConfig = makeProfile(normalToken, "http-normal");
+  const { rt, base } = await start({
+    MCP_DEV_BEARER_TOKEN: "",
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({
+      active_kid: "http-test",
+      keys: [{ kid: "http-test", secret_base64url: Buffer.alloc(32, 0x42).toString("base64url") }]
+    }),
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: JSON.stringify({ tokens: [strictProfileConfig, normalProfileConfig] })
+  });
+  t.after(() => rt.server.close());
+
+  const strictList = await rpc(base, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, strictToken);
+  assert.equal(strictList.status, 200);
+  const strictSearch: any = strictList.json.result.tools.find((tool: any) => tool.name === "arcsuite_search_documents");
+  assert.deepEqual(strictSearch.inputSchema.properties.scope.enum, ["example_documents"]);
+  assert.deepEqual(strictSearch.inputSchema.properties.response_contract.enum, ["legacy", "opaque_refs_v1", "opaque_refs_v2"]);
+  assert.equal(strictSearch.inputSchema.properties.response_contract.default, "opaque_refs_v2");
+  assert.equal(Object.hasOwn(strictSearch.inputSchema.properties, "cursor"), false);
+  const strictProfile = rt.config.tokenProfiles.find((profile: any) => profile.clientProfileId === "http-strict-v2")!;
+  const strictDefinition: any = rt.tools.list(strictProfile).find((tool: any) => tool.name === "arcsuite_search_documents");
+  assert.equal(strictSearch.description, strictDefinition.description);
+  assert.match(strictSearch.description, /requires opaque_refs_v2/);
+
+  const normalList = await rpc(base, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, normalToken);
+  assert.equal(normalList.status, 200);
+  const normalSearch: any = normalList.json.result.tools.find((tool: any) => tool.name === "arcsuite_search_documents");
+  assert.deepEqual(normalSearch.inputSchema.properties.scope.enum, ["example_documents"]);
+  assert.deepEqual(normalSearch.inputSchema.properties.response_contract.enum, ["legacy", "opaque_refs_v1", "opaque_refs_v2"]);
+  assert.equal(Object.hasOwn(normalSearch.inputSchema.properties, "cursor"), true);
+  assert.equal(normalSearch.inputSchema.properties.response_contract.default, undefined);
+  assert.match(normalSearch.inputSchema.properties.response_contract.description, /Omission selects legacy/);
+
+  for (const [id, token] of [[3, strictToken], [4, normalToken]] as const) {
+    const capabilities = await rpc(base, {
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "arcsuite_describe_capabilities", arguments: {} }
+    }, token);
+    assert.equal(capabilities.status, 200);
+    assert.equal(capabilities.json.result.structuredContent.version, "1.2");
+  }
+
+  let searchDispatches = 0;
+  const originalSearchIds = (rt.adapter as any).searchIds.bind(rt.adapter);
+  (rt.adapter as any).searchIds = async (...args: unknown[]) => {
+    searchDispatches += 1;
+    return originalSearchIds(...args);
+  };
+  const runtimeCalls: string[] = [];
+  const originalToolCall = rt.tools.call.bind(rt.tools);
+  (rt.tools as any).call = async (profile: unknown, name: string, args: unknown) => {
+    runtimeCalls.push(name);
+    return originalToolCall(profile as any, name, args);
+  };
+  let searchCallId = 5;
+  const invokeStrictSearch = (arguments_: Record<string, unknown>) => rpc(base, {
+    jsonrpc: "2.0",
+    id: searchCallId++,
+    method: "tools/call",
+    params: { name: "arcsuite_search_documents", arguments: arguments_ }
+  }, strictToken);
+
+  const runtimeCallsBeforeDefault = runtimeCalls.length;
+  const dispatchesBeforeDefault = searchDispatches;
+  const defaultContractSearch = await invokeStrictSearch({
+    scope: "example_documents",
+    filters: { document_number: "DOC-000001" }
+  });
+  assert.equal(defaultContractSearch.status, 200);
+  assert.equal(Boolean(defaultContractSearch.json.result?.isError), false, JSON.stringify(defaultContractSearch.json));
+  assert.equal(runtimeCalls.length, runtimeCallsBeforeDefault + 1);
+  assert.equal(runtimeCalls.at(-1), "arcsuite_search_documents");
+  assert.equal(searchDispatches, dispatchesBeforeDefault + 1);
+  searchDispatches = 0;
+  const defaultContractResult: any = defaultContractSearch.json.result.structuredContent.results[0];
+  assert.equal(typeof defaultContractResult.result_ref, "string");
+  assert.equal(Object.hasOwn(defaultContractResult, "document_id"), false);
+  assert.equal(JSON.stringify(defaultContractSearch.json.result).includes("rep:mock:EXAMPLE_CABINET:1001"), false);
+
+  for (const responseContract of ["legacy", "opaque_refs_v1"]) {
+    const runtimeCallsBeforeDowngrade = runtimeCalls.length;
+    const dispatchesBeforeDowngrade = searchDispatches;
+    assert.equal(dispatchesBeforeDowngrade, 0);
+    const rejectedDowngrade = await invokeStrictSearch({
+      scope: "example_documents",
+      filters: { document_number: "DOC-000001" },
+      response_contract: responseContract
+    });
+    assert.equal(rejectedDowngrade.status, 200);
+    assert.equal(rejectedDowngrade.json.result?.isError, true, JSON.stringify(rejectedDowngrade.json));
+    const downgradeError = JSON.parse(rejectedDowngrade.json.result.content[0].text);
+    assert.equal(downgradeError.code, "ARCSUITE_INVALID_ARGUMENT");
+    assert.equal(downgradeError.category, "search_response_contract_required");
+    assert.equal(runtimeCalls.length, runtimeCallsBeforeDowngrade + 1);
+    assert.equal(runtimeCalls.at(-1), "arcsuite_search_documents");
+    assert.equal(searchDispatches, 0);
+  }
+
+  const runtimeCallsBeforeCursor = runtimeCalls.length;
+  const dispatchesBeforeCursor = searchDispatches;
+  assert.equal(dispatchesBeforeCursor, 0);
+  const rawCursorRejected = await invokeStrictSearch({
+    scope: "example_documents",
+    cursor: "raw-test-cursor"
+  });
+  assert.equal(rawCursorRejected.json.result?.isError, true, JSON.stringify(rawCursorRejected.json));
+  assert.match(rawCursorRejected.json.result.content[0].text, /^Input validation error:/);
+  assert.match(rawCursorRejected.json.result.content[0].text, /Unrecognized key: "cursor"/);
+  assert.equal(runtimeCalls.length, runtimeCallsBeforeCursor, "raw cursor must fail HTTP/SDK validation before ToolRegistry.call");
+  assert.equal(searchDispatches, 0, "raw cursor must not dispatch to the provider");
+  const legacySearch = await rpc(base, {
+    jsonrpc: "2.0",
+    id: 9,
+    method: "tools/call",
+    params: {
+      name: "arcsuite_search_documents",
+      arguments: { scope: "example_documents", filters: { document_number: "DOC-000001" } }
+    }
+  }, normalToken);
+  assert.equal(legacySearch.status, 200);
+  assert.equal(typeof legacySearch.json.result.structuredContent.results[0].document_id, "string");
+  assert.equal(Object.hasOwn(legacySearch.json.result.structuredContent.results[0], "result_ref"), false);
+});
+
 test("ref-native read combinations are accepted or rejected before runtime dispatch exactly as advertised", async (t) => {
   const token = "http-token";
   const { rt, base } = await start({
