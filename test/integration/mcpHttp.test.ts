@@ -373,9 +373,77 @@ test("HTTP tools/list reflects required opaque_refs_v2 policy and preserves norm
     assert.equal(capabilities.json.result.structuredContent.version, "1.2");
   }
 
+  let searchDispatches = 0;
+  const originalSearchIds = (rt.adapter as any).searchIds.bind(rt.adapter);
+  (rt.adapter as any).searchIds = async (...args: unknown[]) => {
+    searchDispatches += 1;
+    return originalSearchIds(...args);
+  };
+  const runtimeCalls: string[] = [];
+  const originalToolCall = rt.tools.call.bind(rt.tools);
+  (rt.tools as any).call = async (profile: unknown, name: string, args: unknown) => {
+    runtimeCalls.push(name);
+    return originalToolCall(profile as any, name, args);
+  };
+  let searchCallId = 5;
+  const invokeStrictSearch = (arguments_: Record<string, unknown>) => rpc(base, {
+    jsonrpc: "2.0",
+    id: searchCallId++,
+    method: "tools/call",
+    params: { name: "arcsuite_search_documents", arguments: arguments_ }
+  }, strictToken);
+
+  const runtimeCallsBeforeDefault = runtimeCalls.length;
+  const dispatchesBeforeDefault = searchDispatches;
+  const defaultContractSearch = await invokeStrictSearch({
+    scope: "example_documents",
+    filters: { document_number: "DOC-000001" }
+  });
+  assert.equal(defaultContractSearch.status, 200);
+  assert.equal(Boolean(defaultContractSearch.json.result?.isError), false, JSON.stringify(defaultContractSearch.json));
+  assert.equal(runtimeCalls.length, runtimeCallsBeforeDefault + 1);
+  assert.equal(runtimeCalls.at(-1), "arcsuite_search_documents");
+  assert.equal(searchDispatches, dispatchesBeforeDefault + 1);
+  searchDispatches = 0;
+  const defaultContractResult: any = defaultContractSearch.json.result.structuredContent.results[0];
+  assert.equal(typeof defaultContractResult.result_ref, "string");
+  assert.equal(Object.hasOwn(defaultContractResult, "document_id"), false);
+  assert.equal(JSON.stringify(defaultContractSearch.json.result).includes("rep:mock:EXAMPLE_CABINET:1001"), false);
+
+  for (const responseContract of ["legacy", "opaque_refs_v1"]) {
+    const runtimeCallsBeforeDowngrade = runtimeCalls.length;
+    const dispatchesBeforeDowngrade = searchDispatches;
+    assert.equal(dispatchesBeforeDowngrade, 0);
+    const rejectedDowngrade = await invokeStrictSearch({
+      scope: "example_documents",
+      filters: { document_number: "DOC-000001" },
+      response_contract: responseContract
+    });
+    assert.equal(rejectedDowngrade.status, 200);
+    assert.equal(rejectedDowngrade.json.result?.isError, true, JSON.stringify(rejectedDowngrade.json));
+    const downgradeError = JSON.parse(rejectedDowngrade.json.result.content[0].text);
+    assert.equal(downgradeError.code, "ARCSUITE_INVALID_ARGUMENT");
+    assert.equal(downgradeError.category, "search_response_contract_required");
+    assert.equal(runtimeCalls.length, runtimeCallsBeforeDowngrade + 1);
+    assert.equal(runtimeCalls.at(-1), "arcsuite_search_documents");
+    assert.equal(searchDispatches, 0);
+  }
+
+  const runtimeCallsBeforeCursor = runtimeCalls.length;
+  const dispatchesBeforeCursor = searchDispatches;
+  assert.equal(dispatchesBeforeCursor, 0);
+  const rawCursorRejected = await invokeStrictSearch({
+    scope: "example_documents",
+    cursor: "raw-test-cursor"
+  });
+  assert.equal(rawCursorRejected.json.result?.isError, true, JSON.stringify(rawCursorRejected.json));
+  assert.match(rawCursorRejected.json.result.content[0].text, /^Input validation error:/);
+  assert.match(rawCursorRejected.json.result.content[0].text, /Unrecognized key: "cursor"/);
+  assert.equal(runtimeCalls.length, runtimeCallsBeforeCursor, "raw cursor must fail HTTP/SDK validation before ToolRegistry.call");
+  assert.equal(searchDispatches, 0, "raw cursor must not dispatch to the provider");
   const legacySearch = await rpc(base, {
     jsonrpc: "2.0",
-    id: 5,
+    id: 9,
     method: "tools/call",
     params: {
       name: "arcsuite_search_documents",
