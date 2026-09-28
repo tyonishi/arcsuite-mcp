@@ -476,6 +476,13 @@ The existing human-readable text result remains available for compatibility.
 Clients that can bind structured MCP output should use `structuredContent.content`
 for extracted text and reserve the text result for compatibility fallback.
 
+`extractable: true` from content-info means the selected content is supported
+for extraction under the current authority; it does not guarantee that the
+normalized extracted text is non-empty. Clients that require document text
+must treat an empty structured `content` value as unavailable and fail closed.
+They must not promote the human-readable read-result header into document
+content.
+
 When a text read is truncated, send `next_cursor` back as `cursor` without
 also sending page-selection fields. Content cursors are v2 signed tokens that
 expire and bind document, revision, extracted content, extractor, semantic

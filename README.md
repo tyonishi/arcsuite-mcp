@@ -54,8 +54,11 @@ gateway and a token profile allows them, P2 adds
 `arcsuite_list_document_revisions_by_ref`,
 `arcsuite_get_document_content_info_by_ref`, and
 `arcsuite_read_document_by_ref`. Legacy tools and response defaults remain
-unchanged. Restart invalidates refs; multi-replica operation and Dify v4.3
-integration are not provided in P2.
+unchanged. Restart invalidates refs, and multi-replica operation is not
+provided in P2. Dify remains an optional client integration rather than a core
+dependency; one operator deployment has live qualification evidence for the
+structured ref-native read path and unified B1-B4 workflow regression. See
+[docs/integrations/dify.md](docs/integrations/dify.md).
 
 See [docs/tools.md](docs/tools.md) for integrity validation, typed predicates,
 full-text modes, relationship reads, paging, batch-read, cache, and deep-link

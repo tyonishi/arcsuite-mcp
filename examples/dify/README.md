@@ -3,10 +3,15 @@
 This directory contains synthetic configuration and agent text for connecting
 a self-hosted Dify MCP client to the ArcSuite MCP gateway.
 
-Historical design target: Dify 1.14.2. It was not live-qualified as part of
-this sanitized repository build. Use a Dify release/plugin that supports
-Streamable HTTP and revalidate the exact configuration in the target
-environment.
+Historical design target: Dify 1.14.2. That version is not a project
+requirement. One operator deployment was live-qualified on 2026-09-28 for
+Streamable HTTP, provider refresh, structured ref-native read output, and the
+published ArcSuite workflow release `v0.10.2` against server source
+`60e38ecdd6c7a648f3b14f6cf31008bb326a0079`.
+
+That evidence does not qualify every Dify release or MCP plugin. Revalidate the
+exact client/plugin, provider refresh, structured-output binding, and bounded
+read path in each target environment.
 
 Files:
 
