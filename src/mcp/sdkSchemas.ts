@@ -168,6 +168,29 @@ function createToolInputSchemas(limits: ToolSchemaLimits) {
   } as const;
 }
 
+function createReadResultOutputSchemas(limits: ToolSchemaLimits) {
+  const resultFields = {
+    revision_number: z.number().int().min(MIN_REVISION_NUMBER).max(MAX_REVISION_NUMBER).optional(),
+    content_label: z.string().min(1).max(256),
+    file_name: z.string(),
+    content_type: z.string(),
+    extractor: z.string(),
+    page_range: z.object({
+      start: z.number().int().min(1).max(MAX_PAGE_NUMBER).optional(),
+      end: z.number().int().min(1).max(MAX_PAGE_NUMBER).optional()
+    }).strict().optional(),
+    content: z.string().max(limits.readMaxChars),
+    truncated: z.boolean(),
+    next_cursor: z.string().min(1).nullable(),
+    warnings: z.array(z.string()),
+    cached: z.boolean()
+  };
+  return {
+    arcsuite_read_document: z.object({ document_id: documentId, ...resultFields }).strict(),
+    arcsuite_read_document_by_ref: z.object({ result_ref: opaqueRef, ...resultFields }).strict()
+  } as const;
+}
+
 function assertToolSchemaLimits(limits: ToolSchemaLimits): void {
   if (!Number.isSafeInteger(limits.searchMaxLimit) || limits.searchMaxLimit < 1 || limits.searchMaxLimit > TOOL_SCHEMA_HARD_LIMITS.searchMaxLimit
     || !Number.isSafeInteger(limits.batchMaxIds) || limits.batchMaxIds < 1 || limits.batchMaxIds > TOOL_SCHEMA_HARD_LIMITS.batchMaxIds
@@ -188,6 +211,7 @@ export const toolInputSchemas = hardLimitSchemas;
  * advertise or accept a larger bound than config permits.
  */
 const schemaCache = new WeakMap<object, ReturnType<typeof createToolInputSchemas>>();
+const outputSchemaCache = new WeakMap<object, ReturnType<typeof createReadResultOutputSchemas>>();
 
 function schemasForLimits(limits: ToolSchemaLimits): ReturnType<typeof createToolInputSchemas> {
   assertToolSchemaLimits(limits);
@@ -199,6 +223,20 @@ function schemasForLimits(limits: ToolSchemaLimits): ReturnType<typeof createToo
 }
 
 export type ToolInputName = keyof typeof toolInputSchemas;
+
+function outputSchemasForLimits(limits: ToolSchemaLimits): ReturnType<typeof createReadResultOutputSchemas> {
+  assertToolSchemaLimits(limits);
+  const cached = outputSchemaCache.get(limits as object);
+  if (cached) return cached;
+  const schemas = createReadResultOutputSchemas(limits);
+  outputSchemaCache.set(limits as object, schemas);
+  return schemas;
+}
+
+export function toolOutputSchemaFor(name: ToolInputName, limits: ToolSchemaLimits = TOOL_SCHEMA_HARD_LIMITS) {
+  if (name !== "arcsuite_read_document" && name !== "arcsuite_read_document_by_ref") return undefined;
+  return outputSchemasForLimits(limits)[name];
+}
 
 export function toolInputSchemaForProfile(
   name: ToolInputName,

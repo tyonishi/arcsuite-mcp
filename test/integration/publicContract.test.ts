@@ -157,6 +157,8 @@ for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
     ]);
     assert.deepEqual(fixture.intentional_public_contract_delta.new_tools, []);
     assert.deepEqual(fixture.intentional_public_contract_delta.removed_tools, []);
+    assert.deepEqual(listed.result.tools.filter((tool: Record<string, unknown>) => Object.hasOwn(tool, "outputSchema")).map((tool: { name: string }) => tool.name),
+      fixture.output_schema_delta.added_tool_output_schemas);
     assert.equal(fixture.schema_compatibility_delta.previous_sha256, "c80c867e1a4750ca6d238dd14cd2e67c66ceb9e6be375718536cd2c3116ee867");
   });
 }
@@ -199,5 +201,7 @@ for (const protocolVersion of ["2025-03-26", "2026-07-28"] as const) {
     ]);
     assert.equal(p2Fixture.schema_compatibility_delta.previous_sha256, "3cbe801e51854d3330789fd53ac28c9e4e72d223c6bfcfc71bd640a195727b21");
     assert.deepEqual(p2Fixture.intentional_public_contract_delta.removed_tools, []);
+    assert.deepEqual(listed.result.tools.filter((tool: Record<string, unknown>) => Object.hasOwn(tool, "outputSchema")).map((tool: { name: string }) => tool.name),
+      p2Fixture.output_schema_delta.added_tool_output_schemas);
   });
 }

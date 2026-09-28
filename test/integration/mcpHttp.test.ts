@@ -48,7 +48,7 @@ async function rpc(base: string, body: unknown, token = "http-token", extraHeade
   return { status: res.status, json: JSON.parse(text) as any };
 }
 
-async function modernRpc(base: string, id: number, method: string, params: Record<string, unknown> = {}) {
+async function modernRpc(base: string, id: number, method: string, params: Record<string, unknown> = {}, token = "http-token") {
   return rpc(base, {
     jsonrpc: "2.0",
     id,
@@ -61,7 +61,7 @@ async function modernRpc(base: string, id: number, method: string, params: Recor
       },
       ...params
     }
-  }, "http-token", {
+  }, token, {
     "mcp-protocol-version": "2026-07-28",
     "mcp-method": method
   });
@@ -106,6 +106,121 @@ test("current MCP discovery envelope works over Streamable HTTP", async (t) => {
       assert.equal(tool.inputSchema.properties.revision_number.maximum, 2147483647);
     }
   }
+});
+
+test("read output schemas are advertised and validate bounded structured results over HTTP", async (t) => {
+  const bearerValue = "issue43-bearer";
+  const { rt, base } = await start({
+    MCP_DEV_BEARER_TOKEN: "",
+    MCP_READ_DEFAULT_MAX_CHARS: "1500",
+    MCP_READ_MAX_CHARS: "2000",
+    MCP_OPAQUE_REFS_ENABLED: "true",
+    MCP_OPAQUE_REF_KEYS_JSON: JSON.stringify({
+      active_kid: "issue43-test",
+      keys: [{ kid: "issue43-test", secret_base64url: Buffer.alloc(32, 0x43).toString("base64url") }]
+    }),
+    ARCSUITE_MCP_CLIENT_TOKENS_JSON: JSON.stringify({ tokens: [{
+      tokenSha256: createHash("sha256").update(bearerValue).digest("hex"),
+      clientProfileId: "issue43-output-schema-test",
+      allowedScopes: ["example_documents"],
+      allowedTools: ["arcsuite_search_documents", "arcsuite_read_document", "arcsuite_read_document_by_ref"],
+      requiredSearchResponseContract: "opaque_refs_v2",
+      rateLimit: { requestsPerMinute: 120, burst: 30 }
+    }] })
+  });
+  t.after(() => rt.server.close());
+
+  const legacyList = await rpc(base, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, bearerValue);
+  const modernList = await modernRpc(base, 2, "tools/list", {}, bearerValue);
+  assert.equal(legacyList.status, 200);
+  assert.equal(modernList.status, 200);
+
+  const directProperties = [
+    "cached", "content", "content_label", "content_type", "document_id", "extractor",
+    "file_name", "next_cursor", "page_range", "revision_number", "truncated", "warnings"
+  ];
+  const refProperties = [
+    "cached", "content", "content_label", "content_type", "extractor", "file_name",
+    "next_cursor", "page_range", "result_ref", "revision_number", "truncated", "warnings"
+  ];
+  for (const listed of [legacyList, modernList]) {
+    const tools = listed.json.result.tools;
+    assert.deepEqual(tools.map((tool: { name: string }) => tool.name).sort(), [
+      "arcsuite_read_document", "arcsuite_read_document_by_ref", "arcsuite_search_documents"
+    ]);
+    const byName = (name: string) => tools.find((tool: any) => tool.name === name);
+    const directSchema = byName("arcsuite_read_document").outputSchema;
+    const refSchema = byName("arcsuite_read_document_by_ref").outputSchema;
+    assert.equal(directSchema.type, "object");
+    assert.equal(directSchema.additionalProperties, false);
+    assert.equal(directSchema.properties.content.maxLength, 2000);
+    assert.deepEqual(Object.keys(directSchema.properties).sort(), directProperties);
+    assert.deepEqual(directSchema.required, [
+      "document_id", "content_label", "file_name", "content_type", "extractor", "content",
+      "truncated", "next_cursor", "warnings", "cached"
+    ]);
+    assert.equal(refSchema.type, "object");
+    assert.equal(refSchema.additionalProperties, false);
+    assert.deepEqual(Object.keys(refSchema.properties).sort(), refProperties);
+    assert.equal(Object.hasOwn(refSchema.properties, "document_id"), false);
+    assert.equal(Object.hasOwn(refSchema.properties, "open_url"), false);
+    assert.deepEqual(refSchema.required, [
+      "result_ref", "content_label", "file_name", "content_type", "extractor", "content",
+      "truncated", "next_cursor", "warnings", "cached"
+    ]);
+    assert.deepEqual(byName("arcsuite_search_documents").inputSchema.properties.response_contract.enum,
+      ["legacy", "opaque_refs_v1", "opaque_refs_v2"]);
+    assert.equal(byName("arcsuite_search_documents").inputSchema.properties.response_contract.default, "opaque_refs_v2");
+    assert.equal(Object.hasOwn(byName("arcsuite_search_documents").inputSchema.properties, "cursor"), false);
+    assert.deepEqual(tools.filter((tool: any) => tool.outputSchema).map((tool: any) => tool.name).sort(), [
+      "arcsuite_read_document", "arcsuite_read_document_by_ref"
+    ]);
+  }
+
+  const profile = rt.config.tokenProfiles.find((item: any) => item.clientProfileId === "issue43-output-schema-test");
+  assert.ok(profile);
+  const definitions = rt.tools.list(profile);
+  const directDefinition: any = definitions.find((tool: any) => tool.name === "arcsuite_read_document");
+  const refDefinition: any = definitions.find((tool: any) => tool.name === "arcsuite_read_document_by_ref");
+
+  const directCall = await rpc(base, {
+    jsonrpc: "2.0", id: 3, method: "tools/call",
+    params: { name: "arcsuite_read_document", arguments: { document_id: "rep:mock:EXAMPLE_CABINET:1001", max_chars: 1000 } }
+  }, bearerValue);
+  assert.equal(directCall.status, 200);
+  assert.equal(directCall.json.result.isError, undefined, JSON.stringify(directCall.json));
+  const direct = directCall.json.result.structuredContent;
+  assert.equal(typeof direct.content, "string");
+  assert.ok(direct.content.length > 0);
+  assert.equal(directDefinition.outputSchema.safeParse(direct).success, true);
+  const directText = directCall.json.result.content.find((item: any) => item.type === "text").text;
+  assert.match(directText, /^ArcSuite document content \(/);
+  assert.ok(directText.endsWith(direct.content));
+
+  const searchCall = await rpc(base, {
+    jsonrpc: "2.0", id: 4, method: "tools/call",
+    params: { name: "arcsuite_search_documents", arguments: { scope: "example_documents", filters: { document_number: "DOC-000001" } } }
+  }, bearerValue);
+  assert.equal(searchCall.json.result.isError, undefined, JSON.stringify(searchCall.json));
+  const resultRef = searchCall.json.result.structuredContent.results[0].result_ref;
+  assert.equal(typeof resultRef, "string");
+
+  const refCall = await rpc(base, {
+    jsonrpc: "2.0", id: 5, method: "tools/call",
+    params: { name: "arcsuite_read_document_by_ref", arguments: { result_ref: resultRef, max_chars: 1000 } }
+  }, bearerValue);
+  assert.equal(refCall.status, 200);
+  assert.equal(refCall.json.result.isError, undefined, JSON.stringify(refCall.json));
+  const ref = refCall.json.result.structuredContent;
+  assert.equal(ref.result_ref, resultRef);
+  assert.equal(Object.hasOwn(ref, "document_id"), false);
+  assert.equal(Object.hasOwn(ref, "open_url"), false);
+  assert.equal(typeof ref.content, "string");
+  assert.ok(ref.content.length > 0);
+  assert.equal(refDefinition.outputSchema.safeParse(ref).success, true);
+  const refText = refCall.json.result.content.find((item: any) => item.type === "text").text;
+  assert.match(refText, /^ArcSuite document content \(/);
+  assert.ok(refText.endsWith(ref.content));
 });
 
 test("MCP initialize, profile-aware discovery and semantic search work over Streamable HTTP", async (t) => {
