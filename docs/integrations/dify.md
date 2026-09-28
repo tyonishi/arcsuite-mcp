@@ -6,22 +6,33 @@ behavior.
 
 ## Compatibility status
 
-- Historical design target: self-hosted Dify 1.14.2.
-- Live Dify qualification: not performed for this sanitized public tree.
-- `DIFY_TOOLS_LIST_COMPATIBILITY`: `EVIDENCE_NOT_AVAILABLE`; source review
-  confirms the read tool uses an `anyOf` schema, but does not prove that the
-  target Dify MCP plugin interprets that shape correctly.
-- `DIFY_RUNTIME_SMOKE_TEST`: `PENDING_BEFORE_MERGE`; run the target Dify
-  profile through `tools/list` and a bounded read-tool call before merge or
-  deployment.
+- Historical design target: self-hosted Dify 1.14.2. It remains historical and
+  is not a project requirement.
+- Live operator qualification: `PASS` on 2026-09-28 against ArcSuite MCP
+  source `60e38ecdd6c7a648f3b14f6cf31008bb326a0079` and the operator's
+  published ArcSuite workflow release `v0.10.2`.
+- `DIFY_TOOLS_LIST_COMPATIBILITY`: `PASS`. After provider refresh, Dify
+  exposed the ref-native read's structured `content`, `truncated`, and
+  `result_ref` outputs. The qualified strict profile remained nine tools;
+  the ref-native read output did not expose `document_id` or `open_url`.
+- `DIFY_RUNTIME_SMOKE_TEST`: `PASS`. One non-empty qualified document
+  returned 10,990 structured characters through both raw MCP and Dify for the
+  same result ref, with matching SHA-256. The workflow consumed structured
+  content through its bounded Content Read Bridge.
+- Unified workflow regression: `PASS` for revision history, content summary,
+  bounded compare, and cross-scope replay (B1-B4) on the same published
+  workflow release.
 - Recommended transport: Dify's MCP plugin configured for standards-based
   Streamable HTTP at `/mcp`.
 - Legacy SSE-only plugin behavior: not part of the core endpoint. Upgrade or
   separately qualify a compatible plugin rather than exposing the ArcSuite
   adapter directly.
 
-Recheck the exact Dify plugin and transport behavior in the target Dify
-release. Do not treat the historical version as a project requirement.
+This qualification record applies to one operator deployment. The exact Dify
+platform/plugin release was not promoted into the sanitized public contract;
+other deployments must requalify their plugin, transport, provider refresh,
+and workflow binding. Do not treat the historical version as a requirement or
+the live record as a generic compatibility guarantee.
 
 ## Structured read output
 
@@ -35,13 +46,21 @@ primary input to a content bridge. For a bridge variable named
 Keep the existing text-header parser as a compatibility fallback using
 `det_content_read.text`. Preserve the workflow's existing 16,000-character
 bound and fail-closed guard until a non-empty structured content value has
-been verified. Trace data should contain status and length/truncation metadata,
-not document text or opaque references.
+been verified. Persisted qualification evidence should contain only status,
+length/truncation, hashes, and other non-content metadata. Document text and
+opaque-ref values must not be persisted. A workflow may carry an opaque
+`result_ref` internally for authority validation, but it must remain
+non-user-visible and be excluded or redacted from retained evidence.
 
-This describes the MCP-side contract and a sanitized binding target; it does
-not establish the output shape of a particular Dify plugin release. Provider
-refresh, workflow binding, and live content-summary qualification remain
-operational steps outside this repository change.
+The live qualification above confirms the structured binding for the recorded
+operator deployment. It also confirmed an important content boundary:
+`extractable: true` does not guarantee non-empty normalized text. A
+content-summary workflow must require a non-empty structured `content` value
+and fail closed when it is empty; a human-readable read-result header is not
+document content.
+
+Other Dify plugin releases still require provider refresh, binding inspection,
+and a bounded live read before being treated as compatible.
 
 ## Synthetic MCP configuration
 

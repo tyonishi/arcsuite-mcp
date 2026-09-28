@@ -2,6 +2,13 @@
 
 ## 0.1.0 - unreleased
 
+- Added successful-result MCP `outputSchema` declarations for direct and
+  ref-native content reads so structured `content` can be bound by capable
+  clients while the ref-native contract continues to suppress physical
+  identity fields. One operator Dify workflow was live-qualified on 2026-09-28
+  after provider refresh: raw MCP and Dify returned the same non-empty
+  structured content for the same result ref, and the unified B1-B4 workflow
+  regression passed.
 - Added ADR 0008 and bounded, trusted semantic scope/attribute guidance in
   `arcsuite_describe_capabilities`; aliases remain advisory and do not change
   search or authorization behavior.

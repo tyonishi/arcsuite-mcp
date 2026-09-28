@@ -32,7 +32,21 @@ supported protocol era through the official SDK.
 | Python helper | Python 3 |
 | PDF extraction | Poppler `pdftotext` |
 | ArcSuite | Licensed environment and version must be qualified by the operator |
-| Dify | Integration example only; historical design target Dify 1.14.2 was not requalified in this sanitized tree |
+| Dify | Integration example; one operator deployment was live-qualified on 2026-09-28 for Streamable HTTP, provider refresh, structured ref-native content binding, and unified B1-B4 workflow regression. Exact platform/plugin versions remain environment-specific and must be requalified. |
+
+### Dify live-qualification boundary
+
+The recorded operator qualification used ArcSuite MCP source
+`60e38ecdd6c7a648f3b14f6cf31008bb326a0079` and published ArcSuite workflow
+release `v0.10.2`. The strict client profile exposed nine tools and required
+`opaque_refs_v2`. A non-empty read returned 10,990 structured characters
+through both raw MCP and Dify for the same result ref with matching SHA-256;
+the workflow's structured-content bridge and the unified B1-B4 regression
+passed.
+
+This is deployment evidence, not a promise that every Dify platform/plugin
+release has the same projection behavior. The exact plugin/transport/provider
+combination must be requalified after material client changes.
 
 ## ArcSuite v1.1 operation requirements
 
