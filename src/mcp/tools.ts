@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ZodType } from "zod";
 import type { TokenProfile, AppConfig } from "../config.ts";
 import type { ArcSuiteAdapterClient } from "../arcsuite/soapAdapterClient.ts";
 import type {
@@ -24,6 +25,7 @@ import { AuditLogger } from "../audit/auditLogger.ts";
 import { PagingSnapshotStore } from "./paging.ts";
 import { buildAppliedQuery, type AppliedQuery } from "./appliedQuery.ts";
 import { McpToolError, toMcpToolError } from "./errors.ts";
+import { toolOutputSchemaFor } from "./sdkSchemas.ts";
 import { assertExactKeys, assertObject, boolValue, enumValue, intValue, optionalInt, optionalString, stringValue } from "../util/json.ts";
 import { CONTENT_LABEL_PRIMARY_ALIAS, isSemanticContentLabelAlias, samePhysicalContentLabel } from "../semantic/contentLabels.ts";
 import {
@@ -42,6 +44,7 @@ export type ToolDefinition = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: ZodType;
 };
 
 export type ToolCallResult = {
@@ -2538,7 +2541,8 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
     {
       name: "arcsuite_read_document",
       description: "Read a configured semantic content label through the ArcSuite adapter, reuse a private bounded snapshot when available, and return bounded text with a signed cursor. Binary/base64 content is never returned.",
-      inputSchema: readDocumentJsonSchema(documentId, contentLabel, config)
+      inputSchema: readDocumentJsonSchema(documentId, contentLabel, config),
+      outputSchema: toolOutputSchemaFor("arcsuite_read_document", config)
     },
     {
       name: "arcsuite_list_hard_references",
@@ -2583,7 +2587,8 @@ function buildDefinitions(profile: TokenProfile, scopes: ScopeRegistry, config: 
     {
       name: "arcsuite_read_document_by_ref",
       description: "Read bounded text for a previously verified result using result_ref; do not provide or reconstruct document_id.",
-      inputSchema: readDocumentByRefJsonSchema(opaqueRef, contentLabel, config)
+      inputSchema: readDocumentByRefJsonSchema(opaqueRef, contentLabel, config),
+      outputSchema: toolOutputSchemaFor("arcsuite_read_document_by_ref", config)
     }
   ];
 }

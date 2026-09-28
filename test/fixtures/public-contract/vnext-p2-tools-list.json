@@ -1,5 +1,5 @@
 {
-  "previous_p1_sha256": "630ebadda2d7d934f462893c28cf5780aabbd181f8171770487c226124632775",
+  "previous_p1_sha256": "590a0d110ecbbea646e6e3e766581c43fe8ae84353970e0938c20537a3b9d876",
   "schema_compatibility_delta": {
     "previous_sha256": "3cbe801e51854d3330789fd53ac28c9e4e72d223c6bfcfc71bd640a195727b21",
     "changed_tool_input_schemas": [
@@ -12,7 +12,7 @@
   "result_keys": ["tools"],
   "modern_result_keys": ["_meta", "cacheScope", "resultType", "tools", "ttlMs"],
   "tool_count": 17,
-  "tool_key_sets": ["description,inputSchema,name"],
+  "tool_key_sets": ["description,inputSchema,name", "description,inputSchema,name,outputSchema"],
   "tool_names": [
     "arcsuite_describe_capabilities",
     "arcsuite_search_documents",
@@ -45,5 +45,8 @@
     ],
     "removed_tools": []
   },
-  "canonical_tools_sha256": "f49fc28ac4907f85ef81515fe47e78f58fb2687c6b3ceef1aaefc0fb415890f1"
+  "output_schema_delta": {
+    "added_tool_output_schemas": ["arcsuite_read_document", "arcsuite_read_document_by_ref"]
+  },
+  "canonical_tools_sha256": "1a141fd93eb4b2fccdf0fba7606102dac3cd12d5fb19cb846cb216471f3ec62a"
 }

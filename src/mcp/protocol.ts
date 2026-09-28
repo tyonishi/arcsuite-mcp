@@ -40,7 +40,8 @@ export function createMcpHttpServer(options: McpHttpServerOptions) {
       if (!schema) continue;
       server.registerTool(definition.name, {
         description: definition.description,
-        inputSchema: schema
+        inputSchema: schema,
+        ...(definition.outputSchema ? { outputSchema: definition.outputSchema } : {})
       }, async (args: unknown) => {
         try {
           return await options.tools.call(profile, definition.name, args);

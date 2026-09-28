@@ -11,7 +11,7 @@
   "result_keys": ["tools"],
   "modern_result_keys": ["_meta", "cacheScope", "resultType", "tools", "ttlMs"],
   "tool_count": 10,
-  "tool_key_sets": ["description,inputSchema,name"],
+  "tool_key_sets": ["description,inputSchema,name", "description,inputSchema,name,outputSchema"],
   "tool_names": [
     "arcsuite_describe_capabilities",
     "arcsuite_search_documents",
@@ -32,5 +32,8 @@
     "new_tools": [],
     "removed_tools": []
   },
-  "canonical_tools_sha256": "630ebadda2d7d934f462893c28cf5780aabbd181f8171770487c226124632775"
+  "output_schema_delta": {
+    "added_tool_output_schemas": ["arcsuite_read_document"]
+  },
+  "canonical_tools_sha256": "590a0d110ecbbea646e6e3e766581c43fe8ae84353970e0938c20537a3b9d876"
 }

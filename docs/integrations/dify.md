@@ -23,6 +23,26 @@ behavior.
 Recheck the exact Dify plugin and transport behavior in the target Dify
 release. Do not treat the historical version as a project requirement.
 
+## Structured read output
+
+`arcsuite_read_document` and `arcsuite_read_document_by_ref` advertise output
+schemas for their successful structured results. After deploying an MCP server
+version that includes these schemas and refreshing the Dify provider/tool
+definition, bind the ref-native result's structured `content` field as the
+primary input to a content bridge. For a bridge variable named
+`det_content_read`, the intended binding is `det_content_read.content`.
+
+Keep the existing text-header parser as a compatibility fallback using
+`det_content_read.text`. Preserve the workflow's existing 16,000-character
+bound and fail-closed guard until a non-empty structured content value has
+been verified. Trace data should contain status and length/truncation metadata,
+not document text or opaque references.
+
+This describes the MCP-side contract and a sanitized binding target; it does
+not establish the output shape of a particular Dify plugin release. Provider
+refresh, workflow binding, and live content-summary qualification remain
+operational steps outside this repository change.
+
 ## Synthetic MCP configuration
 
 ```json

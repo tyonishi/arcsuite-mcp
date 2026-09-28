@@ -465,6 +465,17 @@ Read example:
 }
 ```
 
+Both read tools advertise an MCP `outputSchema` for successful
+`structuredContent`. Its `content` field is bounded by the configured read
+limit; `revision_number` and `page_range` are optional, and `next_cursor` is
+either a continuation token or `null`. The direct read result includes
+`document_id`. The ref-native read result includes `result_ref` and omits
+`document_id`, `open_url`, and other physical identity details.
+
+The existing human-readable text result remains available for compatibility.
+Clients that can bind structured MCP output should use `structuredContent.content`
+for extracted text and reserve the text result for compatibility fallback.
+
 When a text read is truncated, send `next_cursor` back as `cursor` without
 also sending page-selection fields. Content cursors are v2 signed tokens that
 expire and bind document, revision, extracted content, extractor, semantic
