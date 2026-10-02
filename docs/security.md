@@ -20,7 +20,9 @@ without adding a cached authorization decision.
 ## Defense in depth
 
 - Host and Origin allowlists protect plain Node HTTP against DNS rebinding and
-  untrusted browser origins.
+  untrusted browser origins. Invalid request-target URL parsing is contained
+  after those checks and returns a generic HTTP 400 before authentication or
+  tool dispatch; the response does not echo the target or parser exception.
 - Bearer tokens are compared by hash and timing-safe comparison. The token
   value is not placed in MCP results or audit records.
 - Profiles limit scopes and tools and have a bounded token-bucket rate limit.

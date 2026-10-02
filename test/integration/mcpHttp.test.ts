@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { IncomingMessage, ServerResponse } from "node:http";
+import { Socket } from "node:net";
+import { ProfileStore, RateLimiter } from "../../src/mcp/auth.ts";
 import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -682,4 +685,44 @@ test("MCP rejects a request body above the configured bound", async (t) => {
   });
   assert.equal(res.status, 413);
   assert.equal(res.json.error.code, -32600);
+});
+
+
+test("invalid request-target parsing is contained before authentication", async (t) => {
+  const { rt, base } = await start();
+  t.after(() => rt.server.close());
+  const authenticate = t.mock.method(ProfileStore.prototype, "authenticate");
+  const limit = t.mock.method(RateLimiter.prototype, "allow");
+  const dispatch = t.mock.method(rt.tools, "call");
+  const socket = new Socket();
+  t.after(() => socket.destroy());
+  const request = new IncomingMessage(socket);
+  request.method = "GET";
+  request.url = "http://[invalid";
+  request.headers = { host: "localhost" };
+  const response = new ServerResponse(request);
+  let body = "";
+  const head = t.mock.method(response, "writeHead");
+  const end = t.mock.method(response, "end", function (chunk?: unknown) {
+    body = String(chunk ?? "");
+    return response;
+  });
+
+  // Invoke the registered listener directly; no malformed traffic is sent.
+  assert.doesNotThrow(() => rt.server.emit("request", request, response));
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(head.mock.calls[0]?.arguments, [400, { "content-type": "application/json; charset=utf-8" }]);
+  assert.equal(end.mock.callCount(), 1);
+  assert.deepEqual(JSON.parse(body), { error: "invalid_request_target" });
+  assert.equal(authenticate.mock.callCount(), 0);
+  assert.equal(limit.mock.callCount(), 0);
+  assert.equal(dispatch.mock.callCount(), 0);
+
+  assert.equal((await fetch(`${base}/healthz?probe=1`)).status, 200);
+  assert.equal((await fetch(`${base}/readyz?probe=1`)).status, 200);
+  assert.equal((await fetch(`${base}/unknown?probe=1`)).status, 404);
+  assert.equal((await fetch(`${base}/mcp?probe=1`)).status, 401);
+  const normal = await modernRpc(base, 90, "tools/list");
+  assert.equal(normal.status, 200);
+  assert.deepEqual(normal.json.result.tools.map((tool: { name: string }) => tool.name).sort(), expectedNames);
 });

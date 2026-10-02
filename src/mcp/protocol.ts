@@ -75,7 +75,14 @@ export function createMcpHttpServer(options: McpHttpServerOptions) {
 
   const server = createServer((req, res) => {
     if (!validateHost(req, res) || !validateOrigin(req, res)) return;
-    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    let pathname: string;
+    try {
+      pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    } catch {
+      // Request-target parsing is outside the asynchronous MCP error boundary.
+      sendJson(res, 400, { error: "invalid_request_target" });
+      return;
+    }
 
     if (pathname === "/healthz" && req.method === "GET") {
       void respondHealth(res, options.health);
