@@ -269,3 +269,16 @@ test("idle interval removes newly aged data and stop prevents subsequent sweeps"
   await new Promise((resolve) => setTimeout(resolve, 1200));
   assert.equal(JSON.parse(await fs.readFile(path, "utf8")).n, 2);
 });
+
+
+test("empty active file does not evict real archives on an earlier queued timestamp", async (t) => {
+  const { path } = await fixture(t);
+  await privateFile(path, "");
+  await fs.utimes(path, new Date(stamp + 1000), new Date(stamp + 1000));
+  await privateFile(path + ".1", record(1));
+  await privateFile(path + ".2", record(2));
+  await new RotatingAuditFile(path, policy()).append(record(3));
+  assert.equal(await fs.readFile(path, "utf8"), record(3));
+  assert.equal(await fs.readFile(path + ".1", "utf8"), record(1));
+  assert.equal(await fs.readFile(path + ".2", "utf8"), record(2));
+});

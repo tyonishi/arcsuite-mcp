@@ -46,7 +46,7 @@ export class RotatingAuditFile {
     if (!Number.isFinite(timestamp) || timestamp < 0) throw new Error("Invalid audit timestamp");
     await this.sweep();
     const active = await this.inspect(this.path);
-    if (active && (!active.complete || timestamp < active.oldest || active.bytes + bytes > this.policy.maxFileBytes)) await this.rotate();
+    if (active && active.bytes > 0 && (!active.complete || timestamp < active.oldest || active.bytes + bytes > this.policy.maxFileBytes)) await this.rotate();
     const file = await this.fs.open(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     try {
       const stat = await file.stat();
