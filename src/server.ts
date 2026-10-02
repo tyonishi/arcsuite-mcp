@@ -44,7 +44,7 @@ export async function buildRuntime(
     maxContentBytes: config.maxContentBytes,
     maxExtractedChars: config.maxExtractedChars
   }, contentCache);
-  const audit = new AuditLogger(config.auditLogPath);
+  const audit = new AuditLogger(config.auditLogPath, {}, config.auditRetention);
   const handles = config.opaqueRefs ? new OpaqueHandleService(config.opaqueRefs) : null;
   const tools = new ToolRegistry(config, scopes, adapter, sessions, bridge, audit, handles);
   let readyState: { ok: boolean; message?: string } = { ok: !config.validateOnStartup, message: config.validateOnStartup ? "validation pending" : undefined };
@@ -110,7 +110,10 @@ export async function buildRuntime(
     health: () => adapter.health(),
     ready: async () => readyState
   });
+  audit.startMaintenance();
+  server.once("close", () => audit.stopMaintenance());
   const stopValidationRetry = () => {
+    audit.stopMaintenance();
     validationRetryStopped = true;
     clearValidationRetry();
   };

@@ -2,6 +2,10 @@
 
 ## 0.1.0 - unreleased
 
+- Added bounded JSONL audit rotation, configurable byte/file/age limits,
+  bounded serialized admission, and idle retention diagnostics. The Compose
+  template now requires a dedicated operator-provisioned persistent audit mount.
+
 - Added read-only, actual-service secret readability preflight and clarified
   host/container UID mapping for file-backed Compose secrets.
 - Made audit-write failures visible through sampled, sanitized stderr diagnostics

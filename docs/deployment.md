@@ -101,9 +101,14 @@ The gateway and adapter use read-only root filesystems, /tmp tmpfs,
 no-new-privileges, and dropped Linux capabilities. The named arcsuite-content
 volume is mounted at /shared in both services for the bounded adapter/content
 exchange. The scope file is mounted read-only. The gateway's metadata-only
-audit output defaults to its writable /tmp tmpfs. `MCP_AUDIT_LOG_PATH` may
-select another reviewed writable mount when the target environment requires
-audit retention.
+audit output uses a separate operator-provisioned persistent bind mount.
+Set `MCP_AUDIT_HOST_DIR` to an existing absolute host directory owned by the
+mapped service UID (normally 10001), with private directory mode 0700. The
+Compose template refuses to auto-create it. Review host UID mapping as for
+secrets; do not make the directory world-writable to bypass a mapping issue.
+Only the gateway mounts it at `/var/log/arcsuite-mcp`; the adapter does not.
+Before first start, read the [retention and migration rules](audit-retention.md).
+Changing this source template does not update an operator's ignored Compose file.
 
 The default gateway-to-adapter URL is plain HTTP,
 http://arcsuite-adapter:18080, because the Java adapter listener and the
@@ -362,13 +367,18 @@ The count is cumulative for that logger instance, bounded to the largest safe
 integer, and resets on process restart. It does not claim how many records a
 filesystem partially wrote. Diagnostics contain no record content, identifiers,
 path, error message, or stack. A failed warning sink is swallowed; records are
-not queued or retried, and no background timer is added. Recovery permits
-subsequent ordinary audit appends without changing readiness or business status.
+never retried. Accepted writes are serialized through a bounded queue;
+excess admission and oversized records increment this same failure counter.
+Recovery permits subsequent ordinary audit appends without changing readiness
+or business status. Filesystem calls are asynchronous but are not guaranteed
+to finish within a hard deadline.
 
-The Compose example still writes audit output into the ephemeral shared 64 MiB
-`/tmp` filesystem. This visibility change does not impose audit retention,
-rotation, or an accumulated storage limit. Monitor stderr and filesystem usage;
-review durable storage and retention separately before relying on audit history.
+Idle retention runs through the same writer, at most one pending sweep. A failed
+sweep emits sampled `audit_maintenance_failed` with cumulative
+`failed_maintenance`; it does not claim a newly dropped record. The unreferenced
+timer is stopped with the runtime's shutdown hooks. Monitor both diagnostics
+and filesystem usage. See [bounded audit retention](audit-retention.md) for the
+50 MiB default data budget, maximum age, failure boundaries, and migration rules.
 
 
 ## Capacity and deadline sizing
