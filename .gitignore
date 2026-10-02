@@ -44,6 +44,7 @@ tmp-extracted/
 *.soap
 *.trace
 *.jsonl
+*.jsonl.[0-9]*
 
 # Local development material copied from the Project workspace.
 materials/

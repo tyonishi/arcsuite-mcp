@@ -281,3 +281,11 @@ client; see [docs/compatibility.md](docs/compatibility.md).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+### Bounded audit history
+
+Audit JSONL history now has configurable byte, file-count, and maximum-age
+limits with fail-open diagnostics. The Compose template requires a private,
+persistent audit directory. See [audit retention and migration](docs/audit-retention.md)
+before enabling the new version on existing logs; capacity bounds do not guarantee
+that a minimum number of days is retained.

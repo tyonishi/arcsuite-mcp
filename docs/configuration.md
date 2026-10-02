@@ -45,7 +45,12 @@ runtime configuration or authority.
 | `MCP_MAX_CONTENT_BYTES` | `52428800` | Maximum adapter content file size |
 | `MCP_MAX_EXTRACTED_CHARS` | `200000` | Maximum extractor output retained for cursoring/cache |
 | `MCP_SHARED_TEMP_DIR` | `/tmp/arcsuite-mcp-shared` | Private adapter/content exchange directory |
-| `MCP_AUDIT_LOG_PATH` | `/tmp/arcsuite-mcp-audit.jsonl` | Metadata-only audit log |
+| `MCP_AUDIT_LOG_PATH` | `/tmp/arcsuite-mcp-audit.jsonl` | Active metadata-only JSONL file; container/Compose uses `/var/log/arcsuite-mcp/audit.jsonl` |
+| `MCP_AUDIT_MAX_FILE_BYTES` | `10485760` | Per-file UTF-8 byte cap, 1–104857600; must fit max record bytes |
+| `MCP_AUDIT_MAX_FILES` | `5` | Total active + archived files, 1–32 |
+| `MCP_AUDIT_MAX_AGE_SECONDS` | `604800` | Maximum segment age, 1–31536000; not a guaranteed minimum retention |
+| `MCP_AUDIT_MAX_RECORD_BYTES` | `65536` | Maximum serialized record including newline, 1–65536 |
+| `MCP_AUDIT_MAX_PENDING_RECORDS` | `128` | In-flight + queued audit writes/maintenance, 1–256 |
 | `MCP_CURSOR_TTL_SECONDS` | `600` | Signed content cursor validity period |
 | `MCP_PAGING_TTL_SECONDS` | `600` | Paging snapshot/cursor lifetime |
 | `MCP_PAGING_SNAPSHOT_MAX_IDS` | `1000` | Maximum IDs retained in one search, folder, or Hard Reference snapshot |
@@ -592,5 +597,7 @@ to the configured container UID.
 `MCP_AUDIT_LOG_PATH` remains operator-owned storage. On write failure, the logger
 keeps business processing fail-open and emits a rate-limited `audit_write_failed`
 diagnostic with a cumulative dropped-record count. Paths, records, and raw errors
-are excluded. No retry queue, automatic rotation, retention rule, or readiness
-failure is introduced. See [audit diagnostics](deployment.md#audit-write-failure-diagnostics).
+are excluded. No record retry or audit-induced readiness failure is introduced.
+Bounded serialization and the shared writer queue reject excess
+records rather than growing memory. See [audit retention](audit-retention.md) and
+[audit diagnostics](deployment.md#audit-write-failure-diagnostics).

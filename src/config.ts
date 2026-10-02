@@ -1,3 +1,4 @@
+import { loadAuditRetention, type AuditRetention } from "./audit/retention.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -64,6 +65,7 @@ export type AppConfig = {
   maxExtractedChars: number;
   sharedTempDir: string;
   auditLogPath: string;
+  auditRetention: AuditRetention;
   cursorSecret: Buffer;
   cursorTtlSeconds: number;
   pagingTtlSeconds: number;
@@ -244,6 +246,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxExtractedChars,
     sharedTempDir: resolve(env.MCP_SHARED_TEMP_DIR ?? "/tmp/arcsuite-mcp-shared"),
     auditLogPath: resolve(env.MCP_AUDIT_LOG_PATH ?? "/tmp/arcsuite-mcp-audit.jsonl"),
+    auditRetention: loadAuditRetention(env),
     cursorSecret,
     cursorTtlSeconds,
     pagingTtlSeconds,
