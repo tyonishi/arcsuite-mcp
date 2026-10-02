@@ -149,8 +149,35 @@ or an image signature. A representative operator flow is:
   docker compose --env-file .env -f docker-compose.yml up -d
   docker compose --env-file .env -f docker-compose.yml images
   docker compose --env-file .env -f docker-compose.yml ps
-  curl --fail http://127.0.0.1:8080/healthz
-  curl --fail http://127.0.0.1:8080/readyz
+  gateway_address=$(docker compose --env-file .env -f docker-compose.yml \
+    port --index 1 mcp-gateway 8080)
+  case "$gateway_address" in
+    ''|*[[:space:]]*)
+      printf '%s\n' 'Expected one published gateway address.' >&2
+      exit 1
+      ;;
+    *:*) ;;
+    *) exit 1 ;;
+  esac
+  gateway_host=${gateway_address%:*}
+  gateway_port=${gateway_address##*:}
+  case "$gateway_port" in ''|*[!0-9]*) exit 1 ;; esac
+  test "${#gateway_port}" -le 5
+  test "$gateway_port" -ge 1
+  test "$gateway_port" -le 65535
+  case "$gateway_host" in
+    \[*\]) gateway_host=${gateway_host#\[}; gateway_host=${gateway_host%\]} ;;
+  esac
+  case "$gateway_host" in
+    '') exit 1 ;;
+    0.0.0.0) gateway_host=127.0.0.1 ;;
+    ::) gateway_host=::1 ;;
+  esac
+  case "$gateway_host" in *:*) gateway_host="[$gateway_host]" ;; esac
+  gateway_address="${gateway_host}:${gateway_port}"
+  gateway_origin="http://${gateway_address}"
+  curl --noproxy '*' --globoff --fail "${gateway_origin}/healthz"
+  curl --noproxy '*' --globoff --fail "${gateway_origin}/readyz"
 )
 ```
 
@@ -162,6 +189,20 @@ exiting the operator's interactive shell. Capture Git output before exporting
 it so that `export` cannot hide a failed lookup. A failure after `up -d` stops
 further checks but does not roll back containers already started; investigate
 and follow the operator's recovery procedure.
+
+Run these probes on the Docker host. `docker compose port` reads the actual
+published binding, including the effective `ARCSUITE_MCP_BIND_IP` and
+`ARCSUITE_MCP_HOST_PORT` from `.env` or shell overrides. Do not source or eval
+`.env`, and do not assume its values were exported into the shell. IPv4/IPv6
+wildcard bindings are probed through the corresponding local loopback address;
+a specific bind address and a custom host port are retained. Both probes use
+the same derived origin, with proxy use disabled for the direct host check.
+Raw and bracketed IPv6 output are accepted. Missing hosts, invalid host ports,
+and whitespace-containing results stop the checks. This template
+publishes one binding; if an operator adds multiple bindings, select and
+review the intended address explicitly. Remote Docker contexts require an
+operator-reviewed reachable address on that Docker host, not this automatic
+local-loopback substitution.
 
 The image-label comparisons must succeed before `up -d`. Record the actual
 running image IDs from `docker compose images` before live qualification.
