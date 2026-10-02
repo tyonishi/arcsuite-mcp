@@ -2,6 +2,9 @@
 
 ## 0.1.0 - unreleased
 
+- Bounded SOAP response receipt and MIME/XML decoding by one monotonic request
+  budget; added finite HTTP admission and parser capacities without changing
+  the session-refresh retry policy.
 - Contained invalid HTTP request-target parsing with a generic 400 response
   before authentication or tool dispatch, preserving valid route behavior.
 

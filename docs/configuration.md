@@ -65,7 +65,11 @@ runtime configuration or authority.
 | `ARCSUITE_ADAPTER_BIND_HOST` | `127.0.0.1` | Java adapter listener; container example overrides to `0.0.0.0` on a private network |
 | `ARCSUITE_ADAPTER_PORT` | `18080` | Java adapter internal listener port |
 | `ARCSUITE_CONNECT_TIMEOUT_MS` | `30000` | Java adapter ArcSuite connection timeout |
-| `ARCSUITE_REQUEST_TIMEOUT_MS` | `600000` | Java adapter ArcSuite request timeout |
+| `ARCSUITE_REQUEST_TIMEOUT_MS` | `600000` | One SOAP exchange through bounded body EOF and SOAP MIME/XML decoding; not a whole semantic-request deadline |
+| `ARCSUITE_HTTP_WORKERS` | `8` | HTTP dispatch workers, 2–128; must exceed active requests |
+| `ARCSUITE_HTTP_QUEUE` | `16` | Pending HTTP dispatch tasks, 1–256 |
+| `ARCSUITE_ACTIVE_REQUESTS` | `4` | Concurrent authenticated business handlers, including session waiters; less than HTTP workers |
+| `ARCSUITE_PARSER_WORKERS` | `2` | Concurrent SOAP response parsers, 1 through active requests; no additional parser backlog |
 | `ARCSUITE_SESSION_IDLE_TTL_SECONDS` | `1500` | Java adapter session idle lifetime |
 | `ARCSUITE_SESSION_MAX_AGE_SECONDS` | `1700` | Java adapter session maximum lifetime |
 | `ARCSUITE_PER_SESSION_CONCURRENCY` | `4` | Java adapter per-profile session concurrency |
@@ -539,3 +543,40 @@ The environment-variable fallbacks are for controlled local development only;
 production deployments should use `*_FILE` variables or the container
 platform's secret manager. The Podman template documents the required secret
 names and mounts.
+
+
+## Adapter deadlines and overload
+
+The SOAP request budget uses a monotonic clock and is not reset at response
+headers, body completion, or parser admission. Both a declared oversized body
+and a streamed body crossing the content limit plus 16 MiB envelope allowance
+are rejected before further copying. Cancellation closes the local body
+subscription and cancels the HTTP exchange on a best-effort basis; it does
+not prove the remote service stopped processing the request.
+
+MIME/XML decoding runs in a finite parser executor with admission capped at its worker count. The caller
+stops waiting at its remaining deadline and ignores late parser results.
+Cooperative parsing checks request cancellation. A parser that has not
+actually exited still occupies its worker, even after its future is canceled.
+This is bounded local retention, not a hard real-time guarantee that arbitrary
+JVM library computation terminates at the deadline.
+
+The deadline ends when the SOAP response is decoded. It does not include the
+HTTP dispatch queue, session-lock waiting, later operation-specific DOM
+mapping, content-file handoff, or a semantic request comprising multiple SOAP
+operations. Worker/admission limits bound the number of these handlers and
+waiters; they do not introduce a whole-request waiting-time guarantee.
+
+Authenticated requests exceeding business admission receive HTTP 503 with
+`ARCSUITE_UPSTREAM_ERROR`, `retryable: true`, and `Retry-After: 1`. Parser
+saturation maps to the existing retryable upstream error (HTTP 502). Neither
+case adds automatic replay. If all dispatch workers and the finite queue are
+occupied, executor rejection can close the transport before an HTTP response
+is available; a JSON 503 is not guaranteed at this absolute boundary.
+
+These are per-adapter-process limits. Review expected profile concurrency,
+response size, JVM heap, and DOM expansion before increasing them. The defaults
+bound resources but do not promise to accept every burst previously admitted
+by the unbounded executor. For Compose or Podman, explicitly pass any custom
+capacity variables to the adapter service; placing variables only in a host
+`.env` file does not automatically inject them into a container.

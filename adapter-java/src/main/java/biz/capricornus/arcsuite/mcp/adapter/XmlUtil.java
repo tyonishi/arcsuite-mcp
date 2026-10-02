@@ -12,8 +12,11 @@ import java.util.List;
 final class XmlUtil {
     private XmlUtil() {}
 
-    static Document parse(byte[] xml) {
+    static Document parse(byte[] xml) { return parse(xml, null); }
+
+    static Document parse(byte[] xml, RequestDeadline deadline) {
         try {
+            if (deadline != null) deadline.check();
             var f = DocumentBuilderFactory.newInstance();
             f.setNamespaceAware(true);
             f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -23,8 +26,21 @@ final class XmlUtil {
             f.setExpandEntityReferences(false);
             try { f.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, ""); } catch (IllegalArgumentException ignored) {}
             try { f.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, ""); } catch (IllegalArgumentException ignored) {}
-            return f.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(xml));
+            var input = new java.io.ByteArrayInputStream(xml) {
+                private void checkDeadline() { if (deadline != null) deadline.check(); }
+                @Override public synchronized int read() { checkDeadline(); return super.read(); }
+                @Override public synchronized int read(byte[] buffer, int offset, int length) {
+                    checkDeadline();
+                    return super.read(buffer, offset, Math.min(length, 8192));
+                }
+                @Override public synchronized long skip(long count) { checkDeadline(); return super.skip(Math.min(count, 8192)); }
+            };
+            Document document = f.newDocumentBuilder().parse(input);
+            if (deadline != null) deadline.check();
+            return document;
         } catch (Exception e) {
+            if (deadline != null) deadline.check();
+            if (e instanceof AdapterException mapped) throw mapped;
             throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "Invalid XML returned by ArcSuite", false, null, e);
         }
     }

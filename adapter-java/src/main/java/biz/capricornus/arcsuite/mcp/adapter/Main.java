@@ -7,7 +7,7 @@ public final class Main {
         SessionManager sessions=new SessionManager(config,soap);
         AdapterService service=new AdapterService(soap,sessions);
         InternalServer server=new InternalServer(config,service);
-        Runtime.getRuntime().addShutdownHook(new Thread(()->{try{server.close();sessions.close();}catch(Exception ignored){}}));
+        Runtime.getRuntime().addShutdownHook(new Thread(()->{try{server.close();sessions.close();}catch(Exception ignored){}finally{soap.close();}}));
         server.start();
         Thread.currentThread().join();
     }

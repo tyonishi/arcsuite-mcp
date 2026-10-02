@@ -88,3 +88,13 @@ Errors are mapped to stable categories such as invalid argument, forbidden,
 unsupported content, session expired, unavailable, limit exceeded, timeout,
 and upstream error. Error responses do not include upstream SOAP text or
 private configuration details.
+
+
+The Java adapter has separate finite HTTP dispatch, business-admission, and
+response-parser boundaries. A single SOAP exchange retains its monotonic
+budget through full body EOF and MIME/XML decoding. No blocking body-reader
+pool or parser backlog is created. Cancellation discards late parsed results;
+parser capacity is reusable only after the actual task exits. The session
+refresh limit and generation behavior are unchanged. See
+[configuration](configuration.md#adapter-deadlines-and-overload) for the exact
+deadline scope and overload responses.

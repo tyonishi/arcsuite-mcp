@@ -142,3 +142,20 @@ Operators must protect bearer tokens, Java secret files, cursor HMAC keys,
 adapter network access, audit files, and the licensed ArcSuite endpoint. They
 must review scope mappings, TLS, reverse-proxy behavior, container network
 allowlists, log retention, and real-client qualification.
+
+
+## SOAP response and admission bounds
+
+SOAP acquisition checks declared and streamed byte counts before copying and
+waits for full EOF within the request budget. Response MIME/XML decoding shares
+that budget in a finite executor with no additional admitted backlog. Timeouts request transport and
+parser cancellation; late parsed results cannot become successful responses.
+An uncooperative library calculation can temporarily retain its parser slot,
+so configured capacities remain important alongside deadlines.
+
+Internal HTTP workers and queued dispatch tasks are finite. Authenticated
+business admission is nonblocking and leaves dispatch capacity for overload
+responses. These controls preserve the one session-refresh retry and add no
+retry for timeouts or overload. They are not a whole semantic-request deadline
+or a redesign of session-generation ownership. See the
+[capacity and overload contract](configuration.md#adapter-deadlines-and-overload).
