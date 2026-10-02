@@ -539,3 +539,17 @@ The environment-variable fallbacks are for controlled local development only;
 production deployments should use `*_FILE` variables or the container
 platform's secret manager. The Podman template documents the required secret
 names and mounts.
+
+
+## Secret readability and audit diagnostics
+
+Use the [deployment secret preflight](deployment.md#files-and-permissions) under
+each actual service identity. File-backed Compose secrets retain host permission
+constraints; a mode-600 file is not sufficient when its owner is inaccessible
+to the configured container UID.
+
+`MCP_AUDIT_LOG_PATH` remains operator-owned storage. On write failure, the logger
+keeps business processing fail-open and emits a rate-limited `audit_write_failed`
+diagnostic with a cumulative dropped-record count. Paths, records, and raw errors
+are excluded. No retry queue, automatic rotation, retention rule, or readiness
+failure is introduced. See [audit diagnostics](deployment.md#audit-write-failure-diagnostics).

@@ -2,6 +2,11 @@
 
 ## 0.1.0 - unreleased
 
+- Added read-only, actual-service secret readability preflight and clarified
+  host/container UID mapping for file-backed Compose secrets.
+- Made audit-write failures visible through sampled, sanitized stderr diagnostics
+  while preserving fail-open business behavior; retention remains operator-owned.
+
 - Added successful-result MCP `outputSchema` declarations for direct and
   ref-native content reads so structured `content` can be bound by capable
   clients while the ref-native contract continues to suppress physical

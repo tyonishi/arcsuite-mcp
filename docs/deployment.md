@@ -146,6 +146,10 @@ or an image signature. A representative operator flow is:
     --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
   test "$gateway_revision" = "$ARCSUITE_MCP_SOURCE_REVISION"
   test "$adapter_revision" = "$ARCSUITE_MCP_SOURCE_REVISION"
+  docker compose --env-file .env -f docker-compose.yml run --rm --no-deps -T \
+    --entrypoint /bin/sh mcp-gateway -s -- gateway < scripts/check-secret-readability.sh
+  docker compose --env-file .env -f docker-compose.yml run --rm --no-deps -T \
+    --entrypoint /bin/sh arcsuite-adapter -s -- adapter < scripts/check-secret-readability.sh
   docker compose --env-file .env -f docker-compose.yml up -d
   docker compose --env-file .env -f docker-compose.yml images
   docker compose --env-file .env -f docker-compose.yml ps
@@ -311,7 +315,30 @@ the adapter's default bind address at `127.0.0.1`.
 ## Files and permissions
 
 Use mode-600 token/cursor/credential files and a mode-700 shared content
-directory. Store audit output where only the service account and designated
+directory. Mode 600 alone does not make a host-owned file readable by a
+container. Both supplied images run as UID 10001; do not assume their group
+IDs are identical. With rootful Linux and no user-namespace remapping, the
+owner of a mode-600 host file must correspond to the container's effective
+UID. Compose file-backed secrets are bind mounts: its secret `uid`, `gid`,
+and `mode` fields do not remap the host file's permissions.
+
+Rootless containers, user-namespace mappings, Docker Desktop, and SELinux or
+other host policies can change the effective mapping. Review the actual
+platform's least-privilege secret arrangement; do not make files world-readable
+or run the service as root to bypass a failed check. This is an operator-owned
+setup decision, not an instruction to automatically change ownership.
+
+The Compose sequence above runs the read-only secret preflight inside each
+actual service configuration, after build/provenance checks and before startup.
+It preserves that service's user, mounts, and security restrictions, and uses
+`--no-deps` to avoid starting dependencies. The checker verifies each configured
+secret is a regular readable file and can be opened, without reading or printing
+its contents. It reports only the service, effective UID, and failed variable
+name. The optional opaque-ref keyring is checked when opaque refs are enabled.
+This does not validate secret contents or qualify every host platform. Existing
+successful deployments remain valid; the check makes new setup failures visible.
+
+Store audit output where only the service account and designated
 operators can read it. Backups must follow the same data-minimization policy.
 
 ## Readiness
@@ -320,3 +347,25 @@ operators can read it. Backups must follow the same data-minimization policy.
 configuration and schema validation without returning the underlying error
 message. A real deployment should keep readiness false until its scope schema
 and ArcSuite version checks succeed.
+
+
+## Audit-write failure diagnostics
+
+Audit persistence remains fail-open: a storage failure does not replace a
+successful business result or its existing error. The gateway emits a fixed
+JSON diagnostic to stderr on the first dropped audit record and at most once
+per 60 seconds thereafter while failures occur:
+
+`{"event":"audit_write_failed","dropped_records":1}`
+
+The count is cumulative for that logger instance, bounded to the largest safe
+integer, and resets on process restart. It does not claim how many records a
+filesystem partially wrote. Diagnostics contain no record content, identifiers,
+path, error message, or stack. A failed warning sink is swallowed; records are
+not queued or retried, and no background timer is added. Recovery permits
+subsequent ordinary audit appends without changing readiness or business status.
+
+The Compose example still writes audit output into the ephemeral shared 64 MiB
+`/tmp` filesystem. This visibility change does not impose audit retention,
+rotation, or an accumulated storage limit. Monitor stderr and filesystem usage;
+review durable storage and retention separately before relying on audit history.
