@@ -24,6 +24,15 @@ test("secret preflight checks service-specific files without exposing paths or c
   }
   assert.equal(run("gateway").status, 0);
   assert.equal(run("adapter").status, 0);
+  const stdinScript = await readFile(script, "utf8");
+  for (const role of ["gateway", "adapter"]) {
+    const stdin = spawnSync("sh", ["-s", "--", role], { input: stdinScript, env, encoding: "utf8" });
+    assert.equal(stdin.status, 0, stdin.stderr);
+    assert.match(stdin.stdout, new RegExp(`service=${role} `));
+    const extra = spawnSync("sh", ["-s", "--", "check-secret-readability", role], { input: stdinScript, env, encoding: "utf8" });
+    assert.equal(extra.status, 2, "A dummy argument would violate the one-role contract for sh -s");
+  }
+
   assert.equal(run("gateway", { ARCSUITE_PASSWORD_FILE: undefined }).status, 0);
   assert.equal(run("adapter", { MCP_CURSOR_HMAC_SECRET_FILE: undefined }).status, 0);
   for (const role of ["gateway", "adapter"]) {
