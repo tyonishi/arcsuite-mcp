@@ -2,6 +2,11 @@
 
 ## 0.1.0 - unreleased
 
+- Added read-only, actual-service secret readability preflight and clarified
+  host/container UID mapping for file-backed Compose secrets.
+- Made audit-write failures visible through sampled, sanitized stderr diagnostics
+  while preserving fail-open business behavior; retention remains operator-owned.
+
 - Bounded SOAP response receipt and MIME/XML decoding by one monotonic request
   budget; added finite HTTP admission and parser capacities without changing
   the session-refresh retry policy.
