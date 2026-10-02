@@ -124,28 +124,48 @@ revision. The revision label is metadata, not a substitute for source review
 or an image signature. A representative operator flow is:
 
 ```sh
-test -z "$(git status --short)"
-git rev-parse HEAD
-git rev-parse origin/main
-export ARCSUITE_MCP_SOURCE_REVISION="$(git rev-parse HEAD)"
-export IMAGE_TAG="$(git rev-parse --short=12 HEAD)"
+(
+  set -eu
 
-docker compose --env-file .env -f docker-compose.yml config
-docker compose --env-file .env -f docker-compose.yml build
-docker image inspect "arcsuite-mcp-gateway:${IMAGE_TAG}" \
-  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
-docker image inspect "arcsuite-mcp-adapter:${IMAGE_TAG}" \
-  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
-docker compose --env-file .env -f docker-compose.yml up -d
-docker compose --env-file .env -f docker-compose.yml images
-docker compose --env-file .env -f docker-compose.yml ps
-curl --fail http://127.0.0.1:8080/healthz
-curl --fail http://127.0.0.1:8080/readyz
+  source_status=$(git status --short)
+  if [ -n "$source_status" ]; then
+    printf '%s\n' 'Refusing to deploy an unclean source tree.' >&2
+    exit 1
+  fi
+  ARCSUITE_MCP_SOURCE_REVISION=$(git rev-parse --verify HEAD)
+  IMAGE_TAG=$(git rev-parse --short=12 HEAD)
+  git rev-parse --verify origin/main
+  printf '%s\n' "$ARCSUITE_MCP_SOURCE_REVISION"
+  export ARCSUITE_MCP_SOURCE_REVISION IMAGE_TAG
+
+  docker compose --env-file .env -f docker-compose.yml config
+  docker compose --env-file .env -f docker-compose.yml build
+  gateway_revision=$(docker image inspect "arcsuite-mcp-gateway:${IMAGE_TAG}" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+  adapter_revision=$(docker image inspect "arcsuite-mcp-adapter:${IMAGE_TAG}" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+  test "$gateway_revision" = "$ARCSUITE_MCP_SOURCE_REVISION"
+  test "$adapter_revision" = "$ARCSUITE_MCP_SOURCE_REVISION"
+  docker compose --env-file .env -f docker-compose.yml up -d
+  docker compose --env-file .env -f docker-compose.yml images
+  docker compose --env-file .env -f docker-compose.yml ps
+  curl --fail http://127.0.0.1:8080/healthz
+  curl --fail http://127.0.0.1:8080/readyz
+)
 ```
 
-Require the inspected labels to equal the reviewed clean source revision, and
-record the actual running image IDs from `docker compose images` before live
-qualification. A deployment from a dirty tree or an `unknown` revision label
+Run the block as a complete, standalone command, not as the condition of
+`if`, `&&`, or `||`: those contexts can disable shell `errexit` behavior. The
+subshell stops at a failed cleanliness check, Git lookup, Compose command,
+image inspection, revision comparison, or health/readiness request without
+exiting the operator's interactive shell. Capture Git output before exporting
+it so that `export` cannot hide a failed lookup. A failure after `up -d` stops
+further checks but does not roll back containers already started; investigate
+and follow the operator's recovery procedure.
+
+The image-label comparisons must succeed before `up -d`. Record the actual
+running image IDs from `docker compose images` before live qualification.
+A deployment from a dirty tree or an `unknown` revision label
 does not provide exact source provenance.
 
 This example is based on a two-container topology exercised in a licensed live
