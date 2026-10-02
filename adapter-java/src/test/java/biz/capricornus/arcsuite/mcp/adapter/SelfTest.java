@@ -41,6 +41,8 @@ public final class SelfTest {
         revisionContractParsing();
         xmlXxeBlocked();
         boundedStreams();
+        RequestBoundaryTest.run();
+        AdmissionBoundaryTest.run();
         System.out.println("Java adapter self-test: PASS");
     }
 
@@ -214,7 +216,7 @@ public final class SelfTest {
             AdapterConfig config = new AdapterConfig(
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
                     "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
-                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024);
+                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024, AdapterLimits.defaults());
             ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
             Map<String, Object> request = Map.of(
                     "id", sourceId,
@@ -315,7 +317,7 @@ public final class SelfTest {
             AdapterConfig config = new AdapterConfig(
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
                     "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
-                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024);
+                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024, AdapterLimits.defaults());
             ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
             try (SessionManager sessions = new SessionManager(config, client)) {
                 Map<String, Object> request = Map.of("id", "rep:mock:EXAMPLE_CABINET:1001", "resolveRef", false,
@@ -404,7 +406,7 @@ public final class SelfTest {
             var config = new AdapterConfig(
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/", "synthetic-user", "synthetic-password",
                     "synthetic-internal-token", 18080, "127.0.0.1", Duration.ofSeconds(2), Duration.ofSeconds(2),
-                    1500, 1700, 4, "ja", "4.0.0.0", Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024);
+                    1500, 1700, 4, "ja", "4.0.0.0", Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024, AdapterLimits.defaults());
             var client = new ArcSuiteSoapClient(config);
             Map<String, Object> validation = client.validateIntegrity(Map.of("id", targetId), "synthetic-session");
             if (!List.of().equals(validation.get("certificates")) || validation.get("failure") != null) {
@@ -667,7 +669,7 @@ public final class SelfTest {
             var config = new AdapterConfig(
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/", "synthetic-user", "synthetic-password",
                     "synthetic-internal-token", 18080, "127.0.0.1", Duration.ofSeconds(2), Duration.ofSeconds(2),
-                    1500, 1700, 4, "ja", "4.0.0.0", Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024);
+                    1500, 1700, 4, "ja", "4.0.0.0", Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024, AdapterLimits.defaults());
             var result = new ArcSuiteSoapClient(config).hardReferences(request, "synthetic-session");
             if (!List.of().equals(result.get("ids"))) throw new AssertionError("Empty Hard Reference response was not preserved");
             ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
@@ -895,7 +897,7 @@ public final class SelfTest {
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
                     "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
                     Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0",
-                    Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024);
+                    Path.of(System.getProperty("java.io.tmpdir")), 1024 * 1024, AdapterLimits.defaults());
             ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
             try (SessionManager sessions = new SessionManager(config, client)) {
                 AdapterService service = new AdapterService(client, sessions);
@@ -960,7 +962,7 @@ public final class SelfTest {
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
                     "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
                     Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0",
-                    temp, 1024 * 1024);
+                    temp, 1024 * 1024, AdapterLimits.defaults());
             ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
             Map<String, Object> result = client.content(Map.of(
                     "clientProfileId", "synthetic-client",
@@ -1199,7 +1201,7 @@ public final class SelfTest {
             AdapterConfig config = new AdapterConfig(
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
                     "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
-                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024);
+                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024, AdapterLimits.defaults());
             ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
             for (String operation : List.of("searchRepositoryObjectIds", "listRepositoryObjectIds")) {
                 Map<String, Object> request = operation.startsWith("search")
@@ -1269,7 +1271,7 @@ public final class SelfTest {
             AdapterConfig config = new AdapterConfig(
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/soap",
                     "synthetic-user", "synthetic-password", "synthetic-token", 0, "127.0.0.1",
-                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024);
+                    Duration.ofSeconds(2), Duration.ofSeconds(2), 3600, 7200, 1, "ja", "4.0.0.0", temp, 1024 * 1024, AdapterLimits.defaults());
             ArcSuiteSoapClient client = new ArcSuiteSoapClient(config);
             String revisionObject = "<t:repositoryObject><t:id>rep:mock:EXAMPLE_CABINET:1001</t:id>"
                     + "<t:objectClass ns=\"rep\" name=\"system:document\"/><t:attributes/></t:repositoryObject>";

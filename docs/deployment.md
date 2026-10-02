@@ -320,3 +320,24 @@ operators can read it. Backups must follow the same data-minimization policy.
 configuration and schema validation without returning the underlying error
 message. A real deployment should keep readiness false until its scope schema
 and ArcSuite version checks succeed.
+
+
+## Capacity and deadline sizing
+
+Before rollout, review the adapter's [finite capacity settings](configuration.md#adapter-deadlines-and-overload)
+against expected concurrency and available JVM heap. Default HTTP workers,
+queued dispatch tasks, active business requests, and parser workers are
+8, 16, 4, and 2 respectively. There is no additional parser backlog. Content limits are per
+response; MIME copies and XML DOM structures add memory overhead, so concurrent
+response limits are not an aggregate heap guarantee.
+
+Under load, business admission returns a retryable HTTP 503; parser saturation
+returns the existing retryable upstream error. Absolute HTTP executor saturation
+can reject the connection without a JSON response. Do not add blind automatic
+replay. SOAP request deadlines cover response receipt and MIME/XML decoding,
+not an entire multi-operation semantic request or session wait duration.
+
+Existing Dify/MCP qualification records remain evidence for the tested baseline.
+CI and synthetic regressions for these controls are not new live-service
+qualification; verify sizing and the normal workflow in the operator environment
+before production rollout.

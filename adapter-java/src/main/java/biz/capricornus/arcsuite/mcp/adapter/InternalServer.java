@@ -10,19 +10,33 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 final class InternalServer implements AutoCloseable {
     private static final int MAX_REQUEST_BYTES = 2_000_000;
     private final AdapterConfig config;
     private final AdapterService service;
     private final HttpServer server;
+    private final ThreadPoolExecutor executor;
+    private final Semaphore admission;
 
     InternalServer(AdapterConfig config,AdapterService service) {
         this.config=config;this.service=service;
         try {server=HttpServer.create(new InetSocketAddress(config.bindHost(),config.port()),64);}
         catch(IOException e){throw new IllegalStateException("Cannot bind adapter HTTP server",e);}
-        server.setExecutor(Executors.newCachedThreadPool());
+        AdapterLimits limits = config.limits();
+        admission = new Semaphore(limits.activeRequests());
+        executor = new ThreadPoolExecutor(limits.httpWorkers(), limits.httpWorkers(), 30, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(limits.httpQueue()), task -> {
+                    Thread thread = new Thread(task, "arcsuite-http-dispatch");
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
+        executor.allowCoreThreadTimeOut(true);
+        server.setExecutor(executor);
         server.createContext("/internal/healthz",ex->dispatch(ex,false,()->Map.of("ok",true)));
         server.createContext("/internal/version",ex->dispatch(ex,true,service::version));
         server.createContext("/internal/session/login",ex->dispatch(ex,true,()->service.login(body(ex))));
@@ -43,17 +57,31 @@ final class InternalServer implements AutoCloseable {
     }
 
     void start(){server.start();System.out.println("ArcSuite SOAP adapter listening on "+config.bindHost()+":"+config.port());}
-    @Override public void close(){server.stop(1);}
+    @Override public void close() {
+        server.stop(1);
+        executor.shutdownNow();
+        try { executor.awaitTermination(1, TimeUnit.SECONDS); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
 
     private void dispatch(HttpExchange ex,boolean auth,Handler handler)throws IOException {
+        boolean admitted = false;
         try {
             if(auth && !constantTimeEquals(config.internalToken(),ex.getRequestHeaders().getFirst("x-internal-token"))) {send(ex,401,Map.of("code","UNAUTHORIZED","message","Unauthorized","retryable",false));return;}
             String method=ex.getRequestMethod();if(!method.equals("GET")&&!method.equals("POST")){send(ex,405,Map.of("code","METHOD_NOT_ALLOWED","message","Method not allowed","retryable",false));return;}
+            if (auth) {
+                admitted = admission.tryAcquire();
+                if (!admitted) {
+                    ex.getResponseHeaders().set("retry-after", "1");
+                    send(ex,503,Map.of("code","ARCSUITE_UPSTREAM_ERROR","message","Adapter busy","retryable",true));
+                    return;
+                }
+            }
             Object result=handler.run();send(ex,200,result);
         } catch(AdapterException e) {LinkedHashMap<String,Object> m=new LinkedHashMap<>();m.put("code",e.code);m.put("message",e.code);m.put("retryable",e.retryable);if(e.upstreamCode!=null)m.put("upstreamCode",e.upstreamCode);send(ex,status(e),m);}
         catch(IllegalArgumentException e){send(ex,400,Map.of("code","ARCSUITE_INVALID_ARGUMENT","message","Invalid request","retryable",false));}
         catch(Exception e){send(ex,502,Map.of("code","ARCSUITE_UPSTREAM_ERROR","message","Adapter internal error","retryable",false));}
-        finally{ex.close();}
+        finally{if(admitted)admission.release();ex.close();}
     }
 
     private static int status(AdapterException e){return switch(e.code){case "ARCSUITE_INVALID_ARGUMENT"->400;case "ARCSUITE_FORBIDDEN"->403;case "ARCSUITE_NOT_AVAILABLE"->404;case "ARCSUITE_LIMIT_EXCEEDED"->413;case "ARCSUITE_TIMEOUT"->504;default->502;};}

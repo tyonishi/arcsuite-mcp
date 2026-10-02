@@ -26,7 +26,7 @@ import java.util.*;
  * Reference Guide and WSDL. Vendor material is intentionally not packaged.
  * No admin/privilege/mutation operation is implemented here by design.
  */
-final class ArcSuiteSoapClient {
+final class ArcSuiteSoapClient implements AutoCloseable {
     static final String BASE_NS = "http://www.fujifilm.com/fb/2021/04/arcsuite/ws";
     static final String TYPES_NS = "http://www.fujifilm.com/fb/2021/04/arcsuite/ws/types";
     static final String SOAP_NS = "http://schemas.xmlsoap.org/soap/envelope/";
@@ -65,9 +65,11 @@ final class ArcSuiteSoapClient {
 
     private final AdapterConfig config;
     private final HttpClient http;
+    private final BoundedParser parser;
 
     ArcSuiteSoapClient(AdapterConfig config) {
         this.config = config;
+        this.parser = new BoundedParser(config.limits().parserWorkers());
         this.http = HttpClient.newBuilder()
                 .connectTimeout(config.connectTimeout())
                 .followRedirects(HttpClient.Redirect.NEVER)
@@ -646,23 +648,23 @@ final class ArcSuiteSoapClient {
                 .timeout(config.requestTimeout()).header("Content-Type","text/xml; charset=utf-8").header("SOAPAction","\"\"")
                 .header("Accept","multipart/related, application/xop+xml, text/xml, application/soap+xml")
                 .POST(HttpRequest.BodyPublishers.ofString(xml,StandardCharsets.UTF_8)).build();
-        HttpResponse<InputStream> response;
-        try { response=http.send(request,HttpResponse.BodyHandlers.ofInputStream()); }
-        catch(java.net.http.HttpTimeoutException e){throw new AdapterException("ARCSUITE_TIMEOUT","ArcSuite request timed out",true,null,e);}
-        catch(IOException|InterruptedException e){ if(e instanceof InterruptedException)Thread.currentThread().interrupt(); throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","ArcSuite transport failure",false,null,e); }
+        RequestDeadline deadline = new RequestDeadline(config.requestTimeout());
         long maxEnvelopeBytes = Math.addExact(config.maxContentBytes(), 16L * 1024 * 1024);
-        long declared = response.headers().firstValueAsLong("content-length").orElse(-1L);
-        if (declared > maxEnvelopeBytes) {
-            try { response.body().close(); } catch (IOException ignored) {}
-            throw new AdapterException("ARCSUITE_LIMIT_EXCEEDED", "SOAP/MTOM response exceeds configured maximum size");
-        }
-        byte[] responseBody = readAndClose(response.body(), maxEnvelopeBytes);
-        String ct=response.headers().firstValue("content-type").orElse("text/xml");
-        MtomMessage mtom=MtomParser.parse(ct,responseBody); Document doc=XmlUtil.parse(mtom.rootXml());
-        AdapterException fault=parseFault(doc,response.statusCode()); if(fault!=null)throw fault;
-        if(response.statusCode()<200||response.statusCode()>=300)throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","ArcSuite HTTP status "+response.statusCode(),response.statusCode()>=500,null);
-        return new SoapResponse(doc,mtom.attachments());
+        HttpResponse<byte[]> response = BoundedHttpResponse.send(http, request, maxEnvelopeBytes, deadline);
+        byte[] responseBody = response.body();
+        return parser.parse(deadline, () -> {
+            String ct=response.headers().firstValue("content-type").orElse("text/xml");
+            MtomMessage mtom=MtomParser.parse(ct,responseBody,deadline);
+            Document doc=XmlUtil.parse(mtom.rootXml(),deadline);
+            AdapterException fault=parseFault(doc,response.statusCode());
+            deadline.check();
+            if(fault!=null)throw fault;
+            if(response.statusCode()<200||response.statusCode()>=300)throw new AdapterException("ARCSUITE_UPSTREAM_ERROR","ArcSuite HTTP status "+response.statusCode(),response.statusCode()>=500,null);
+            return new SoapResponse(doc,mtom.attachments());
+        });
     }
+
+    @Override public void close() { parser.close(); }
 
     static byte[] readBounded(InputStream input, long maxBytes) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(maxBytes, 64 * 1024));

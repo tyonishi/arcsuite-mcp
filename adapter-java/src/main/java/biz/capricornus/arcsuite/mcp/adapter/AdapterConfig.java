@@ -23,7 +23,8 @@ record AdapterConfig(
         String locale,
         String requestVersion,
         Path sharedTempDir,
-        long maxContentBytes
+        long maxContentBytes,
+        AdapterLimits limits
 ) {
     private static final long MAX_CONFIG_CONTENT_BYTES = 100L * 1024 * 1024;
 
@@ -68,7 +69,8 @@ record AdapterConfig(
                 env("ARCSUITE_LOCALE", "ja"),
                 env("ARCSUITE_REQUEST_VERSION", "4.0.0.0"),
                 temp,
-                longInteger("ARCSUITE_MAX_CONTENT_BYTES", 50L * 1024 * 1024, 1, MAX_CONFIG_CONTENT_BYTES)
+                longInteger("ARCSUITE_MAX_CONTENT_BYTES", 50L * 1024 * 1024, 1, MAX_CONFIG_CONTENT_BYTES),
+                AdapterLimits.fromEnv()
         );
     }
 
