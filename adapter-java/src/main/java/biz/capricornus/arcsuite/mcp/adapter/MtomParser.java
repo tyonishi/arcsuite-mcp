@@ -8,18 +8,23 @@ record MtomMessage(byte[] rootXml, Map<String,byte[]> attachments) {}
 final class MtomParser {
     private MtomParser() {}
 
-    static MtomMessage parse(String contentType, byte[] body) {
+    static MtomMessage parse(String contentType, byte[] body) { return parse(contentType, body, null); }
+
+    static MtomMessage parse(String contentType, byte[] body, RequestDeadline deadline) {
+        Runnable check = deadline == null ? () -> {} : deadline::check;
+        check.run();
         if (contentType == null || !contentType.toLowerCase(Locale.ROOT).startsWith("multipart/related")) {
             return new MtomMessage(body, Map.of());
         }
         String boundary = param(contentType, "boundary");
         if (boundary == null || boundary.isBlank()) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response missing boundary");
         byte[] marker = ("--" + boundary).getBytes(StandardCharsets.ISO_8859_1);
-        List<Part> parts = split(body, marker);
+        List<Part> parts = split(body, marker, check);
         if (parts.isEmpty()) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response contains no parts");
         byte[] root = null;
         Map<String,byte[]> attachments = new HashMap<>();
         for (Part part : parts) {
+            check.run();
             String cid = normalizeCid(part.headers.get("content-id"));
             String ct = part.headers.getOrDefault("content-type", "").toLowerCase(Locale.ROOT);
             if (root == null && (ct.contains("application/xop+xml") || ct.contains("text/xml") || ct.contains("application/soap+xml"))) root = part.data;
@@ -31,9 +36,9 @@ final class MtomParser {
 
     private record Part(Map<String,String> headers, byte[] data) {}
 
-    private static List<Part> split(byte[] body, byte[] marker) {
+    private static List<Part> split(byte[] body, byte[] marker, Runnable check) {
         List<Part> out=new ArrayList<>();
-        int first = boundaryAt(body, marker, 0);
+        int first = boundaryAt(body, marker, 0, check);
         // Some ArcSuite versions prepend exactly one CRLF before the first MIME
         // boundary. Do not generalize this to an arbitrary MIME preamble.
         boolean validInitialBoundary = first == 0
@@ -41,12 +46,13 @@ final class MtomParser {
         if (!validInitialBoundary) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response has an invalid initial boundary");
         int cursor = first + marker.length;
         while (true) {
+            check.run();
             if (startsWith(body, cursor, (byte) '-', (byte) '-')) break;
             if (!startsWith(body, cursor, (byte) '\r', (byte) '\n')) {
                 throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response boundary framing was invalid");
             }
             cursor += 2;
-            int headerEnd = indexOf(body, "\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1), cursor);
+            int headerEnd = indexOf(body, "\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1), cursor, check);
             if (headerEnd < 0) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM part headers were invalid");
             String hs = new String(body, cursor, headerEnd - cursor, StandardCharsets.ISO_8859_1);
             Map<String,String> headers = new HashMap<>();
@@ -56,7 +62,7 @@ final class MtomParser {
                 headers.put(line.substring(0, colon).trim().toLowerCase(Locale.ROOT), line.substring(colon + 1).trim());
             }
             int dataStart = headerEnd + 4;
-            int next = boundaryAt(body, marker, dataStart);
+            int next = boundaryAt(body, marker, dataStart, check);
             if (next < 0 || next < dataStart + 2) throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response boundary was missing");
             // The CRLF immediately before a valid delimiter belongs to MIME
             // framing. Remove exactly that pair; all earlier payload bytes,
@@ -65,6 +71,7 @@ final class MtomParser {
             if (body[dataEnd] != '\r' || body[dataEnd + 1] != '\n') {
                 throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM response boundary framing was invalid");
             }
+            check.run();
             out.add(new Part(headers, Arrays.copyOfRange(body, dataStart, dataEnd)));
             cursor = next + marker.length;
         }
@@ -74,19 +81,20 @@ final class MtomParser {
         cursor += 2;
         if (cursor < body.length && startsWith(body, cursor, (byte) '\r', (byte) '\n')) cursor += 2;
         for (int i = cursor; i < body.length; i++) {
+            if ((i & 4095) == 0) check.run();
             if (body[i] != '\r' && body[i] != '\n') throw new AdapterException("ARCSUITE_UPSTREAM_ERROR", "MTOM trailing bytes were invalid");
         }
         return out;
     }
 
-    private static int boundaryAt(byte[] body, byte[] marker, int from) {
-        int candidate = indexOf(body, marker, from);
+    private static int boundaryAt(byte[] body, byte[] marker, int from, Runnable check) {
+        int candidate = indexOf(body, marker, from, check);
         while (candidate >= 0) {
             boolean lineStart = candidate == 0 || (candidate >= 2 && body[candidate - 2] == '\r' && body[candidate - 1] == '\n');
             boolean delimiterEnd = startsWith(body, candidate + marker.length, (byte) '-', (byte) '-')
                     || startsWith(body, candidate + marker.length, (byte) '\r', (byte) '\n');
             if (lineStart && delimiterEnd) return candidate;
-            candidate = indexOf(body, marker, candidate + 1);
+            candidate = indexOf(body, marker, candidate + 1, check);
         }
         return -1;
     }
@@ -95,7 +103,19 @@ final class MtomParser {
         return offset >= 0 && offset + 1 < body.length && body[offset] == first && body[offset + 1] == second;
     }
 
-    private static int indexOf(byte[] hay, byte[] needle, int from){ outer:for(int i=Math.max(0,from);i<=hay.length-needle.length;i++){for(int j=0;j<needle.length;j++)if(hay[i+j]!=needle[j])continue outer;return i;}return -1;}
+    private static int indexOf(byte[] hay, byte[] needle, int from, Runnable check) {
+        outer: for (int i = Math.max(0, from); i <= hay.length - needle.length; i++) {
+            if ((i & 4095) == 0) check.run();
+            for (int j = 0; j < needle.length; j++) {
+                if ((j & 4095) == 0) check.run();
+                if (hay[i + j] != needle[j]) continue outer;
+            }
+            return i;
+        }
+        check.run();
+        return -1;
+    }
+
     private static String param(String ct,String name){ for(String p:ct.split(";")){int e=p.indexOf('=');if(e>0&&p.substring(0,e).trim().equalsIgnoreCase(name)){String v=p.substring(e+1).trim();if(v.startsWith("\"")&&v.endsWith("\"")&&v.length()>=2)v=v.substring(1,v.length()-1);return v;}}return null; }
     static String normalizeCid(String cid){ if(cid==null)return null; String x=cid.trim(); if(x.startsWith("<")&&x.endsWith(">"))x=x.substring(1,x.length()-1); if(x.startsWith("cid:"))x=x.substring(4);return x; }
 }

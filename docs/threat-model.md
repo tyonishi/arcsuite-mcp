@@ -6,6 +6,7 @@
 | Model supplies an arbitrary physical content label | Semantic alias grammar, per-scope registry resolution, no raw `{ns,name}` input | Qualify configured aliases against the live scope policy |
 | Model reaches a mutation or admin operation | TypeScript and Java read-only allowlists; invariant tests | Review any allowlist change with security ownership |
 | DNS rebinding or browser-origin abuse | Host and Origin hostname validation | Configure deployment hostnames explicitly |
+| Invalid HTTP request target raises a parser exception | Synchronous route parsing catches failure and returns generic 400 before authentication | Regression-check valid routes and subsequent requests |
 | Token theft or overbroad client access | Hashed tokens, profile scope/tool lists, rate limit | Rotate secret files and review profiles |
 | Oversized MCP or adapter response exhausts memory | Content-Length precheck, streaming byte bounds, bounded config maxima | Exercise limits with slow/chunked responses |
 | Adapter redirect leaks an internal token | Redirects disabled on gateway-to-adapter requests | Keep the adapter on a private network and test proxy behavior |

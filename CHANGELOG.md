@@ -7,6 +7,12 @@
 - Made audit-write failures visible through sampled, sanitized stderr diagnostics
   while preserving fail-open business behavior; retention remains operator-owned.
 
+- Bounded SOAP response receipt and MIME/XML decoding by one monotonic request
+  budget; added finite HTTP admission and parser capacities without changing
+  the session-refresh retry policy.
+- Contained invalid HTTP request-target parsing with a generic 400 response
+  before authentication or tool dispatch, preserving valid route behavior.
+
 - Added successful-result MCP `outputSchema` declarations for direct and
   ref-native content reads so structured `content` can be bound by capable
   clients while the ref-native contract continues to suppress physical

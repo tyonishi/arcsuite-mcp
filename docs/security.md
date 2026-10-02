@@ -20,7 +20,9 @@ without adding a cached authorization decision.
 ## Defense in depth
 
 - Host and Origin allowlists protect plain Node HTTP against DNS rebinding and
-  untrusted browser origins.
+  untrusted browser origins. Invalid request-target URL parsing is contained
+  after those checks and returns a generic HTTP 400 before authentication or
+  tool dispatch; the response does not echo the target or parser exception.
 - Bearer tokens are compared by hash and timing-safe comparison. The token
   value is not placed in MCP results or audit records.
 - Profiles limit scopes and tools and have a bounded token-bucket rate limit.
@@ -140,3 +142,20 @@ Operators must protect bearer tokens, Java secret files, cursor HMAC keys,
 adapter network access, audit files, and the licensed ArcSuite endpoint. They
 must review scope mappings, TLS, reverse-proxy behavior, container network
 allowlists, log retention, and real-client qualification.
+
+
+## SOAP response and admission bounds
+
+SOAP acquisition checks declared and streamed byte counts before copying and
+waits for full EOF within the request budget. Response MIME/XML decoding shares
+that budget in a finite executor with no additional admitted backlog. Timeouts request transport and
+parser cancellation; late parsed results cannot become successful responses.
+An uncooperative library calculation can temporarily retain its parser slot,
+so configured capacities remain important alongside deadlines.
+
+Internal HTTP workers and queued dispatch tasks are finite. Authenticated
+business admission is nonblocking and leaves dispatch capacity for overload
+responses. These controls preserve the one session-refresh retry and add no
+retry for timeouts or overload. They are not a whole semantic-request deadline
+or a redesign of session-generation ownership. See the
+[capacity and overload contract](configuration.md#adapter-deadlines-and-overload).
