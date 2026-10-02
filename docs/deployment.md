@@ -41,15 +41,18 @@ docker-compose.yml; do not copy a licensed live Compose file into the
 repository:
 
     cp docker-compose.example.yml docker-compose.yml
+    cp .env.compose.example .env
     cp config/scopes.example.yaml config/scopes.yaml
     mkdir -p local-secrets
     chmod 700 local-secrets
 
-Create a local ignored .env and set at least ARCSUITE_SOAP_ENDPOINT and
-ARCSUITE_USERNAME from the licensed ArcSuite environment. Do not put the
-ArcSuite password or bearer-token plaintext in .env. Review the optional bounds
-and settings in the Compose file and provide any target-environment hostname,
-bind, TLS, or reverse-proxy values there.
+The Compose-specific `.env.compose.example` is intentionally separate from
+`.env.example`, which documents direct/local/mock development. In the local
+ignored `.env`, set at least `ARCSUITE_SOAP_ENDPOINT`, `ARCSUITE_USERNAME`,
+`IMAGE_TAG`, and `ARCSUITE_MCP_SOURCE_REVISION`. Do not put the ArcSuite
+password or bearer-token plaintext in `.env`. Review the optional bounds and
+settings in the Compose file and provide any target-environment hostname,
+bind, TLS, audit-path, or reverse-proxy values there.
 
 The Compose file uses normal .env interpolation and maps only the environment
 variables required by each service. It does not inject the full .env into both
@@ -58,6 +61,13 @@ settings, and secret-file paths, while the adapter receives the ArcSuite
 endpoint and username plus its own bounded adapter settings. The gateway never
 receives adapter-only endpoint or username values, and the adapter never
 receives gateway client-token or cursor-HMAC values.
+
+The public template intentionally omits
+`MCP_PAGING_MAX_TOTAL_IDS_PER_CLIENT`, so the runtime derives its bounded
+default from the global and per-snapshot limits. An operator who needs an
+explicit override must add its environment mapping to the ignored local
+Compose file and validate it against the global ID budget; do not copy a fixed
+derived value into the public template.
 
 Populate these four operator-owned files under local-secrets/:
 
@@ -91,8 +101,8 @@ The gateway and adapter use read-only root filesystems, /tmp tmpfs,
 no-new-privileges, and dropped Linux capabilities. The named arcsuite-content
 volume is mounted at /shared in both services for the bounded adapter/content
 exchange. The scope file is mounted read-only. The gateway's metadata-only
-audit output is directed to its writable /tmp tmpfs in this example; choose and
-mount a reviewed persistent destination if the target environment requires
+audit output defaults to its writable /tmp tmpfs. `MCP_AUDIT_LOG_PATH` may
+select another reviewed writable mount when the target environment requires
 audit retention.
 
 The default gateway-to-adapter URL is plain HTTP,
@@ -109,11 +119,95 @@ depends_on condition service_started. No unverified health endpoint is invented
 here; the gateway performs its initial health/schema validation and retries a
 failed startup validation every five seconds while /readyz remains 503. Once
 validation succeeds, the retry is stopped and /readyz becomes authoritative.
-Validate and start with the Compose-compatible command set supported by the
-target platform:
+Build and deployment provenance should start from a clean, reviewed source
+revision. The revision label is metadata, not a substitute for source review
+or an image signature. A representative operator flow is:
 
-    docker compose config
-    docker compose up -d --build
+```sh
+(
+  set -eu
+
+  source_status=$(git status --short)
+  if [ -n "$source_status" ]; then
+    printf '%s\n' 'Refusing to deploy an unclean source tree.' >&2
+    exit 1
+  fi
+  ARCSUITE_MCP_SOURCE_REVISION=$(git rev-parse --verify HEAD)
+  IMAGE_TAG=$(git rev-parse --short=12 HEAD)
+  git rev-parse --verify origin/main
+  printf '%s\n' "$ARCSUITE_MCP_SOURCE_REVISION"
+  export ARCSUITE_MCP_SOURCE_REVISION IMAGE_TAG
+
+  docker compose --env-file .env -f docker-compose.yml config
+  docker compose --env-file .env -f docker-compose.yml build
+  gateway_revision=$(docker image inspect "arcsuite-mcp-gateway:${IMAGE_TAG}" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+  adapter_revision=$(docker image inspect "arcsuite-mcp-adapter:${IMAGE_TAG}" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+  test "$gateway_revision" = "$ARCSUITE_MCP_SOURCE_REVISION"
+  test "$adapter_revision" = "$ARCSUITE_MCP_SOURCE_REVISION"
+  docker compose --env-file .env -f docker-compose.yml up -d
+  docker compose --env-file .env -f docker-compose.yml images
+  docker compose --env-file .env -f docker-compose.yml ps
+  gateway_address=$(docker compose --env-file .env -f docker-compose.yml \
+    port --index 1 mcp-gateway 8080)
+  case "$gateway_address" in
+    ''|*[[:space:]]*)
+      printf '%s\n' 'Expected one published gateway address.' >&2
+      exit 1
+      ;;
+    *:*) ;;
+    *) exit 1 ;;
+  esac
+  gateway_host=${gateway_address%:*}
+  gateway_port=${gateway_address##*:}
+  case "$gateway_port" in ''|*[!0-9]*) exit 1 ;; esac
+  test "${#gateway_port}" -le 5
+  test "$gateway_port" -ge 1
+  test "$gateway_port" -le 65535
+  case "$gateway_host" in
+    \[*\]) gateway_host=${gateway_host#\[}; gateway_host=${gateway_host%\]} ;;
+  esac
+  case "$gateway_host" in
+    '') exit 1 ;;
+    0.0.0.0) gateway_host=127.0.0.1 ;;
+    ::) gateway_host=::1 ;;
+  esac
+  case "$gateway_host" in *:*) gateway_host="[$gateway_host]" ;; esac
+  gateway_address="${gateway_host}:${gateway_port}"
+  gateway_origin="http://${gateway_address}"
+  curl --noproxy '*' --globoff --fail "${gateway_origin}/healthz"
+  curl --noproxy '*' --globoff --fail "${gateway_origin}/readyz"
+)
+```
+
+Run the block as a complete, standalone command, not as the condition of
+`if`, `&&`, or `||`: those contexts can disable shell `errexit` behavior. The
+subshell stops at a failed cleanliness check, Git lookup, Compose command,
+image inspection, revision comparison, or health/readiness request without
+exiting the operator's interactive shell. Capture Git output before exporting
+it so that `export` cannot hide a failed lookup. A failure after `up -d` stops
+further checks but does not roll back containers already started; investigate
+and follow the operator's recovery procedure.
+
+Run these probes on the Docker host. `docker compose port` reads the actual
+published binding, including the effective `ARCSUITE_MCP_BIND_IP` and
+`ARCSUITE_MCP_HOST_PORT` from `.env` or shell overrides. Do not source or eval
+`.env`, and do not assume its values were exported into the shell. IPv4/IPv6
+wildcard bindings are probed through the corresponding local loopback address;
+a specific bind address and a custom host port are retained. Both probes use
+the same derived origin, with proxy use disabled for the direct host check.
+Raw and bracketed IPv6 output are accepted. Missing hosts, invalid host ports,
+and whitespace-containing results stop the checks. This template
+publishes one binding; if an operator adds multiple bindings, select and
+review the intended address explicitly. Remote Docker contexts require an
+operator-reviewed reachable address on that Docker host, not this automatic
+local-loopback substitution.
+
+The image-label comparisons must succeed before `up -d`. Record the actual
+running image IDs from `docker compose images` before live qualification.
+A deployment from a dirty tree or an `unknown` revision label
+does not provide exact source provenance.
 
 This example is based on a two-container topology exercised in a licensed live
 ArcSuite environment. That evidence does not qualify this generic public
@@ -132,6 +226,12 @@ named Podman secrets, or the required `ARCSUITE_SOAP_ENDPOINT`/
 `ARCSUITE_USERNAME` variables are missing. The MCP token profile is supplied
 only through the `mcp_tokens` Podman secret at runtime; do not create or mount
 an ignored `config/tokens.json` file.
+
+Set `IMAGE_TAG` and `ARCSUITE_MCP_SOURCE_REVISION` from the reviewed clean Git
+revision before running the script. Both images receive the standard
+`org.opencontainers.image.revision` label. Inspect that label and the running
+container image IDs before health/readiness and live qualification; the label
+does not itself prove the tree was clean or the image was signed.
 
 The template expects these Podman secrets to exist before it is run:
 

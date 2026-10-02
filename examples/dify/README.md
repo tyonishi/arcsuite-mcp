@@ -21,3 +21,13 @@ Files:
 
 Do not add screenshots, private workspace names, private DNS names, real
 tokens, or ArcSuite configuration to this directory.
+
+## S4 qualification boundary
+
+The gateway's S4 validation-only path has separate operator-controlled live
+qualification. The Dify qualification described above does not establish
+qualification of S4 document-integrity validation through Dify. Treat
+`invalid_or_unverifiable` and `validation_failed` as non-affirmative outcomes,
+not proof of tampering. Evidence remains separately opt-in and its live path
+was `NOT_AVAILABLE_IN_TEST_DATA`. See `agent-instructions.md` for the
+conservative client behavior.

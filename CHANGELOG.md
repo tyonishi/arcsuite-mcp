@@ -61,12 +61,23 @@
   response accounting, conservative status normalization, and evidence
   availability summaries with raw exception and certificate attributes
   discarded at the Java adapter boundary.
+- Reconciled S4 with qualified live ArcSuite response shapes: an empty
+  `CertificateValidateResult` placeholder paired with the matching per-ID
+  failure is normalized to `validation_failed`, while populated, malformed,
+  contradictory, or nonzero-index mixed responses remain fail-closed. The
+  validation-only path is live-qualified in an operator-controlled
+  environment; evidence retrieval is `NOT_AVAILABLE_IN_TEST_DATA`, remains
+  separately opt-in and disabled by default, and is not claimed as
+  live-qualified.
+- Split direct/local development and Compose environment examples, added
+  source-revision image labels, and documented clean-source deployment
+  provenance without changing runtime defaults or secret-file handling.
 - Added v1.2 closure remediation for F1–F7: effective-object content identity,
   exact JSON integer handling, semantic enum reverse mapping, strict SOAP ID
   response parsing, one Java-owned read retry, output-budget OOXML extraction,
   and MCP schemas generated from effective configured limits. Synthetic
   cross-boundary regression tests and the complete local validation suite
-  pass; independent final cross-cutting re-audit and live ArcSuite
+  pass; independent final cross-cutting re-audit and broader live ArcSuite
   qualification remain pending.
 - Implemented Closure Remediation Round 2: current authority revalidation for
   content caches/cursors, exact batch path identity, namespace-exact semantic
@@ -75,7 +86,7 @@
   bounded JSON/text/XML materialization, parser-level OOXML DTD/entity
   rejection, and actual MCP schema/runtime revision parity. The local
   cross-cutting review and regression suite pass; an independent Astra High
-  re-audit and live ArcSuite qualification remain pending.
+  re-audit and broader live ArcSuite qualification remain pending.
 - Added one read-only ArcSuite operation for incoming Hard Reference discovery;
   TypeScript and Java operation allowlists remain in parity.
 - Added the read-only ArcSuite `searchRepositoryObjectIds` and
@@ -91,5 +102,7 @@
 - Remediated staged wildcard-regex unescaping and nested XML entity-decoding
   findings.
 
-Real ArcSuite and client qualification remain environment-dependent; see
+Real ArcSuite and client qualification remains environment-dependent. S4
+validation-only behavior has a qualified live result, while its optional
+evidence-provider path did not have suitable test data; see
 `docs/compatibility.md`.
