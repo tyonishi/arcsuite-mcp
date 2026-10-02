@@ -400,3 +400,21 @@ Existing Dify/MCP qualification records remain evidence for the tested baseline.
 CI and synthetic regressions for these controls are not new live-service
 qualification; verify sizing and the normal workflow in the operator environment
 before production rollout.
+
+## Build-context and public-template safety
+
+Both container contexts exclude root and nested environment files. Git ignore
+rules alone do not control what a container builder receives. Java builds do
+not need environment templates inside their COPY context, so no environment-file
+exceptions are included. Required Java source and compile inputs are checked by
+an isolated Docker COPY/export regression in CI; this does not constitute a
+production image build or a new live deployment qualification.
+
+The public hygiene gate now covers `docker-compose.example.yml`, `.env.example`,
+and `.env.compose.example` and rejects missing or non-regular required examples.
+Existing placeholders, Compose substitutions, and secret-file references remain
+valid. Only coverage of the existing detection patterns is promised; all possible
+credentials are not detectable by these heuristics. See [contributor checks](../CONTRIBUTING.md#build-context-and-public-template-checks).
+
+These build/CI safeguards do not change gateway or adapter runtime logic,
+operator configuration files, secret permissions, or an already deployed image.

@@ -80,7 +80,7 @@ for (const containerfile of [join(process.cwd(), "Containerfile"), join(process.
 const adapterDockerignorePath = join(process.cwd(), "adapter-java", ".dockerignore");
 if (!existsSync(adapterDockerignorePath)) throw new Error("Java adapter build context is missing adapter-java/.dockerignore");
 const adapterDockerignore = new Set(readFileSync(adapterDockerignorePath, "utf8").split(/\r?\n/).map((line) => line.trim()));
-for (const pattern of ["*.wsdl", "*.xsd", "*.jar", "*.msg", "*.docx", "*.pptx", "*.pdf", "vendor/", "vendor-material/", "local-secrets/", "*.pem", "*.key", "*.p12", "*.pfx", "*.soap", "*.trace"]) {
+for (const pattern of [".env", ".env.*", "**/.env", "**/.env.*", "*.wsdl", "*.xsd", "*.jar", "*.msg", "*.docx", "*.pptx", "*.pdf", "vendor/", "vendor-material/", "local-secrets/", "*.pem", "*.key", "*.p12", "*.pfx", "*.soap", "*.trace"]) {
   if (!adapterDockerignore.has(pattern)) throw new Error(`Java adapter build context does not exclude ${pattern}`);
 }
 const podmanScriptPath = join(process.cwd(), "podman", "podman-run.example.sh");
