@@ -18,10 +18,10 @@
     "hash-token": "node scripts/hash-token.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.1.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "yaml": "^2.9.1",
-    "zod": "^4.6.2"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",
