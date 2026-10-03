@@ -23,8 +23,6 @@ local-secrets
 docker-compose.yml
 vendor/
 vendor-material/
-.env
-.env.*
 *.secret
 *.secrets
 *.pem
@@ -35,3 +33,9 @@ vendor-material/
 *.soap
 *.trace
 *.jsonl
+
+# Exclude environment files at the root and in nested build-context directories.
+.env
+.env.*
+**/.env
+**/.env.*

@@ -12,13 +12,17 @@ import { join, relative, resolve } from "node:path";
 import { findForbiddenMarker } from "./markerHashes.mjs";
 
 const root = process.cwd();
-const roots = [
+const requiredTemplates = ["docker-compose.example.yml", ".env.example", ".env.compose.example"];
+// Discover future root-level public environment/Compose examples without reading local .env values.
+const templatePattern = /^(?:\.env(?:\.[a-z0-9_-]+)*\.example|.*\.example\.ya?ml)$/i;
+const discoveredTemplates = readdirSync(root).filter((name) => templatePattern.test(name));
+const roots = [...new Set([
   "README.md", "LICENSE", "NOTICE.md", "SECURITY.md", "CONTRIBUTING.md",
   "CODE_OF_CONDUCT.md", "CHANGELOG.md", "ROADMAP.md", "AGENTS.md",
   "package.json", "package-lock.json", "tsconfig.json", "Containerfile",
   ".editorconfig", ".gitignore", ".dockerignore", "config", "src", "adapter-java", "docs",
-  "examples", "test", "scripts", "podman", ".github"
-].map((item) => resolve(root, item));
+  "examples", "test", "scripts", "podman", ".github", ...requiredTemplates, ...discoveredTemplates
+])].map((item) => resolve(root, item));
 
 const forbiddenFileExtensions = new Set([".wsdl", ".xsd", ".jar", ".war", ".ear", ".msg", ".docx", ".pptx", ".pdf"]);
 const forbiddenPathParts = /(^|\/)(vendor|vendor-material|private|production-dump)(\/|$)/i;
@@ -32,6 +36,11 @@ const secretPatterns = [
 ];
 
 const violations = [];
+for (const name of new Set([...requiredTemplates, ...discoveredTemplates])) {
+  const path = resolve(root, name);
+  if (!existsSync(path)) violations.push(`${name}: required public template is missing`);
+  else if (!lstatSync(path).isFile()) violations.push(`${name}: public template must be a regular file`);
+}
 for (const start of roots) {
   if (!existsSync(start)) continue;
   for (const file of walk(start)) inspect(file);
@@ -102,6 +111,7 @@ function safeText(file) {
     if (data.includes(0)) return "";
     return data.toString("utf8");
   } catch {
+    violations.push(`${relative(root, file)}: public file could not be read`);
     return "";
   }
 }

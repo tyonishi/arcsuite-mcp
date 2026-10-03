@@ -35,3 +35,9 @@ local-secrets/
 *.soap
 *.trace
 *.jsonl
+
+# Exclude environment files at the root and in nested build-context directories.
+.env
+.env.*
+**/.env
+**/.env.*

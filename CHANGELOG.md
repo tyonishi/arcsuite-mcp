@@ -2,6 +2,10 @@
 
 ## 0.1.0 - unreleased
 
+- Excluded root and nested environment files from container build contexts,
+  added Docker COPY/export and staged-Java compilation verification, and
+  extended public hygiene coverage to Compose/environment examples.
+
 - Added bounded JSONL audit rotation, configurable byte/file/age limits,
   bounded serialized admission, and idle retention diagnostics. The Compose
   template now requires a dedicated operator-provisioned persistent audit mount.
